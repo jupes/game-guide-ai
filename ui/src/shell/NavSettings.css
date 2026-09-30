@@ -1,0 +1,42 @@
+/* ── NavSettings (agent-forge-harness-0rn) ────────────────────────────────────
+   The narrow layout's settings block in the LeftNav drawer: the model picker
+   and the theme control, stacked, between the conversation list and the
+   account footer.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.nav-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+  padding: var(--aether-space-2) var(--aether-space-4);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  flex-shrink: 0;
+}
+
+/* ModelPicker's own divider and inset are for its place in the header row. */
+.nav-settings .model-picker {
+  border-left: none;
+  padding-left: 0;
+  justify-content: space-between;
+}
+
+/* A select is as wide as its longest option; in a 232px drawer (a 280px
+   folding phone) that ran 2px past the panel. It shrinks instead. */
+.nav-settings .model-picker__select {
+  min-width: 0;
+}
+
+.nav-settings__theme {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--aether-touch-min);
+}
+
+.nav-settings__theme-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--md-sys-typescale-label-large-font);
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: var(--md-sys-typescale-label-large-weight);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+}

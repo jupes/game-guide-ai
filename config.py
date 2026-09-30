@@ -14,6 +14,7 @@ packages import it, and ``ingestion`` is the lower layer: a config module in
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Literal
@@ -47,6 +48,32 @@ def _float(name: str, default: float) -> float:
 
 def _str(name: str, default: str) -> str:
     return os.environ.get(name, default)
+
+
+def _seconds(name: str, default: float) -> float:
+    """A timeout in seconds, rejected at import unless finite and positive:
+    `float()` accepts "inf" and "nan", and either would quietly remove the
+    bound the value exists to set."""
+    value = _float(name, default)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite number of seconds above 0, got {value!r}")
+    return value
+
+
+#: The most output any provider call may ask for (agent-forge-harness-nz78). The
+#: cost review put a 16k-token answer at 110-270 s, about 60 tokens a second
+#: at the slow end, so 3,000 finish in some 50 s, inside one attempt's 60 s.
+MAX_OUTPUT_TOKENS_CEILING = 3_000
+
+
+def _output_tokens(name: str, default: int) -> int:
+    """An output-token cap, rejected at import unless 1 to the ceiling: 0 or less
+    breaks every call, and more lets an answer outlast its attempt's deadline,
+    which bills it, fails it and leaves the turn uncounted."""
+    value = _int(name, default)
+    if not 1 <= value <= MAX_OUTPUT_TOKENS_CEILING:
+        raise ValueError(f"{name} must be from 1 to {MAX_OUTPUT_TOKENS_CEILING} tokens, got {value!r}")
+    return value
 
 
 SameSite = Literal["lax", "strict", "none"]
@@ -103,6 +130,19 @@ IPL_FALLBACK_DISTANCE: float = _float("RAG_FALLBACK_DISTANCE", 0.42)
 # out-of-corpus questions. (Name kept stable for existing importers.)
 KOZ_ANSWERABLE_DISTANCE: float = _float("RAG_ANSWERABLE_DISTANCE", 0.50)
 
+# Per-attempt timeout on the service's query-embeddings client
+# (agent-forge-harness-xiu.2.3): how long one read, write or pool wait may block
+# before the embed fails as a timeout. It used to be the SDK's 600 s with two
+# SDK retries, so a silent provider held a /chat worker for about 30 minutes.
+# One short query embeds in well under a second; 10 s leaves headroom for a slow
+# provider, and ingestion/retrieval.py's two attempts end within
+# 2 x (5 + 10) + 0.5 s of backoff = 30.5 s against a silent provider. The bound
+# is per wait, not wall-clock: a provider that trickles bytes can outlast it.
+# Read when the client is built, so a test can monkeypatch it.
+EMBED_REQUEST_TIMEOUT_S: float = _seconds("RAG_EMBED_REQUEST_TIMEOUT_S", 10.0)
+# Connect bound for the same client; 5 s is the OpenAI SDK's own default.
+EMBED_CONNECT_TIMEOUT_S: float = _seconds("RAG_EMBED_CONNECT_TIMEOUT_S", 5.0)
+
 
 # --- Generation / answer assembly (service) --------------------------------
 
@@ -122,6 +162,29 @@ DEFAULT_MODEL: str = _str("RAG_DEFAULT_MODEL", "gpt-4o-mini")
 # cited sources and largely deterministic while allowing minor phrasing
 # variation; higher values drift away from the source text.
 TEMPERATURE: float = _float("RAG_TEMPERATURE", 0.2)
+
+# Per-attempt timeout on every generation provider client (agent-forge-harness-ihz):
+# how long one read, write or pool wait may block, streamed or not, before the
+# call fails as a timeout. /chat is synchronous, so a provider that stalls holds
+# a worker thread for at most this long per attempt. 60 s lets a long answer
+# finish, and service/generate.py's three attempts still end within
+# 3 x (5 + 60) + 1.5 s of backoff = 196.5 s, under Cloud Run's 300 s request
+# timeout (scripts/deploy.sh; pinned in service/tests/test_providers.py).
+# Those bounds are per wait, so a provider that trickles a byte at a time would
+# outlast them; the two added together are also each attempt's wall-clock
+# deadline (agent-forge-harness-2bb, service/provider_deadline.py), which keeps
+# that sum true whatever the provider sends.
+LLM_REQUEST_TIMEOUT_S: float = _seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
+# Connect bound for the same clients; 5 s is the OpenAI SDK's own default.
+LLM_CONNECT_TIMEOUT_S: float = _seconds("RAG_LLM_CONNECT_TIMEOUT_S", 5.0)
+
+# Output cap (agent-forge-harness-nz78) that every factory-built client sends as
+# max_tokens: the answer, the suggestions and the structuring calls alike.
+# Without one the model's own maximum applied, and a long answer outlasted its
+# attempt's deadline, was billed, retried and failed. Document generation keeps
+# its own per-call 3,000 (C-1). A structuring payload cut short at the cap is not
+# valid JSON, which the graph already degrades to no widget.
+LLM_MAX_OUTPUT_TOKENS: int = _output_tokens("RAG_LLM_MAX_OUTPUT_TOKENS", 2_000)
 
 # --- Chat history (service) -------------------------------------------------
 
@@ -146,6 +209,40 @@ ATTACHMENT_MAX_CHARS: int = _int("RAG_ATTACHMENT_MAX_CHARS", 6000)
 # Supported attachment extensions. Policy, not a tuning knob (config has no _set
 # helper) — image OCR is out of scope (no OCR lib in the runtime).
 ATTACHMENT_TYPES: frozenset[str] = frozenset({"txt", "md", "pdf"})
+
+# --- Request bodies and API docs (service; agent-forge-harness-ust7) -------
+
+#: The request-body ceiling's default and bounds. 1 MiB holds the largest
+#: ordinary body, a /chat prompt at CHAT_TEXT_MAX_CHARS (100,000 code points,
+#: at most about 600 KB of JSON), with room to spare. Below 64 KiB a legitimate
+#: body would be refused; above 32 MiB, Cloud Run's own request limit, the
+#: setting would bound nothing. `ui/nginx.conf` declares the same default.
+DEFAULT_REQUEST_BODY_MAX_BYTES = 1024 * 1024
+REQUEST_BODY_MAX_BYTES_FLOOR = 64 * 1024
+REQUEST_BODY_MAX_BYTES_CEILING = 32 * 1024 * 1024
+
+
+def _body_bytes(name: str, default: int) -> int:
+    """A request-body ceiling, rejected at import unless inside the bounds: 0
+    would refuse every body, and a huge value would remove the bound it sets."""
+    value = _int(name, default)
+    if not REQUEST_BODY_MAX_BYTES_FLOOR <= value <= REQUEST_BODY_MAX_BYTES_CEILING:
+        raise ValueError(
+            f"{name} must be from {REQUEST_BODY_MAX_BYTES_FLOOR} to {REQUEST_BODY_MAX_BYTES_CEILING} bytes,"
+            f" got {value!r}"
+        )
+    return value
+
+
+# Every request body except an upload's is refused with 413 above this many
+# bytes, before any route reads it (service/body_limit.py, release review S1).
+REQUEST_BODY_MAX_BYTES: int = _body_bytes("RAG_REQUEST_BODY_MAX_BYTES", DEFAULT_REQUEST_BODY_MAX_BYTES)
+
+# /docs, /redoc and /openapi.json (release review S2): they list every route and
+# its schema, and /docs loads a script from a CDN on the app's own origin. Off
+# unless this is set, and never on Cloud Run, which sets K_SERVICE on every
+# instance: a setting for a local run only.
+API_DOCS_ENABLED: bool = _bool("RAG_API_DOCS_ENABLED", False) and not os.environ.get("K_SERVICE")
 
 # Gated cross-encoder rerank in the live service (bo4 model, prose categories
 # only via ingestion.rerank.should_rerank). OFF by default: it needs the
@@ -233,6 +330,19 @@ CHAT_RATE_LIMIT_PER_USER: int = _int("CHAT_RATE_LIMIT_PER_USER", 20)
 # survives the scale-to-zero that would reset an in-process daily count
 # exactly when testers come back after a break. Resets at UTC midnight.
 CHAT_DAILY_CAP: int = _int("CHAT_DAILY_CAP", 500)
+
+# --- GM tools (agent-forge-harness-1kg.4.1) -----------------------------------
+
+# The GM tools this deployment runs, as comma-separated registry ids ("npc,loot").
+# Empty, the default, runs none: every tool answers 409 tool_disabled. Setting it
+# in production needs E-8's owner-chosen limits, the tool's 1kg.4.6 threshold
+# and the SEC-39 terms record first. An id the registry does not know fails
+# startup (service/tool_invocations.py parses both variables).
+WORKBENCH_ENABLED_TOOLS: str = _str("WORKBENCH_ENABLED_TOOLS", "")
+# The registry capabilities switched on ("image_generation"). Empty by default;
+# portrait and map are paid under D-3, so image_generation stays unset in
+# production until yje.4.1's entitlement gate covers them.
+WORKBENCH_CAPABILITIES: str = _str("WORKBENCH_CAPABILITIES", "")
 # How many X-Forwarded-For entries our OWN infrastructure appends. X-Forwarded-For
 # is caller-writable — Google preserves what the client sent and appends to it —
 # so the source key is taken from the right-hand (trusted) end of the chain, this

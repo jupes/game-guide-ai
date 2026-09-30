@@ -32,13 +32,14 @@
     {
       "name": "a search of only a byte order mark is no search: trimmed away on both sides",
       "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "\ufeff", "sort": "recent", "archived": false }
-    },
-    {
-      "name": "NEL is not trimmed on either side, so this search is two characters long",
-      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "\u0085t", "sort": "recent", "archived": false }
     }
   ],
   "invalid": [
+    {
+      "name": "NEL is not trimmed on either side, so this search keeps a C1 control",
+      "why": "Bead 5mj, lead ruling of 2026-09-21: stored text refuses the C0 and C1 controls, NEL (U+0085) among them, and a search is checked as trimmed. JavaScript's trim keeps NEL, so the server must too: a server that trimmed it with str.strip would accept this search, and must not",
+      "value": { "schema_version": 1, "campaign_id": "cmp_4b1d9e7a", "category": "npcs", "search": "\u0085t", "sort": "recent", "archived": false }
+    },
     {
       "name": "a one-character search",
       "why": "LIB-20: at least two characters, after trimming",

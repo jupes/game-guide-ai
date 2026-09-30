@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent, isInaccessible } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as React from 'react'
 import { AppNavContext } from './AppNav'
@@ -11,11 +11,44 @@ import { MemoryConversationStore } from './conversationStore'
 import { ThemeProvider } from '../ds/theme'
 import { ChatPane } from './ChatPane'
 import { CHAT_TEXT_MAX_CHARS } from '../gm/contracts'
-import type { Attachment, AttachmentsResult, ChatResult, MessagesResult, UploadAttachmentResult } from '../api'
+import type {
+  Attachment,
+  AttachmentsResult,
+  ChatResult,
+  MessagesResult,
+  StoredMessage,
+  TimelinePageResult,
+  UploadAttachmentResult,
+} from '../api'
 import type { LoadHistoryFn, PostFn } from '../useChat'
+import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import type { GetAttachmentsFn, UploadAttachmentFn } from './ChatPane'
+import { ModelPicker, type GetModelsFn } from './ModelPicker'
+import { ModelCatalogProvider } from './ModelCatalogContext'
 
 // ── CP-F5.3 — ChatPane behaviors (#21) ────────────────────────────────────────
+
+// agent-forge-harness-frc (pr126 M1): explicit ARIA roles that mark a node as
+// a live region. A plain `[role="status"]`-style selector only catches a
+// role written on the element — it misses a role an element carries
+// IMPLICITLY, such as <output> (implicit role="status"). screen.queryAllByRole
+// resolves implicit roles the same way Testing Library's underlying
+// accessibility-tree computation (and real assistive tech) does, so pairing
+// it with the explicit `[aria-live]` selector below counts every shape.
+const LIVE_REGION_ROLES = ['status', 'alert', 'log', 'marquee', 'timer'] as const
+
+// Census of every live region in `container`, regardless of whether the role
+// is written explicitly (`role="…"`) or carried implicitly by the element
+// (e.g. <output>), and regardless of whether it announces via a role or via a
+// bare `aria-live` attribute. Deduped, because an element can match both a
+// role query and the aria-live selector (e.g. role="status" aria-live="polite").
+function queryAllLiveRegions(container: HTMLElement): Element[] {
+  const byRole = LIVE_REGION_ROLES.flatMap((role) => screen.queryAllByRole(role))
+  const byAriaLive = Array.from(
+    container.querySelectorAll('[aria-live]:not([aria-live="off"])'),
+  )
+  return Array.from(new Set<Element>([...byRole, ...byAriaLive]))
+}
 
 function makeNavState(overrides: Partial<AppNavState> = {}): AppNavState {
   return {
@@ -55,6 +88,7 @@ function Wrapper({
   navState,
   post,
   loadHistory,
+  loadTimeline,
   uploadAttachment,
   getAttachments,
   store = new MemoryConversationStore(),
@@ -62,6 +96,7 @@ function Wrapper({
   navState?: Partial<AppNavState>
   post?: PostFn
   loadHistory?: LoadHistoryFn
+  loadTimeline?: LoadTimelinePageFn
   uploadAttachment?: UploadAttachmentFn
   getAttachments?: GetAttachmentsFn
   store?: MemoryConversationStore
@@ -74,6 +109,7 @@ function Wrapper({
             <ChatPane
               post={post}
               loadHistory={loadHistory}
+              loadTimeline={loadTimeline}
               uploadAttachment={uploadAttachment}
               getAttachments={getAttachments}
             />
@@ -304,6 +340,127 @@ describe('ChatPane — composer (pp6q.1.4)', () => {
     // A send would also clear the draft: the user's over-long text must survive.
     expect(ta.value.length).toBe(CHAT_TEXT_MAX_CHARS + 1)
   })
+
+  it('agent-forge-harness-764 × 4oz × agent-forge-harness-frc: the over-length counter describes the field and adds no second live region, counted by every live-region shape including implicit roles', () => {
+    const { container } = render(<Wrapper />)
+    // The pane's one announcer, captured at rest (the 4oz tests' own shape).
+    const [announcer] = screen.getAllByRole('status')
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+    // 764: the refusal is still said, and said ON the field it is about.
+    expect(ta).toHaveAttribute('aria-invalid', 'true')
+    expect(ta).toHaveAccessibleDescription(
+      `${CHAT_TEXT_MAX_CHARS + 1} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`,
+    )
+    // 4oz: not by a second live region beside the announcer — counted in every
+    // live-region shape (explicit role, aria-live, OR an implicit role such
+    // as <output>'s implicit role="status" — see queryAllLiveRegions above).
+    const live = queryAllLiveRegions(container)
+    expect(live).toEqual([announcer])
+    // agent-forge-harness-8tt: crossing the bound now IS said, but on this
+    // SAME node — never a second one (ADR gm-workbench-interactions A-30).
+    // (Superseded pre-8tt behavior: the announcer stayed empty here.)
+    expect(announcer.textContent).toBe('Message is over the character limit.')
+  })
+
+  // agent-forge-harness-8tt: the owner's decision (ADR gm-workbench-interactions
+  // A-30) — crossing CHAT_TEXT_MAX_CHARS is announced, once each way, through
+  // the SAME single live region as every other event this pane announces.
+  // Never a second live region, and the counter above stays the textarea's
+  // accessible description, not itself announced.
+  describe('ChatPane — over-limit crossing is announced (agent-forge-harness-8tt)', () => {
+    it('announces once when the draft first crosses over the limit, through the SAME node the pane already uses', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      expect(announcer.textContent).toBe('')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      // Still exactly one live region in the pane — no second one was added.
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
+
+    it('announces once when the draft drops back under the limit, and does not just clear silently', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS) } })
+
+      expect(announcer.textContent).toBe('Message is back under the character limit.')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
+
+    it('does not re-announce while the draft stays over the limit — only the visible counter keeps changing', () => {
+      const { container } = render(<Wrapper />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+
+      // Grows well past the bound — still over, so the live region must not
+      // change again (a real screen reader would otherwise re-announce it on
+      // every keystroke of a long paste or continued typing).
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 50) } })
+
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+      // The visible counter DID keep up (it is not gated on the crossing).
+      expect(
+        screen.getByText(`${CHAT_TEXT_MAX_CHARS + 50} of ${CHAT_TEXT_MAX_CHARS} characters`, { exact: false }),
+      ).toBeInTheDocument()
+    })
+
+    it('crossing over and back under does not disturb the pending/settled announcement contract', async () => {
+      const post: PostFn = async () => GROUNDED
+      const { container } = render(<Wrapper post={post} />)
+      const [announcer] = screen.getAllByRole('status')
+      const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+
+      fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+      expect(announcer.textContent).toBe('Message is over the character limit.')
+      fireEvent.change(ta, { target: { value: 'a question' } })
+      expect(announcer.textContent).toBe('Message is back under the character limit.')
+
+      await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
+      await waitFor(() => expect(announcer.textContent).not.toBe('Message is back under the character limit.'))
+      await waitFor(() =>
+        expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+      )
+      expect(announcer.textContent).toBe('Answer received')
+      expect(queryAllLiveRegions(container)).toEqual([announcer])
+    })
+  })
+})
+
+describe('ChatPane — one "Attach file" control (agent-forge-harness-vnx)', () => {
+  // Two controls in the composer used to share the accessible name "Attach
+  // file": the hidden <input type="file"> and the visible IconButton that
+  // clicks it. A screen-reader user tabbing the composer met two named
+  // controls, one of which does nothing on its own.
+
+  it('the hidden file input is out of the accessibility tree and out of the tab order (V1)', () => {
+    render(<Wrapper />)
+    const input = screen.getByLabelText('Attach file', { selector: 'input' })
+    expect(input).toHaveAttribute('aria-hidden', 'true')
+    expect(input.tabIndex).toBe(-1)
+    // isInaccessible is imported from @testing-library/react (never
+    // @testing-library/dom, which is not a declared dependency); it checks
+    // `aria-hidden`/`hidden`/`display: none`, not off-screen clipping, so it
+    // is false before this fix and true after.
+    expect(isInaccessible(input)).toBe(true)
+  })
+
+  it('exactly one element in the accessibility tree is named "Attach file"', () => {
+    render(<Wrapper />)
+    // Testing Library gives a file input no role, so this counts only the
+    // real affordance — the visible IconButton.
+    expect(screen.getAllByRole('button', { name: 'Attach file' })).toHaveLength(1)
+  })
 })
 
 describe('ChatPane — typing indicator (pp6q.1.5)', () => {
@@ -320,16 +477,160 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
     )
   })
 
-  it('still announces the pending state to assistive tech', async () => {
+  it('still announces the pending state to assistive tech (agent-forge-harness-4oz: on the single already-mounted live region, not a freshly-mounted node)', async () => {
     // The dots are decoration. Replacing the announcement with a purely
     // visual animation would be an accessibility regression dressed as
     // polish — a screen-reader user would get no signal that anything is
     // happening at all.
+    //
+    // Capture the pane's one live region BEFORE the send below — while it is
+    // still empty, at first render — and assert the mutation on that SAME
+    // reference. Asserting instead on whatever `role="status"` node happens
+    // to exist right after sending would be asserting on a node the test's
+    // own action just created (with its text already inside it), which is
+    // exactly the shape that fails to announce for real assistive tech and
+    // the reason this bead exists.
     render(<Wrapper post={pendingForever()} />)
+    const [announcer] = screen.getAllByRole('status')
+    expect(announcer.textContent).toBe('')
+
     await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
     await userEvent.keyboard('{Enter}')
-    const status = await screen.findByRole('status')
-    expect(status.textContent?.trim()).not.toBe('')
+
+    await waitFor(() => expect(announcer.textContent?.trim()).not.toBe(''))
+  })
+
+  // agent-forge-harness-swg (pr116 M-2): counting only `role="status"`
+  // let a live region survive uncounted in any OTHER form — an `aria-live`
+  // span, or `role="alert"`/`role="log"` — so the census below matches every
+  // way a node can be a live region, not just the one shape this pane
+  // currently happens to use. Sampled at rest, pending, settled AND while
+  // history recalls (pr116 M-1's carry item — the old test never sampled
+  // recall, which is exactly where the second live region was hiding).
+  function liveRegions(container: HTMLElement): NodeListOf<Element> {
+    return container.querySelectorAll(
+      '[role="status"],[role="alert"],[role="log"],[aria-live]',
+    )
+  }
+
+  it('agent-forge-harness-4oz / agent-forge-harness-swg: exactly one live region exists in the pane at every state — recall, rest, pending and settled', async () => {
+    let resolveHistory!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = () =>
+      new Promise<MessagesResult>((res) => {
+        resolveHistory = res
+      })
+    let resolvePost!: (r: ChatResult) => void
+    const post: PostFn = () => new Promise<ChatResult>((res) => {
+      resolvePost = res
+    })
+
+    const { container } = render(
+      <Wrapper navState={{ conversationId: 'conv-1' }} post={post} loadHistory={loadHistory} />,
+    )
+
+    // Recall.
+    expect(liveRegions(container)).toHaveLength(1)
+
+    act(() => resolveHistory({ kind: 'ok', messages: [] }))
+    await waitFor(() => expect(screen.getByText('Ask the Sage…')).toBeInTheDocument())
+
+    // Rest.
+    expect(liveRegions(container)).toHaveLength(1)
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+
+    // Pending.
+    await waitFor(() => expect(liveRegions(container)).toHaveLength(1))
+
+    act(() => resolvePost(GROUNDED))
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
+
+    // Settled.
+    expect(liveRegions(container)).toHaveLength(1)
+  })
+
+  // agent-forge-harness-swg (pr129 M-3): the census above never sampled an
+  // ERROR state or the GM side — and `role="alert"`, the one live-region form
+  // nothing else here checks, is exactly what an error state would reach for.
+  // Each state below is sampled only once its own text is on screen.
+
+  it('agent-forge-harness-swg: exactly one live region while a history-recall error is shown', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({ kind: 'error', message: 'History is unavailable.' })
+    const { container } = render(
+      <Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={loadHistory} />,
+    )
+    await screen.findByText('History is unavailable.')
+    expect(liveRegions(container)).toHaveLength(1)
+  })
+
+  it('agent-forge-harness-swg: exactly one live region while a failed turn is shown', async () => {
+    const post: PostFn = async () => ({ kind: 'error', message: 'The service is busy.' })
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await screen.findByText('The service is busy.')
+    expect(liveRegions(container)).toHaveLength(1)
+  })
+
+  it('agent-forge-harness-swg: exactly one live region on the GM side — timeline recall and timeline error', async () => {
+    let resolveTimeline!: (r: TimelinePageResult) => void
+    const loadTimeline: LoadTimelinePageFn = () =>
+      new Promise<TimelinePageResult>((res) => {
+        resolveTimeline = res
+      })
+    const { container } = render(
+      <Wrapper navState={{ mode: 'gm', conversationId: 'conv-g' }} loadTimeline={loadTimeline} />,
+    )
+
+    // Timeline recall.
+    await screen.findByText('Recalling the conversation…')
+    expect(liveRegions(container)).toHaveLength(1)
+
+    // Timeline error.
+    act(() => resolveTimeline({ kind: 'error', message: 'Timeline is unavailable.' }))
+    await screen.findByText('Timeline is unavailable.')
+    expect(liveRegions(container)).toHaveLength(1)
+  })
+
+  it('agent-forge-harness-swg: exactly one live region on the GM side — rest, pending, settled and a failed turn', async () => {
+    const resolvers: Array<(r: ChatResult) => void> = []
+    const post: PostFn = () => new Promise<ChatResult>((res) => { resolvers.push(res) })
+    const { container } = render(<Wrapper navState={{ mode: 'gm' }} post={post} />)
+
+    // Rest.
+    expect(liveRegions(container)).toHaveLength(1)
+
+    // Pending.
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'first')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(resolvers).toHaveLength(1))
+    expect(liveRegions(container)).toHaveLength(1)
+
+    // Settled.
+    act(() => resolvers[0](GROUNDED))
+    await screen.findByText('A basilisk petrifies with its gaze.')
+    expect(liveRegions(container)).toHaveLength(1)
+
+    // A failed turn.
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'second')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(resolvers).toHaveLength(2))
+    act(() => resolvers[1]({ kind: 'error', message: 'The GM service is busy.' }))
+    await screen.findByText('The GM service is busy.')
+    expect(liveRegions(container)).toHaveLength(1)
+  })
+
+  // agent-forge-harness-8tt: crossing CHAT_TEXT_MAX_CHARS joins the states this
+  // census samples — it is announced (see the composer describe block below),
+  // so it is exactly the kind of state where a second live region could hide.
+  it('agent-forge-harness-8tt: exactly one live region while the composer is over the character limit', () => {
+    const { container } = render(<Wrapper />)
+    const ta = screen.getByPlaceholderText('Ask…') as HTMLTextAreaElement
+    fireEvent.change(ta, { target: { value: 'a'.repeat(CHAT_TEXT_MAX_CHARS + 1) } })
+    expect(liveRegions(container)).toHaveLength(1)
   })
 
   it('hides the dots once the reply arrives', async () => {
@@ -342,6 +643,305 @@ describe('ChatPane — typing indicator (pp6q.1.5)', () => {
     )
     expect(container.querySelectorAll('.chat-pane__dot')).toHaveLength(0)
   })
+})
+
+function storedTurn(id: number, prompt: string, reply: string): StoredMessage[] {
+  return [
+    { id, role: 'user', content: prompt, mode: 'sage', created_at: '2026-09-18T19:02:00Z' },
+    { id: id + 1, role: 'assistant', content: reply, mode: 'sage', created_at: '2026-09-18T19:02:04Z' },
+  ]
+}
+
+function StatefulNavWrapper({
+  loadHistory,
+  post,
+  initialConversationId = 'conv-a',
+}: {
+  loadHistory: LoadHistoryFn
+  post?: PostFn
+  /** `null` opens a brand-new chat, whose first turn adopts the server-minted id (x5bz.3.2). */
+  initialConversationId?: string | null
+}): React.JSX.Element {
+  const [conversationId, setConversationId] = React.useState<string | null>(initialConversationId)
+  // A fast stub — without it, ChatPane's default falls through to a real
+  // fetch, which jsdom does not short-circuit and which slows (sometimes
+  // flakily) every test built on this wrapper.
+  const getAttachments: GetAttachmentsFn = async () => ({ kind: 'ok', attachments: [] })
+  return (
+    <ThemeProvider>
+      <AppNavContext.Provider value={{ ...makeNavState(), conversationId, setConversationId }}>
+        <CurrentUserContext.Provider value={makeUserState()}>
+          <ConversationStoreProvider store={new MemoryConversationStore()}>
+            <ChatPane post={post} loadHistory={loadHistory} getAttachments={getAttachments} />
+          </ConversationStoreProvider>
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>
+      <button type="button" onClick={() => setConversationId('conv-b')}>
+        switch to B (test only)
+      </button>
+      <button type="button" onClick={() => setConversationId('conv-a')}>
+        switch to A (test only)
+      </button>
+      <span data-testid="nav-conversation-id">{String(conversationId)}</span>
+    </ThemeProvider>
+  )
+}
+
+describe('ChatPane — arrival announcer (agent-forge-harness-ekf)', () => {
+  function arrivalOf(container: HTMLElement): string | undefined {
+    return container.querySelector('.chat-pane__arrival')?.textContent
+  }
+
+  it('E1a: exists as a status node outside the transcript, empty at first render with an empty thread', () => {
+    const { container } = render(<Wrapper />)
+    const announcer = container.querySelector('.chat-pane__arrival')
+    expect(announcer).not.toBeNull()
+    expect(announcer).toHaveAttribute('role', 'status')
+    const transcript = screen.getByRole('region', { name: 'Conversation' })
+    expect(transcript.contains(announcer)).toBe(false)
+    expect(announcer?.textContent).toBe('')
+  })
+
+  it('E1c: stays empty after a history recall, with the recalled turn on screen', async () => {
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: storedTurn(1, 'Recalled question', 'Recalled answer'),
+    })
+    const { container } = render(
+      <Wrapper navState={{ conversationId: 'conv-1' }} loadHistory={loadHistory} />,
+    )
+    await screen.findByText('Recalled question')
+    expect(arrivalOf(container)).toBe('')
+  })
+
+  it('E2/E3/E5: announces "Answer received" once per turn, a fixed phrase, and re-announces pending on the next send (agent-forge-harness-4oz: the pending phrase replaces the old clear-to-empty)', async () => {
+    const resolvers: Array<(r: ChatResult) => void> = []
+    const post: PostFn = () => new Promise((res) => { resolvers.push(res) })
+    const { container } = render(<Wrapper post={post} />)
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'first question')
+    await userEvent.keyboard('{Enter}')
+    // agent-forge-harness-4oz folded the pending announcement into this same
+    // node: sending announces it immediately, rather than clearing to ''.
+    expect(arrivalOf(container)).toBe('Consulting the tomes…')
+
+    act(() => resolvers[0](GROUNDED))
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer received'))
+    // E3 — a fixed phrase, never the answer's own text (which appears once,
+    // in the transcript, not twice).
+    expect(screen.getAllByText('A basilisk petrifies with its gaze.')).toHaveLength(1)
+
+    // E5 — a second arrival is a second announcement: the pending phrase is
+    // re-announced on the SAME node for the second turn, not left standing
+    // from the first turn's "Answer received".
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'second question')
+    await userEvent.keyboard('{Enter}')
+    expect(arrivalOf(container)).toBe('Consulting the tomes…')
+
+    act(() => resolvers[1](GROUNDED))
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer received'))
+  })
+
+  it('E4: announces "Answer failed" once, without repeating the error text, on a failed result', async () => {
+    const post: PostFn = async () => ({
+      kind: 'error',
+      message: 'The service is busy right now — try again in a moment.',
+    })
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer failed'))
+    expect(
+      screen.getAllByText('The service is busy right now — try again in a moment.'),
+    ).toHaveLength(1)
+  })
+
+  it('E4: announces "Answer failed" when post() rejects', async () => {
+    const post: PostFn = () => Promise.reject(new Error('network snapped'))
+    const { container } = render(<Wrapper post={post} />)
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'q')
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer failed'))
+  })
+
+  it('E6: a conversation switch and the recall that follows announce nothing', async () => {
+    const loadHistory: LoadHistoryFn = async (conversationId) =>
+      conversationId === 'conv-a'
+        ? { kind: 'ok', messages: storedTurn(1, 'Question A', 'Answer A') }
+        : { kind: 'ok', messages: storedTurn(1, 'Question B', 'Answer B') }
+
+    const { container } = render(<StatefulNavWrapper loadHistory={loadHistory} />)
+    await screen.findByText('Question A')
+    expect(arrivalOf(container)).toBe('')
+
+    await userEvent.click(screen.getByRole('button', { name: /switch to b/i }))
+    // Anchor on B's recalled turn being on screen before asserting the
+    // absence (§8.5) — an absence asserted before the thing that could
+    // break it has happened cannot fail.
+    await screen.findByText('Question B')
+    expect(arrivalOf(container)).toBe('')
+  })
+
+  it('agent-forge-harness-swg (pr114 M-1): a stale turn settling after the user left its conversation does not announce', async () => {
+    // ChatPane is never remounted on a conversation switch (see the comment
+    // on the transcript region), so its `arrival` node is SHARED across
+    // conversations. `onTurnSettled` used to fire unconditionally, so a turn
+    // sent from A that settled after the user switched to B would announce
+    // "Answer received"/"Answer failed" into the pane B is showing, for a
+    // turn B never displayed.
+    //
+    // A generous timeout: this scenario drives two conversations' worth of
+    // effects (recall x2, attachments x2, a real send+settle) through
+    // userEvent, which is consistently slower than this file's other tests
+    // in CI-like sandboxes — confirmed finite (not hung) at ~6s.
+    let resolvePost!: (r: ChatResult) => void
+    const post: PostFn = () => new Promise<ChatResult>((res) => { resolvePost = res })
+    const loadHistory: LoadHistoryFn = async (conversationId) =>
+      conversationId === 'conv-a'
+        ? { kind: 'ok', messages: [] }
+        : { kind: 'ok', messages: storedTurn(1, 'Question B', 'Answer B') }
+
+    const { container } = render(<StatefulNavWrapper post={post} loadHistory={loadHistory} />)
+    await waitFor(() => expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'About goblins')
+    await userEvent.keyboard('{Enter}')
+    expect(arrivalOf(container)).toBe('Consulting the tomes…')
+
+    // Switch to B before A's turn settles. A switch alone never changes
+    // `arrival` (agent-forge-harness-ekf/4oz) — it is still announcing A's
+    // now-abandoned pending turn.
+    await userEvent.click(screen.getByRole('button', { name: /switch to b/i }))
+    await screen.findByText('Question B')
+    const beforeStaleSettle = arrivalOf(container)
+    expect(beforeStaleSettle).toBe('Consulting the tomes…')
+
+    // NOW the stale A turn settles. Without the fix this becomes "Answer
+    // received" — B's pane announcing a turn B never showed.
+    await act(async () => {
+      resolvePost(GROUNDED)
+    })
+    expect(arrivalOf(container)).not.toBe('Answer received')
+    expect(screen.queryByText('A basilisk petrifies with its gaze.')).toBeNull()
+    // pr129 M-2: nor may it leave A's pending phrase standing — B's next
+    // send would set the same text and go unannounced. It is quietly cleared.
+    expect(arrivalOf(container)).toBe('')
+  }, 15000)
+
+  it('agent-forge-harness-swg (pr129 M-1): A -> B -> A before the turn settles announces nothing — the answer is never drawn', async () => {
+    // Comparing conversation ids is not enough: the user is back on A, so
+    // "sent for A" matches "on screen now" — but A's recall has replaced the
+    // exchange list since, so the settle has nothing to write into and the
+    // answer never appears. Only a settle that is actually APPLIED to the
+    // exchanges on screen may announce.
+    let resolvePost!: (r: ChatResult) => void
+    const post: PostFn = () => new Promise<ChatResult>((res) => { resolvePost = res })
+    const loadHistory: LoadHistoryFn = async (conversationId) =>
+      conversationId === 'conv-a'
+        ? { kind: 'ok', messages: storedTurn(1, 'Question A', 'Answer A') }
+        : { kind: 'ok', messages: storedTurn(3, 'Question B', 'Answer B') }
+
+    const { container } = render(<StatefulNavWrapper post={post} loadHistory={loadHistory} />)
+    await screen.findByText('Question A')
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'About goblins')
+    await userEvent.keyboard('{Enter}')
+    expect(arrivalOf(container)).toBe('Consulting the tomes…')
+
+    await userEvent.click(screen.getByRole('button', { name: /switch to b/i }))
+    await screen.findByText('Question B')
+    await userEvent.click(screen.getByRole('button', { name: /switch to a/i }))
+    await screen.findByText('Question A')
+
+    await act(async () => {
+      resolvePost(GROUNDED)
+    })
+
+    // Anchor: the settle has happened and drew nothing on A's screen.
+    expect(screen.queryByText('A basilisk petrifies with its gaze.')).toBeNull()
+    expect(arrivalOf(container)).not.toBe('Answer received')
+    // And the pending phrase it was left holding is quietly cleared (M-2).
+    expect(arrivalOf(container)).toBe('')
+  }, 15000)
+
+  it('agent-forge-harness-swg (pr129 M-2): after a suppressed stale settle, the next send in B still changes the announcer', async () => {
+    // A suppressed settle used to leave A's "Consulting the tomes…" standing
+    // in the shared announcer. B's next send then set the SAME text, so the
+    // live region's DOM never changed and B's pending state was never
+    // announced (pp6q.1.5 / agent-forge-harness-4oz).
+    const resolvers: Array<(r: ChatResult) => void> = []
+    const post: PostFn = () => new Promise<ChatResult>((res) => { resolvers.push(res) })
+    const loadHistory: LoadHistoryFn = async (conversationId) =>
+      conversationId === 'conv-a'
+        ? { kind: 'ok', messages: [] }
+        : { kind: 'ok', messages: storedTurn(1, 'Question B', 'Answer B') }
+
+    const { container } = render(<StatefulNavWrapper post={post} loadHistory={loadHistory} />)
+    await waitFor(() => expect(screen.getByPlaceholderText('Ask…')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'About goblins')
+    await userEvent.keyboard('{Enter}')
+    await userEvent.click(screen.getByRole('button', { name: /switch to b/i }))
+    await screen.findByText('Question B')
+    await act(async () => {
+      resolvers[0](GROUNDED)
+    })
+
+    // Watch the live region itself: a screen reader announces a CHANGE to it.
+    const announcer = container.querySelector('.chat-pane__arrival') as HTMLElement
+    const mutations: MutationRecord[] = []
+    const observer = new MutationObserver((records) => mutations.push(...records))
+    observer.observe(announcer, { childList: true, characterData: true, subtree: true })
+    try {
+      await userEvent.type(screen.getByPlaceholderText('Ask…'), 'About B')
+      await userEvent.keyboard('{Enter}')
+      await waitFor(() => expect(resolvers).toHaveLength(2))
+      // MutationObserver callbacks are microtasks — let them drain.
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(mutations.length).toBeGreaterThan(0)
+      expect(arrivalOf(container)).toBe('Consulting the tomes…')
+    } finally {
+      observer.disconnect()
+    }
+
+    // B's own turn, drawn on B's screen, still announces its arrival.
+    await act(async () => {
+      resolvers[1](GROUNDED)
+    })
+    await screen.findByText('A basilisk petrifies with its gaze.')
+    expect(arrivalOf(container)).toBe('Answer received')
+  }, 15000)
+
+  it('agent-forge-harness-swg (pr129 M-4): the first turn of a NEW chat announces "Answer received" after the pane adopts the minted id', async () => {
+    // A new chat sends with a null id; the server mints one and the pane
+    // adopts it (x5bz.3.2) in the same tick the turn settles. That is the
+    // SAME conversation, not a switch away — its first answer must announce.
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        ...(GROUNDED.kind === 'ok' ? GROUNDED.response : ({} as never)),
+        conversation_id: 'minted-1',
+      },
+    })
+    const loadHistory: LoadHistoryFn = async () => ({
+      kind: 'ok',
+      messages: storedTurn(1, 'About dragons', 'A basilisk petrifies with its gaze.'),
+    })
+
+    const { container } = render(
+      <StatefulNavWrapper post={post} loadHistory={loadHistory} initialConversationId={null} />,
+    )
+    expect(screen.getByTestId('nav-conversation-id')).toHaveTextContent('null')
+
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), 'About dragons')
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(screen.getByTestId('nav-conversation-id')).toHaveTextContent('minted-1'))
+    await screen.findByText('A basilisk petrifies with its gaze.')
+    await waitFor(() => expect(arrivalOf(container)).toBe('Answer received'))
+  }, 15000)
 })
 
 describe('ChatPane (#21)', () => {
@@ -370,9 +970,13 @@ describe('ChatPane (#21)', () => {
 
     expect(screen.getByText('What is a Basilisk?')).toBeInTheDocument()
 
-    // Resolve the post so the test can clean up
+    // Resolve the post so the test can clean up, and wait for the settle to
+    // land (the announcer's own text is asserted by the "arrival announcer"
+    // describe block below — not this test's concern).
     act(() => resolvePost(GROUNDED))
-    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.getByText('A basilisk petrifies with its gaze.')).toBeInTheDocument(),
+    )
   })
 
   it('records the first submitted prompt as the active conversation title fallback', async () => {
@@ -410,7 +1014,7 @@ describe('ChatPane (#21)', () => {
     )
   })
 
-  it('shows a pending status while waiting for a response', async () => {
+  it('shows a pending status while waiting for a response (agent-forge-harness-4oz: the single pane-wide live region)', async () => {
     let resolvePost!: (r: ChatResult) => void
     const post: PostFn = () =>
       new Promise<ChatResult>((res) => {
@@ -423,10 +1027,14 @@ describe('ChatPane (#21)', () => {
     await userEvent.type(textarea, 'Q')
     await userEvent.keyboard('{Enter}')
 
-    expect(screen.getByRole('status')).toHaveTextContent(/consulting the tomes/i)
+    // Exactly one live region for the whole pane — captured here so the
+    // settle assertion below is on the SAME node, not a new one.
+    const [announcer] = screen.getAllByRole('status')
+    expect(announcer).toHaveTextContent(/consulting the tomes/i)
 
     act(() => resolvePost(GROUNDED))
-    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+    await waitFor(() => expect(announcer).toHaveTextContent('Answer received'))
+    expect(screen.getAllByRole('status')).toHaveLength(1)
   })
 
   it('renders sources in a Card after the answer', async () => {
@@ -795,7 +1403,11 @@ describe('ChatPane (#21)', () => {
         stat_block: STAT_BLOCK,
       },
     })
-    render(<Wrapper navState={{ mode: 'gm' }} post={post} />)
+    // Sage, the other channel that answers with a stat block: its card is the
+    // full-density one this test pins. In the GM channel the card sits in the
+    // assistant lane at compact density (1kg.3.4) — ChatPaneGm.test.tsx and
+    // gm/GmThread.test.tsx pin that.
+    render(<Wrapper navState={{ mode: 'sage' }} post={post} />)
 
     const textarea = screen.getByPlaceholderText('Ask…')
     await userEvent.type(textarea, 'Describe an encounter')
@@ -843,5 +1455,269 @@ describe('ChatPane (#21)', () => {
 
     await waitFor(() => expect(screen.getByText('Fireball')).toBeInTheDocument())
     expect(screen.getByText('Practical')).toBeInTheDocument()
+  })
+})
+
+describe('ChatPane — model preference wiring (agent-forge-harness-bta)', () => {
+  // b8o.2's AC ("ChatRequest sends an allowlisted model_preference") is unmet
+  // in the shipped UI unless the preference the picker shows actually reaches
+  // `post`. Before bta, ChatPane called useChat with no `modelPreference` at
+  // all, so useChat's own default ('auto') went out on every turn — which is
+  // also why every UI conversation first sent before bta is bound 'auto'
+  // server-side, whatever it stored. These tests mount the REAL picker and
+  // pane on one store, the way WorkspaceShell does, so "what the picker
+  // shows is what the pane sends" is proven about the two together.
+  const emptyHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+  const noAttachments: GetAttachmentsFn = async () => ({ kind: 'ok', attachments: [] })
+  const CATALOG_AFTER_D9 = {
+    default: 'auto',
+    models: [
+      { id: 'auto', display_name: 'Automatic' },
+      { id: 'traveller', display_name: 'Traveller', tier: 'traveller', supports_attachments: true },
+    ],
+  }
+  const catalogDown: GetModelsFn = async () => { throw new Error('network error') }
+
+  function Workspace({ store, conversationId, post, getModels }: {
+    store: MemoryConversationStore
+    conversationId: string
+    post: PostFn
+    getModels: GetModelsFn
+  }): React.JSX.Element {
+    return (
+      <ThemeProvider>
+        <AppNavContext.Provider value={makeNavState({ conversationId })}>
+          <CurrentUserContext.Provider value={makeUserState()}>
+            <ConversationStoreProvider store={store}>
+              <ModelCatalogProvider>
+                <ModelPicker getModels={getModels} confirmChange={() => true} />
+                <ChatPane post={post} loadHistory={emptyHistory} getAttachments={noAttachments} />
+              </ModelCatalogProvider>
+            </ConversationStoreProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>
+      </ThemeProvider>
+    )
+  }
+
+  const picker = () => screen.getByRole('combobox', { name: 'Model' }) as HTMLSelectElement
+  const catalogServed = () => waitFor(() => expect(screen.getByRole('option', { name: 'Traveller' })).toBeInTheDocument())
+  async function ask(prompt: string): Promise<void> {
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), prompt)
+    await userEvent.keyboard('{Enter}')
+  }
+  const sent = (post: ReturnType<typeof vi.fn<PostFn>>) => post.mock.calls.map((call) => call[3])
+
+  it("sends the active conversation's stored modelPreference, not useChat's default", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await ask('What is a basilisk?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'traveller')
+  })
+
+  it('sends a model picked through the picker AFTER mount, then keeps sending it once bound', async () => {
+    // M2 of the review: seeding the store before mount cannot tell a live read
+    // of the store from a stale one; a pick made after mount can.
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await userEvent.selectOptions(picker(), 'traveller')
+    await ask('What is a basilisk?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['traveller', 'traveller'])
+    expect(store.get(conv.id)?.boundPreference).toBe('traveller')
+    expect(picker().value).toBe('traveller')
+  })
+
+  it("falls back to 'auto' for a conversation with no stored preference", async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => CATALOG_AFTER_D9} />)
+    await catalogServed()
+
+    await ask('What is a basilisk?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(post).toHaveBeenCalledWith('What is a basilisk?', 'sage', conv.id, 'auto')
+  })
+
+  it.each([
+    ['served', true],
+    ['down (so the a6o reset never runs)', false],
+  ])("posts 'auto' for a conversation first sent before bta, whatever alias it stored, catalog %s (B1)", async (_catalog, up) => {
+    // Master's picker stored the model ALIAS and master's pane posted nothing,
+    // so the server bound this conversation ('auto', None). /chat refuses the
+    // alias on such a binding with a 422 — on every turn.
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', 'How does grappling work?', 'gpt-4o-mini')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    const getModels = vi.fn<GetModelsFn>(up ? async () => CATALOG_AFTER_D9 : catalogDown)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={getModels} />)
+    if (up) await catalogServed()
+    else await waitFor(() => expect(getModels).toHaveBeenCalled())
+    await act(async () => {})
+
+    await ask('And a shove?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect({ posted: sent(post), shown: picker().value }).toEqual({ posted: ['auto'], shown: 'auto' })
+  })
+
+  it.each(['gpt-4o-mini', 'traveller'])(
+    'with only the offline fallback catalog, posts what the picker shows — never the stored %s (B1)',
+    async (stored) => {
+      const store = new MemoryConversationStore()
+      const conv = store.create('sage', undefined, stored)
+      const post = vi.fn<PostFn>(async () => GROUNDED)
+      const getModels = vi.fn(catalogDown)
+      render(<Workspace store={store} conversationId={conv.id} post={post} getModels={getModels} />)
+      await waitFor(() => expect(getModels).toHaveBeenCalled())
+      await act(async () => {})
+
+      await ask('What is a basilisk?')
+
+      await waitFor(() => expect(post).toHaveBeenCalled())
+      expect({ posted: sent(post), shown: picker().value }).toEqual({ posted: ['auto'], shown: 'auto' })
+      expect(store.get(conv.id)?.boundPreference).toBe('auto')
+    },
+  )
+
+  it('keeps posting the preference a conversation was bound with, even when the catalog is down', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const post = vi.fn<PostFn>(async () => GROUNDED)
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={catalogDown} />)
+
+    await ask('And a cockatrice?')
+
+    await waitFor(() => expect(post).toHaveBeenCalled())
+    expect(sent(post)).toEqual(['traveller'])
+  })
+
+  // ── Healing off a retired manual pick (agent-forge-harness-j9w) ───────────
+  // A conversation bound to a manual pick the server has since retired keeps
+  // sending that same public id forever (bta's D6 design, proven above) —
+  // unless the server's heal (routing.fallback_from on the response) moves
+  // the store onto the replacement. These prove the two ends together: the
+  // picker shows the heal, and the NEXT turn stops sending the retired id.
+
+  function healedOnce(fallbackFrom: string, effective: string): PostFn {
+    let calls = 0
+    return async () => {
+      calls += 1
+      return {
+        kind: 'ok',
+        response: {
+          ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+          routing: {
+            requested: effective, effective, strategy: 'manual',
+            fallback_from: calls === 1 ? fallbackFrom : null,
+          },
+        },
+      } as ChatResult
+    }
+  }
+
+  it('a healed turn updates the picker and the store, without touching other conversations', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const other = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(other.id, 'Unrelated', 'traveller')
+    const post = vi.fn<PostFn>(healedOnce('traveller', 'adventurer'))
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'adventurer', display_name: 'Adventurer', tier: 'adventurer', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Adventurer' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+
+    await waitFor(() => expect(picker().value).toBe('adventurer'))
+    expect(store.get(conv.id)?.boundPreference).toBe('adventurer')
+    expect(store.get(other.id)?.boundPreference).toBe('traveller')
+  })
+
+  it('stops sending the retired id on the very next turn once healed', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'traveller')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const post = vi.fn<PostFn>(healedOnce('traveller', 'adventurer'))
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'adventurer', display_name: 'Adventurer', tier: 'adventurer', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Adventurer' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await ask('And a wyvern?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['traveller', 'adventurer'])
+  })
+
+  // pr156 H-1: a heal to 'auto' — every heal while no catalog entry names a
+  // successor — answers with requested 'auto' (the binding) and effective
+  // 'traveller' (the model that answered). The next turn must send 'auto';
+  // sending 'traveller' is the server's binding-mismatch 409, every turn.
+  it('after a heal to auto, sends auto (the binding) on the next turn, not the model that answered', async () => {
+    const store = new MemoryConversationStore()
+    const conv = store.create('sage', undefined, 'adventurer')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'adventurer')
+    let calls = 0
+    const post = vi.fn<PostFn>(async () => {
+      calls += 1
+      return {
+        kind: 'ok',
+        response: {
+          ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+          routing: {
+            requested: 'auto', effective: 'traveller', strategy: 'auto',
+            fallback_from: calls === 1 ? 'adventurer' : null,
+          },
+        },
+      } as ChatResult
+    })
+    const catalog = {
+      default: 'auto',
+      models: [
+        { id: 'auto', display_name: 'Automatic' },
+        { id: 'traveller', display_name: 'Traveller', tier: 'traveller', supports_attachments: true },
+      ],
+    }
+    render(<Workspace store={store} conversationId={conv.id} post={post} getModels={async () => catalog} />)
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Traveller' })).toBeInTheDocument())
+
+    await ask('And a cockatrice?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(store.get(conv.id)?.boundPreference).toBe('auto'))
+    await ask('And a wyvern?')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+
+    expect(sent(post)).toEqual(['adventurer', 'auto'])
+    expect(picker().value).toBe('auto')
   })
 })

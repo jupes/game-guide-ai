@@ -458,6 +458,44 @@ def test_the_statblock_cost_guard_still_skips_the_call_entirely(records, outcome
     assert statblock_outcomes[0]["outcome"] == "skipped_by_gate"
 
 
+class _CollectingLedger:
+    """A `LedgerSink` that keeps every batch it is handed, one per turn."""
+
+    def __init__(self) -> None:
+        self.batches: list[list[usage_capture.AttemptRow]] = []
+
+    def write(self, rows):
+        self.batches.append(list(rows))
+        return len(rows)
+
+
+@pytest.mark.parametrize(
+    ("mode", "replies", "outcomes"),
+    [
+        ("spell", [_SPELL_ANSWER, _SUGG_JSON, _SPELL_JSON], ["produced", "produced"]),
+        ("sage", [_NO_MARKERS_ANSWER], ["skipped_by_gate"]),
+    ],
+)
+def test_structuring_outcomes_flow_beside_the_ledger_and_never_into_it(
+    mode, replies, outcomes, records, outcome_records, monkeypatch,
+):
+    """kyr x yje.5.1.2 (#113): with a ledger installed, a turn still emits its
+    structuring_outcome records, and its one ledger batch is its
+    provider_attempt records one for one -- the per-day reconciliation in
+    docs/runbooks/usage-capture.md section 7 counts only those. An outcome
+    (a gate skip above all, which made no call) is never a ledger row."""
+    ledger = _CollectingLedger()
+    monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: ledger)
+
+    _turn(_service(_SeqLLM(replies)), "What does Fireball do?", mode)
+
+    assert [r["outcome"] for r in outcome_records] == outcomes
+    assert len(ledger.batches) == 1
+    [rows] = ledger.batches
+    assert [row.purpose for row in rows] == [r["purpose"] for r in records]
+    assert {row.operation_id for row in rows} == {r["operation_id"] for r in outcome_records}
+
+
 # ---------------------------------------------------------------------------
 # AC 10 — nothing is recorded outside a live turn, with a positive control
 # ---------------------------------------------------------------------------

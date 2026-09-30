@@ -1,7 +1,10 @@
+import * as React from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, fn, userEvent, within } from 'storybook/test'
+import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { VersionList } from './VersionList'
+import type { VersionListProps } from './VersionList'
 import { HISTORY_PAGE_SIZE } from './canvasStatus'
 import type { DocumentVersion } from './contracts'
 
@@ -73,6 +76,9 @@ export const Restore: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
     await expect(canvas.queryByRole('button', { name: 'Restore v3' })).not.toBeInTheDocument()
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Restore v1')
     await userEvent.click(canvas.getByRole('button', { name: 'Restore v1' }))
     await expect(canvas.queryByRole('dialog')).not.toBeInTheDocument()
     await expect(args.onRestore).toHaveBeenCalledWith(expect.objectContaining({ number: 1 }))
@@ -111,6 +117,9 @@ export const Failed: Story = {
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('alert')).toHaveTextContent("Couldn't load history")
+    // 1dw: the small ds/Button call site, not rendered by ds/'s own `Sizes`
+    // story.
+    await expectTouchTarget(canvas, 'Retry')
     await userEvent.click(canvas.getByRole('button', { name: 'Retry' }))
     await expect(args.onRetry).toHaveBeenCalled()
   },
@@ -149,3 +158,128 @@ export const PagingInFlight: Story = {
     await expect(canvas.getByRole('status')).toHaveTextContent('Loading older versions…')
   },
 }
+
+/**
+ * A real browser drops focus off a disabled button once it has been disabled
+ * across a frame boundary (agent-forge-harness-alf, same class of bug as
+ * GmThread's Load earlier — 1kg.3.7, PR #136): Chromium sets
+ * `document.activeElement` to `<body>`; jsdom never does. Only a real-Chromium
+ * story can prove Load more gets focus back rather than losing it to `<body>`
+ * for the rest of the page. `VersionList` fetches nothing itself, so this
+ * wrapper stands in for the caller that owns paging, with a delay long enough
+ * for a frame to run before the page arrives.
+ */
+type PagedLiveProps = Omit<VersionListProps, 'versions' | 'hasMore' | 'loadingMore' | 'onLoadMore'> & {
+  pages: readonly DocumentVersion[][]
+}
+
+function PagedLive({ pages, ...rest }: PagedLiveProps): React.JSX.Element {
+  const [loaded, setLoaded] = React.useState<readonly DocumentVersion[]>(pages[0])
+  const [nextPage, setNextPage] = React.useState(1)
+  const [loadingMore, setLoadingMore] = React.useState(false)
+  return (
+    <VersionList
+      {...rest}
+      versions={loaded}
+      hasMore={nextPage < pages.length}
+      loadingMore={loadingMore}
+      onLoadMore={() => {
+        setLoadingMore(true)
+        setTimeout(() => {
+          setLoaded((was) => [...was, ...pages[nextPage]])
+          setNextPage((was) => was + 1)
+          setLoadingMore(false)
+        }, 200)
+      }}
+    />
+  )
+}
+
+export const RestoresFocusAfterARealBrowserDropsIt: Story = {
+  render: (args) => (
+    <PagedLive
+      {...args}
+      pages={[
+        Array.from({ length: HISTORY_PAGE_SIZE }, (_, at) => version({ number: 100 - at })),
+        Array.from({ length: 5 }, (_, at) => version({ number: 80 - at })),
+        Array.from({ length: 5 }, (_, at) => version({ number: 70 - at })),
+      ]}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const scroller = canvasElement.ownerDocument.scrollingElement
+    await expect(scroller).not.toBeNull()
+    await userEvent.click(canvas.getByRole('button', { name: 'Load more' }))
+    // Where the click left the page. The second page pushes Load more below
+    // the fold, and a bare focus() would scroll it back into view, jumping
+    // the list the reader holds (PR #142 review H1) — jsdom never scrolls, so
+    // only this story can see that.
+    const heldAt = scroller?.scrollTop
+    // The click disables the button; a real frame runs while the page is in
+    // flight, and Chromium drops focus to <body>. Once it settles, focus must
+    // be back on Load more — the second page still leaves one more behind it.
+    await waitFor(() => expect(canvas.getByRole('button', { name: 'Load more' })).toHaveFocus())
+    await expect(scroller?.scrollTop).toBe(heldAt)
+  },
+}
+
+/**
+ * agent-forge-harness-c1f, found in PR #142 review (M1, N2): a further page
+ * that fails, or comes back empty, disables Load more for a real frame just
+ * like a successful one — Chromium drops focus to `<body>` the same way —
+ * but the old effect returned early whenever `versions.length` had not grown
+ * past what was on screen at the press, which is exactly what a failed or
+ * empty page looks like. Only a real-Chromium story can see the drop; this
+ * one never adds a row, so `hasMore` stays true and Load more survives for
+ * the reader to try again.
+ */
+type PagedLiveFailingProps = Omit<VersionListProps, 'versions' | 'hasMore' | 'loadingMore' | 'onLoadMore'> & {
+  first: readonly DocumentVersion[]
+}
+
+function PagedLiveFailing({ first, ...rest }: PagedLiveFailingProps): React.JSX.Element {
+  const [loadingMore, setLoadingMore] = React.useState(false)
+  return (
+    <VersionList
+      {...rest}
+      versions={first}
+      hasMore
+      loadingMore={loadingMore}
+      onLoadMore={() => {
+        setLoadingMore(true)
+        // The page fails (or the server returns no rows): nothing is
+        // appended, and `hasMore` stays true so the button survives.
+        setTimeout(() => setLoadingMore(false), 200)
+      }}
+    />
+  )
+}
+
+export const RestoresFocusAfterAFailedPage: Story = {
+  render: (args) => (
+    <PagedLiveFailing
+      {...args}
+      first={Array.from({ length: HISTORY_PAGE_SIZE }, (_, at) => version({ number: 100 - at }))}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: 'Load more' }))
+    // A real frame runs while the failed page is in flight, and Chromium
+    // drops focus off the disabled button to <body>. Once it settles — with
+    // no new rows at all — focus must be back on Load more, not left at
+    // <body> for the rest of the page (agent-forge-harness-c1f).
+    await waitFor(() => expect(canvas.getByRole('button', { name: 'Load more' })).toHaveFocus())
+  },
+}
+
+// ── Dark Tavern ──────────────────────────────────────────────────────────────
+// agent-forge-harness-27h, rework 1. This file had NO dark story, so strict axe
+// had never rendered the version list against the dark palette. `DarkFailed`
+// covers the error state, which is where a themed palette most often slips
+// below AA — the same shape of defect as the AuthScreen error this branch fixed.
+
+export const Dark: Story = { ...Playground, globals: { theme: 'dark' } }
+
+export const DarkFailed: Story = { ...Failed, globals: { theme: 'dark' } }

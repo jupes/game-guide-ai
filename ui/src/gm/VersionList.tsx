@@ -22,6 +22,17 @@
  *
  * Privacy (X-7): summaries and titles are GM-private. They are rendered and
  * nothing else — never an id, a class, a data attribute or a stored value.
+ *
+ * Focus while paging (agent-forge-harness-alf): while the button survives
+ * another page, focus normally stays where the reader put it — but if a real
+ * browser (Chromium does; jsdom never does) dropped it to `<body>` while the
+ * disabled button was loading, it is restored there without scrolling. Focus
+ * the reader has since moved elsewhere is never taken. A page that fails or
+ * comes back empty settles exactly the same way (agent-forge-harness-c1f):
+ * the settle is recognised on the loadingMore true -> false transition
+ * itself, not on `versions` having grown, and clears on every settle so a
+ * later, unrelated growth of `versions` never revisits a press that is
+ * already over.
  */
 
 import * as React from 'react'
@@ -87,13 +98,46 @@ export function VersionList({
   // How many rows were on screen when Load more was pressed, so that focus can
   // land on the first row that arrived once the button itself has gone.
   const awaitingPage = React.useRef<number | null>(null)
+  // Whether the press this `awaitingPage` belongs to has been seen going
+  // through `loadingMore`, so a settle is recognised on the loadingMore
+  // true -> false transition itself, not on `versions` having grown — the
+  // two look identical once a further page fails or comes back empty
+  // (agent-forge-harness-c1f, PR #142 review M1/N2; same stage tracking as
+  // GmThread's Load earlier, GmThread.tsx ~91-113).
+  const pressStage = React.useRef<'pressed' | 'loading' | null>(null)
 
   React.useEffect(() => {
     const pending = awaitingPage.current
-    if (pending === null || loadingMore || versions.length <= pending) return
+    if (pressStage.current === null) return
+    if (loadingMore) {
+      pressStage.current = 'loading'
+      return
+    }
+    // A settle: either the loadingMore -> false transition was seen (the
+    // usual, asynchronous case, including a page that failed or added no
+    // rows), or `versions` already grew without loadingMore ever reading
+    // true in a render this component saw (a synchronous resolve). Anything
+    // else — loadingMore still pending and versions unchanged — is not a
+    // settle yet, and nothing here is cleared until it is.
+    const settled = pressStage.current === 'loading' || (pending !== null && versions.length > pending)
+    if (!settled) return
+    pressStage.current = null
     awaitingPage.current = null
-    // The button survives another page: leave focus where the reader put it.
-    if (hasMore && loadMoreRef.current !== null) return
+    if (hasMore && loadMoreRef.current !== null) {
+      // The button survives another page: leave focus where the reader put
+      // it — unless a real browser (Chromium does; jsdom never does) already
+      // dropped it to <body> while the button was disabled during the load,
+      // in which case restore it there without scrolling (agent-forge-harness-alf,
+      // same class of bug as GmThread's Load earlier, 1kg.3.7 / PR #136). A
+      // page that failed or came back empty settles exactly the same way
+      // (agent-forge-harness-c1f).
+      const active = document.activeElement
+      if (active === null || active === document.body) {
+        loadMoreRef.current.focus({ preventScroll: true })
+      }
+      return
+    }
+    if (pending === null) return
     const arrived = versions[pending]
     if (arrived === undefined) return
     rowRefs.current.get(arrived.number)?.focus()
@@ -101,6 +145,7 @@ export function VersionList({
 
   function handleLoadMore(): void {
     awaitingPage.current = versions.length
+    pressStage.current = 'pressed'
     onLoadMore?.()
   }
 

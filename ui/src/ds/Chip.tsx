@@ -69,11 +69,20 @@ export function Chip({
 
   // Interactive chips must be keyboard-reachable and expose a button role so
   // assistive technology announces them correctly (a11y fix — CP-F6.1).
+  //
+  // agent-forge-harness-27h: a selected FILTER chip is also a pressed toggle,
+  // and it now says so. Until this, the only evidence that (say) the Rules
+  // channel was the open one was a fill colour and a check glyph that is
+  // aria-hidden — so a screen-reader user could switch channels but never hear
+  // which one they were in. The AppHeader and LeftNav channel switchers are
+  // built from these chips. No axe rule covers a missing selected state; the
+  // shell stories are what found it.
   const isInteractive = Boolean(onClick) && !disabled
   const interactiveProps = isInteractive
     ? {
         role: 'button' as const,
         tabIndex: 0,
+        ...(type === 'filter' ? { 'aria-pressed': selected } : {}),
         onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()

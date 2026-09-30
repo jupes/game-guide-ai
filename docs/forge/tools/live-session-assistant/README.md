@@ -31,6 +31,8 @@ created, and `verify-created.ts` reports how the tracker has drifted from it.
 | `validate.ts` | Rules R1–R11: hierarchy, references, cycles over plan edges plus every tracker edge, text quality, gate shape and chaining, phase order, per-phase gate coverage, player-disclosure ordering |
 | `tables.ts` | Regenerates the delivery plan's generated regions: the Beads hierarchy (§6) and the cross-initiative table (§5.1) |
 | `checkdocs.ts` | Document consistency: `LSA-` references, bead IDs, table widths, repository paths, code fences, threat IDs |
+| `identity.ts` | Run by `checkdocs.ts` over the account identity record: its IDs are unique, resolve and appear in no other decision record, and its reviewed invariants hold |
+| `threatmodel.ts` | Run by `checkdocs.ts`, and alone in CI, over the threat model record `docs/adr/live-session-assistant-threat-model.md`: its IDs are defined once and resolve; threats and verification rows name each other; every rule is some threat's control; every Medium residual has a residual-risk row; the stated ranges match the rows |
 | `costs.ts` | The cost calculator behind the cost model; `cost-tables.md` is its recorded output |
 | `create.ts` | The materialization script that created the beads and edges; `--dry-run` checks references without writing |
 | `verify-created.ts` | Compares the tracker's beads with `spec.ts` and lists drift and the ready leaves |
@@ -43,6 +45,7 @@ Run from this folder:
 bun validate.ts
 bun tables.ts --check
 bun checkdocs.ts
+bun threatmodel.ts
 bun costs.ts | diff - cost-tables.md
 bun verify-created.ts
 ```

@@ -42,11 +42,24 @@ service. A lookup of an unknown id answers nothing — never the NPC config the
 handoff fell back to (X-8). The wire contract's own validators pin the subset
 of the registry they need as constants.
 
-What the registry does not carry yet, on purpose: which fields a table may see,
-reveal groups and warnings, audiences and per-audience default masks. Those are
-`agent-forge-harness-1ir.1.2`'s decision and arrive with the reveal family
-(`1kg.1.6`). The seven document types whose fields `1kg.5.3` has yet to declare
-carry no field labels until it does.
+Since `1kg.5.3` the registry also carries, per field, the rule that says how it
+is presented and who may ever see it — label, `editable`, `required` (LIB-12),
+`bounds` (the range one *use* of an `integer` field narrows its kind to),
+`revealable` (the allowlist of REVEAL-10, and by ED-5 the list that can ever be
+classified) and the reveal sheet's warning copy — and, per type, its audience,
+accent, reveal groups, per-audience default reveal (REVEAL-4) and retired keys
+(ED-24). What it does **not** carry is a reveal mask, a projection or an
+eligibility row: those are state, and belong to `1kg.1.6` and
+`agent-forge-harness-1ir.2.1`.
+
+A type's **`audience`** says **whose default reveal the type seeds**, and
+nothing else (ED-14 and amendment A-19, which amend AUD-9 for owner decision
+O-2). It does *not* restrict which types may use a participant slot — **any type
+may**. An owner-audience type seeds its linked owner's mask; any other audience,
+and any other type revealed to a participant, seeds **empty**, and an
+owner-audience type still seeds nothing for the table (AUD-12). The selector is
+`seeds_owner_default` / `seedsOwnerDefault`; the audience *picker* is
+`1kg.7.3`'s, not the registry's.
 
 ## Conventions
 
@@ -123,13 +136,35 @@ a generic failure.
 | `cap_reached` | 409 | yes | X-5: two tool invocations or AI edits are already in flight |
 | `throttled_user` | 429 | yes | the per-user window; carries `retry_after_s` |
 | `throttled_daily` | 429 | no | the pilot's daily cap |
-| `provider_failed`, `provider_timeout` | 502, 504 | yes | the model provider |
-| `attempt_expired` | — | yes | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
+| `provider_failed`, `provider_timeout` | 502, 504 | per case | the model provider. On the tool-invocation routes both are carried on the invocation, answered 200 (`1kg.4.1`). `provider_timeout` is retryable; `provider_failed` is final only when the request itself cannot succeed — `/chat`'s 422 categories, a content refusal or an invalid request — and retryable otherwise |
+| `attempt_expired` | — | yes (no on the 100th attempt) | the server expired a stuck attempt (RAIL-27); seen on an invocation, never as a response status |
 | `backend_unavailable` | 503 | yes | the service fails closed |
+| `already_linked` | 409 | no | a link to a campaign for a conversation that is already in one (`1kg.2.4`). A new code rather than `conflict` with a wider meaning |
+| `alias_taken` | 409 | no | a seat whose alias another live seat of the campaign already answers to (`1kg.2.2`) |
+| `seat_not_open` | 409 | no | an offer of a seat that is accepted or holds a live offer for another address (`1kg.2.2`) |
+| `seat_not_accepted` | 409 | no | a confirmation of a seat nobody has accepted (`1kg.2.2`) |
+| `seat_cap_reached` | 409 | no | the 41st live seat of a campaign (`1kg.2.2`, SEC-50(3)) |
+| `campaign_archived` | 409 | no | a seat added to, or an offer made in, an archived campaign (`1kg.2.2`), or a tool invocation started in one (`1kg.4.1`) |
+| `reauth_failed` | 403 | no | a Remove, or a document delete, whose password did not check out (`1kg.2.2`, `1kg.5.2`, SEC-40). A 403, never a 401, because the client signs out on any 401; it names no resource |
+| `document_unsupported` | 409 | no | a stored document this build cannot read, or cannot write over: an unknown stored type, a stored type version this build does not write, stored data that is not an object or fails the tolerant read, or — for a patch or a restore — a stored key or sub-key this build does not declare (`1kg.5.2`). Fail closed; only the document's owner can reach it |
+| `document_not_archived` | 409 | no | a delete of a document that is not archived (`1kg.5.2`, LIB-18: delete is offered only from the Archived filter). Refused before anything narrows; only the document's owner can reach it |
+| `inactive` | 404 | no | a table route's one answer for every signed-in caller who is not entitled, whatever the reason (`1kg.2.3`, SEC-46, TABLE-9): not the owner, no live session, a session that ended under the request, a screen asking to mint. Identical in status, body and headers |
+| `cross_site` | 403 | no | a table route's Fetch Metadata refusal (`1kg.2.3`, SEC-45): `Sec-Fetch-Site` present and not `same-origin`, or `Sec-Fetch-Mode: navigate`. It depends on nothing but those headers and runs before any cookie is read |
+| `screen_limit` | 409 | no | a screen minted for a session that already has as many live screens as SEC-48 allows (`1kg.2.3`). The owner revokes one; the account stays signed in |
+| `live_elsewhere` | 409 | no | a Start while the GM's table is live in another campaign (`1kg.2.3`, REVEAL-2). The client sends End for that session, then Start: Start never ends a table on its own |
+| `group_name_taken` | 409 | no | a group name another live group of the campaign already has, up to case (`btb`). The name is never echoed |
+| `group_cap_reached` | 409 | no | the 51st live group of a campaign (`btb`, SEC-35) |
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
 client has one error path.
+
+One Workbench failure is outside the envelope on purpose: **a 401**. Every
+authentication failure on a Workbench route — no cookie, an expired or
+tampered one, an account that no longer exists — answers the single string body
+`{"detail": "not signed in"}`, so a stolen cookie cannot learn that its account
+was deleted. The client keys on the status (it signs out on any 401) and reads
+this body as a legacy one, which is why the code table has no 401 row.
 
 ### Idempotency
 
@@ -143,20 +178,38 @@ names it starts fresh rather than reading another caller's status or result
 | --- | --- | --- |
 | Tool invocation, AI edit | `invocation_id`, minted by the client | while working, reports status and starts nothing; once done, replays the stored result free of charge; after a retryable failure, starts a new attempt that passes the cost guards again (RAIL-18) |
 | Reveal and audio commands | `command_id` | is recognised and is not a second command (AUDIO-24) |
-| Field patch | the document's base **write revision** | conflicts only if a field it touches changed since (CANVAS-19, CANVAS-34). A repeat of a patch that already landed finds the fields equal to what it sends and is a no-op, not a conflict |
+| Field patch | the document's base **write revision** | conflicts only if a field it touches changed since (CANVAS-19, CANVAS-34). Under the row lock the server compares each touched field's stored value with the one sent, canonically: a patch whose every field already holds what it sends answers `200` with the document and writes nothing — no revision, no version, no `updated_at` — so a repeat of a patch that already landed is a no-op, not a conflict. A patch that lands partly equal writes, and judges staleness on, only the fields that differ |
 | AI edit after a conflict | the same `invocation_id`, a fresh `base_write_revision` | starts a new attempt on the new base; the body of a replay is otherwise ignored |
-| Create a document | `command_id`, minted by the client | opens the document already made instead of making a second *Untitled NPC* |
-| Restore, archive, unarchive | none needed | restoring what the document already equals changes nothing and creates no version; the others set a state |
+| Create a document | `command_id`, minted by the client, scoped to the campaign | answers `201` with the document that key already made, as it is now, whatever the repeat's body says, instead of making a second *Untitled NPC*. The same key in another campaign is another key; a key whose document was deleted makes a new one |
+| Restore a document's version | none needed | restoring what the document already equals changes nothing and creates no version, and a restore that changes content always appends one sealed version |
+| Archive, unarchive a document | none needed | the state the document is already in answers `204` and changes nothing: no narrowing, no revision advance, no audit row — and, for unarchive, no lock |
+| Delete a document | none needed | a deleted document is a missing one, so a repeat is the one `404`; a client treats a `404` after a delete it sent as done |
+| Seal a document's open version | none needed | a document with no open version is answered as it is: nothing is sealed and nothing advances |
 | Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
 | Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |
 | Stop a cue, Stop all | `command_id`, no epoch (X-3) | is idempotent by nature: a slot the cue no longer holds is left alone (AUDIO-9) |
+| Confirm a reveal | `command_id`, and the **session** and reveal epoch it was composed under (REVEAL-5, ED-9) | replays the first outcome; a stale epoch, or an epoch from another session, is `409 conflict` and is never retried automatically — the sheet reloads live state, keeps the GM's draft and asks for a fresh Confirm (REVEAL-15) |
+| Stop a reveal, Stop all reveals | `command_id`, no epoch (X-3) | is idempotent by nature: a document that is no longer live is left alone, and a Stop succeeds on an empty slot (REVEAL-22) |
 | Start, End, Rotate a session | `command_id` | a retried Start opens the session already started rather than a second one; End and Rotate are idempotent on an ended or rotated session |
+| Create a conversation | none (`1kg.2.4`) | makes a second conversation, which archive recovers. There is no key store for an uncampaigned conversation to be matched in; a `command_id` can arrive later as an optional field, which is no version bump |
+| Rename, archive, unarchive or link a conversation; bind its channel | none needed | is a no-op: the same title, the same state and the same campaign change nothing, and a channel already bound answers the one that won |
+| Create a campaign | none (`1kg.2.2`) | makes a second campaign, which archive recovers — the conversation precedent. Duplicate names are allowed. A `command_id` can arrive later as an optional field, which is no version bump |
+| Rename, archive or restore a campaign | none needed | is a no-op: the same name changes nothing, `updated_at` included; archiving an archived campaign and restoring a live one change nothing |
+| Add a seat | none needed | the same alias again is `409 alias_taken`, its defined behaviour; the client re-reads the list |
+| Offer a seat | none needed | an offer of an address this campaign already has a live offer for, or an accepted seat of, is a repeat: it changes nothing and answers the same `204` |
+| Confirm a seat, Remove a seat | none needed | confirming a confirmed seat and removing a removed one answer as the first did and change nothing (no second audit row, no second job) |
+| Accept, decline an offer | none needed | a repeat accept by the account that accepted answers the same seat; a repeat decline answers `204` and applies a block it now asks for |
+| Create a group | `command_id`, minted by the client, scoped to the campaign (`btb`) | answers `201` with the group that key made, whatever name the repeat sends, rather than `409 group_name_taken` for its own group. A key whose group was since removed is the one `404` |
+| Rename a group, remove a group, add or remove a member | none needed | the same name changes nothing and answers `200`; removing a removed group, adding a member, and removing a seat that is not a member answer `204` and change nothing — no audit row and no revision advance |
 
 ### Pagination
 
 List responses are `{ "items": [...], "next_cursor": "<opaque>" | null }`, read
 with `?cursor=` and `?limit=`. `next_cursor` is always present: the end of a list
-is `null`, never a missing key. A cursor is opaque to clients and is base64url
+is `null`, never a missing key. **A page may hold fewer items than were asked
+for — including none at all — while `next_cursor` stays non-null: a short or
+empty page is not the end of the list. Only a `null` cursor is; a client keeps
+paging until it sees one.** A cursor is opaque to clients and is base64url
 (`[A-Za-z0-9_-]{1,512}`), so it may travel in a query string. **Search text may
 not**: it travels in a request body (X-7), and a cursor never encodes any.
 
@@ -172,6 +225,12 @@ entry. It is `1` throughout this contract version.
 Version 1 is still being assembled by `1kg.1.2`, family by family, and nothing
 consumes it yet. The rules below start to bind when that bead closes; until then
 a new family may add a member to a union without a bump.
+
+A family whose *Schema families* status is **open** is not bound by the table
+below until it is marked done again. The table-session family is one: threat
+model §15.11 reopened it, and no build, deployed or not, has ever served or
+parsed one of its shapes, so there is no producer and consumer that have met for
+a bump to protect (`1kg.2.3`, DV-3).
 
 | Change | Version |
 | --- | --- |
@@ -203,13 +262,16 @@ on both sides.
 | Card payloads | `stat_block` **done**, reusing the `/chat` stat-block contract | loot, names, rules and hooks are `1kg.4.3`'s; until they exist those tools cannot produce a valid card, by design |
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
-| Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
-| Per-type document fields | the **frame is done**; `npc` is the worked example | `1kg.5.3` owns all eight types. Until it declares a type's fields that type has the common ones only and everything else fails closed — the same posture as card kinds |
-| Reveal | to do, and **waiting** | the mutation with its epoch, Stop, GM-side state, the allowlisted projection, the table snapshot. Audience and slot shapes must not freeze before `agent-forge-harness-1ir.1.2` (field eligibility, shared with the Live Session Assistant) is decided; it blocks `1kg.7.1`. The projection needs an asset shape of its own — a per-slot opaque handle, never the GM-side `asset_id` — and its join and enrol answers are generic ([threat model](adr/gm-workbench-threat-model.md), §12.2) |
+| Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict`, `document_unsupported` and `document_not_archived` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
+| Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
+| Reveal | **done** | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
-| Table sessions | **done** | `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest`, `EnrolResponse`, `TableSession`, `TableSessionRequest`, `TableSessionAnswer` |
-| Realtime events | **done** for the decided kinds | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. The `slot` kind arrives with the reveal family; the transport is the media ADR's |
+| Table sessions | **open** — reopened by threat model §15.11; not bound by the bump table until marked done again (see *Versioning and forward compatibility*) | `TableSession`, `TableSessionRequest`, `TableSessionAnswer`, `ScreenMintRequest`, `ScreenMintAnswer`, `TableLeaveRequest`, and `inactive`, `cross_site`, `screen_limit` and `live_elsewhere` on the error envelope. `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired (`1kg.2.3`). See *The table-session family* below |
+| Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
+| Conversations | **done** | `Conversation`, `ConversationPage`, `ConversationCreateRequest`, `ConversationPatchRequest`, and `already_linked` on the error envelope. See *The conversation family* below |
+| Campaigns and seats | **done** | `Campaign`, `CampaignPage`, `CampaignCreateRequest`, `CampaignPatchRequest`, `Seat`, `SeatPage`, `SeatCreateRequest`, `SeatOfferRequest`, `SeatRemoveRequest`, `SeatOffer`, `SeatOfferPage`, `SeatDeclineRequest`, `PlayerSeat`, `PlayerSeatPage`, and six codes on the error envelope. See *The campaigns and seats family* below |
+| Groups | **done** | `Group`, `GroupPage`, `GroupCreateRequest`, `GroupPatchRequest`, and `group_name_taken` and `group_cap_reached` on the error envelope (`btb`). See *The groups family* below |
 
 ## The tool-invocation family
 
@@ -265,14 +327,38 @@ the composer and never runs (RAIL-8).
 The handoff's `tool_label` is not on the wire: a label is a registry fact, and
 sending it would give the two a chance to disagree.
 
+### Routes (`1kg.4.1`)
+
+| Route | Answers |
+| --- | --- |
+| `POST /campaigns/{campaign_id}/tool-invocations` | `200 ToolInvocation`: new, replayed or retried |
+| `GET /campaigns/{campaign_id}/tool-invocations/{invocation_id}` | `200 ToolInvocation` |
+| `POST /campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel` | `200 ToolInvocation`; no body |
+
+The body's `campaign_id` must equal the path's (`422`, `field: "campaign_id"`),
+and a body is read up to 32 KiB. A repeat of an `invocation_id` is answered by
+the stored invocation's state, never by comparing bodies: `working`, `done`,
+a final `failure` and `cancelled` are answered as stored and start nothing; a
+retryable failure starts the next attempt of the stored request, through every
+guard again. Cancel is a flag, never refused for state.
+
+On these routes a provider failure or an expiry is carried on the invocation,
+answered 200; 502, 504 and `attempt_expired` never appear as response statuses.
+An HTTP error is a refusal before any attempt starts — `422`, the one `404`,
+`409` (`campaign_archived`, `tool_disabled`, `nothing_to_recap`, `cap_reached`),
+`429` (`throttled_daily`; `throttled_user` with `retry_after_s` and a matching
+`Retry-After` header) — which creates nothing, or a `503`.
+
 ## The documents family
 
 ### Fields
 
 A document's `data` is flat: one value per field key, as bare JSON. What each key
 must hold is the type's definition, which is a registry fact
-(`registry.json`: `field_kinds`, `common_fields`, and `fields` per document type)
-kept as constants in both languages and pinned by both suites.
+(`registry.json`: `field_kinds`, `field_bounds`, `common_fields`, and `fields`
+per document type) kept as constants in both languages and pinned by both suites.
+The numbers in the table below are `field_bounds`, so each one is agreed in one
+place rather than kept twice.
 
 | Kind | On the wire | Cleared as |
 | --- | --- | --- |
@@ -280,17 +366,89 @@ kept as constants in both languages and pinned by both suites.
 | `prose` | plain text, at most 20,000 characters | `""` |
 | `text_list` | at most 100 items of 1 to 2,000 characters | `[]` |
 | `asset` | an `AssetRef` (an id, never a URL) | `null` |
+| `integer` | a JSON integer, -1,000,000 to 1,000,000; a **field** may narrow that, and most do — see *Per-field integer bounds* | `null` |
+| `abilities` | the six 5e scores as one object (`str`, `dex`, `con`, `int`, `wis`, `cha`), each 0–99; any subset — a score that is not known is a key left **out**, never `null` | `null` |
+| `entry_list` | at most 100 `{name, text}` entries; the name one line of 1 to 200 characters and not blank after the contract's trim, the text at most 2,000 | `[]` |
+
+**Stored text is plain text.** Every text a document holds — a `text` or `prose`
+value, each item of a `text_list`, and an entry's name and text — refuses NUL and
+the other C0 and C1 controls, DEL, the whole Bidi_Control set (U+061C, U+200E,
+U+200F, U+202A–U+202E, U+2066–U+2069) and U+FEFF, never the value (X-7). The
+validation message and the client's own Zod issue name the field and the class
+of character — but the 422 body on the wire is the fixed envelope every
+`check_fields` refusal answers with: a generic message and `field: null`. A
+class or a field name reaches only a log line (`redacted_errors`) and the
+client's own pre-flight Zod check, never the response a GM's browser receives.
+A tab is allowed, a line feed or carriage return wherever a line break already
+is, and U+200C, U+200D and U+FE0F everywhere, because real names and emoji
+sequences need them.
+PostgreSQL's `text` and `jsonb` refuse U+0000, so without the rule a NUL would be
+a failure to store rather than an answer; a bidirectional override makes what a
+GM sees differ from what is stored. One helper per side is the rule —
+`check_plain_text` and `REFUSED_TEXT_CODE_POINTS` in `workbench_contracts.py`,
+`isPlainText`, `plainText` and `plainOneLine` in `contracts.ts` — and since bead
+`5mj` every other stored text calls it too: a brief, an edit instruction and a
+search (each checked as stored, after the trim, so a mark the trim removes is
+never stored), alt text, a cue's title, a version's summary (on the wire and in
+`document_store.check_summary`), `/chat`'s prompt and a participant's alias
+(`check_stored_text`, which adds the wire's well-formedness check for a value no
+contract type has read). Unlike a document field, each of these answers a 422
+that names the field. An alias is stricter still: every other Unicode C-category
+character stays refused, only U+200C and U+200D are kept, and `alias_key` folds
+the default-ignorable code points and U+2800 out so that two aliases differing
+only by one collide (bead `ysj`). A score of `{"str": null}` is refused for the same reason every kind has
+one way to say empty: leaving the key out already says it.
 
 Every type has `name`, `qualifier` and `tags`. `name` is the title everywhere and
-the one field that cannot be blank (LIB-12). `npc` adds `portrait`, `voice`,
-`tell`, `attitude`, `wants`, `leverage`, `if_attacked` and `notes` — the handoff's
-keys in snake_case. **A kind never appears on the wire**, so `1kg.5.3` can add
-kinds (integers, ability scores, entry lists) and fields without a version bump:
+cannot be blank on any type (LIB-12); `tags` is **never revealable**, on any type
+(REVEAL-10, ED-5).
+
+A type may declare further **required** fields — a stat block's `ac` and `hp` are
+the only ones (LIB-12: *"a stat block without them is not valid; nothing is
+stored until they are given"*). A required field is one that must be **present
+and not empty**, where *empty* is the *Cleared as* column above: `""` after the
+contract's own trim for `text` and `prose`, `[]` for a `text_list` and an
+`entry_list`, and `null` for an `asset`, an `integer` and an `abilities` block —
+so a cleared cell is the same defect as an absent key, and `0` is a real armour
+class. The **Required** column of each per-type table below says which they are.
+
+That rule binds **writes**: a `DocumentCreateRequest` must carry every required
+field, and a `FieldPatchRequest` may not set one to an empty value — while a
+patch that does not mention a required field is untouched and raises nothing.
+A **read** is tolerant of it, on both sides: LIB-12's words are about *storing*,
+and a response that refused a stat block whose `hp` a data defect lost would show
+the GM the *made by a newer version* placeholder for their own document.
+
+**A kind never appears on the wire**, so a later bead can add kinds and fields
+without a version bump:
 
 - the **server** rejects a key the type does not declare, in what it stores and
   in what it emits;
 - a **client** strips a key it does not know, so a type can grow;
 - in a **request**, which the client builds, a stray key is an error on both sides.
+
+A **stored** document is read the way a client reads a response — undeclared keys
+ignored, everything else validated — by `read_stored_fields` in
+`workbench_contracts.py`, which `1kg.5.1` and `1kg.5.2` call when they read a
+stored row; **what the server stores and emits stays strict**. It is the same
+rule the *Versioning and forward compatibility* table already carries for a
+stored timeline entry, and it exists because *adding a field is not a bump*: a
+strict stored read plus that rule would make every dossier that used a new field
+unreadable after a rollback. The tolerance has two deliberate limits: a stored
+value that is not a JSON object is the typed refusal `stored_data_not_an_object`,
+never an untyped crash, and a stored row that lost its name is unreadable,
+deliberately — `read_stored_fields` reads a whole document, and every document
+has a name from the moment it exists.
+
+The largest valid document is a stat block, at **1,316,498** JSON characters:
+five `entry_list` fields × 100 entries × 2,200 characters of name and text
+(1,100,000), a 100-item `tags` list at 2,000 each (200,000), fifteen `text`
+fields at 200 (3,000), and about 13,500 characters of keys, punctuation and the
+envelope. Narrowing `ac` and `hp` to 0–1,000,000 took two characters off it, and
+one spelling of "no score" took twelve more: each of the six scores' widest
+value is now two digits rather than `null`. A
+cap on the **whole** document is `1kg.5.5`'s (RAIL-6); this is the number it has
+to sit above.
 
 `type_version` says which revision of a type's field definitions `data` conforms
 to. Both sides know version 1 of every type. A client that meets a newer one shows
@@ -302,7 +460,226 @@ must read as *not declared*, not find something on a prototype.
 Nothing in this family says who may *see* a field. `reveal_mask`, audiences and
 eligibility are not on a document at all: reveal is server state with its own
 resource (CANVAS-33), and what may be shown to whom is
-`agent-forge-harness-1ir.1.2`'s decision.
+`agent-forge-harness-1ir.1.2`'s decision. What the **registry** says is the
+per-field rule below — the allowlist a mask may ever name.
+
+### Per-type fields
+
+Every row of every table below is `registry.json`, which both suites pin against
+their language's copy. **Required** is LIB-12: a write must carry the field,
+present and not empty. **Revealable** is the type's allowlist (REVEAL-10): a key
+marked *never* can appear in no mask, no reveal group and no default, and by
+ED-5 it is `gm_only` by construction and cannot be widened by any action.
+**Group** is the labelled row that toggles a fixed set of keys together
+(REVEAL-11); the stored mask still lists the individual keys. **Seeded** is the
+type's default reveal for its **own** audience, and only ever that one
+(REVEAL-4) — so an owner-audience type seeds nothing for the table (AUD-12), and
+the `audience` under each heading says **whose default reveal the type seeds**
+and nothing about who may receive one: any type may be revealed to a participant
+(ED-14, amendment A-19, owner decision O-2). A warning after a label is the
+sub-line the reveal sheet shows, in the type's own words.
+
+`reserved_keys` is empty for all eight: nothing has been retired yet. A key that
+is retired goes on that list and never returns with another meaning (ED-24).
+
+#### `npc` — NPC Dossier
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | *Name & voice* | yes |
+| `qualifier` | common | Qualifier | yes | — | yes | — | — |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `portrait` | `asset` | Portrait | yes | — | yes | — | yes |
+| `voice` | `text` | Voice | yes | — | yes | *Name & voice* | yes |
+| `tell` | `text` | Tell | yes | — | yes | — | — |
+| `attitude` | `text` | Attitude | yes | — | yes | — | — |
+| `wants` | `prose` | Wants ⚠ Would spoil the lie | yes | — | yes | *Wants & leverage* | — |
+| `leverage` | `prose` | Leverage ⚠ Would spoil the lie | yes | — | yes | *Wants & leverage* | — |
+| `if_attacked` | `prose` | If the party attacks | yes | — | yes | — | — |
+| `notes` | `prose` | Notes | yes | — | yes | — | — |
+| `true_identity` | `prose` | True identity | yes | — | **never** | — | — |
+
+#### `statblock` — Stat Block
+
+renderer `stat_block_card` · audience `table` · ability row from `abilities`
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | — | — |
+| `qualifier` | common | Qualifier | yes | — | yes | — | — |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `ac` | `integer` | Armor Class | yes | yes | yes | — | — |
+| `ac_note` | `text` | Armor Class note | yes | — | yes | — | — |
+| `hp` | `integer` | Hit Points | yes | yes | yes | — | — |
+| `hit_dice` | `text` | Hit dice | yes | — | yes | — | — |
+| `speed` | `text` | Speed | yes | — | yes | — | — |
+| `size` | `text` | Size | yes | — | yes | — | — |
+| `creature_type` | `text` | Creature type | yes | — | yes | — | — |
+| `alignment` | `text` | Alignment | yes | — | yes | — | — |
+| `abilities` | `abilities` | Ability scores | yes | — | yes | — | — |
+| `saving_throws` | `text` | Saving throws | yes | — | yes | — | — |
+| `skills` | `text` | Skills | yes | — | yes | — | — |
+| `damage_immunities` | `text` | Damage immunities | yes | — | yes | — | — |
+| `condition_immunities` | `text` | Condition immunities | yes | — | yes | — | — |
+| `senses` | `text` | Senses | yes | — | yes | — | — |
+| `languages` | `text` | Languages | yes | — | yes | — | — |
+| `challenge_rating` | `text` | Challenge rating | yes | — | yes | — | — |
+| `xp` | `integer` | XP | yes | — | yes | — | — |
+| `traits` | `entry_list` | Traits | yes | — | yes | — | — |
+| `actions` | `entry_list` | Actions | yes | — | yes | — | — |
+| `bonus_actions` | `entry_list` | Bonus actions | yes | — | yes | — | — |
+| `reactions` | `entry_list` | Reactions | yes | — | yes | — | — |
+| `legendary_actions` | `entry_list` | Legendary actions | yes | — | yes | — | — |
+
+#### `handout` — Player Handout
+
+renderer `game_document` · audience `table` · **printable**
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | — | yes | — | — |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `portrait` | `asset` | Illustration | yes | — | yes | — | yes |
+| `body` | `prose` | Text | yes | — | yes | — | yes |
+
+#### `session-notes` — Session Notes
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | — | — |
+| `qualifier` | common | Qualifier | yes | — | yes | — | — |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `session` | `integer` | Session number | yes | — | yes | — | — |
+| `date` | `text` | Date | yes | — | yes | — | — |
+| `present` | `text_list` | Present | yes | — | yes | — | — |
+| `recap` | `prose` | Recap ⚠ Summarises your private GM thread | yes | — | yes | — | — |
+| `beats` | `text_list` | Beats | yes | — | yes | — | — |
+| `loose_threads` | `text_list` | Loose threads | yes | — | yes | — | — |
+
+#### `quest-log` — Quest Log
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | — | yes | — | — |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `open_threads` | `entry_list` | Open threads | yes | — | yes | — | yes |
+| `cold_threads` | `entry_list` | Cold threads | yes | — | yes | — | — |
+| `resolved_threads` | `entry_list` | Resolved threads | yes | — | yes | — | yes |
+
+#### `character-sheet` — Character Sheet
+
+renderer `game_document` · audience `owner` · ability row from `abilities`
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | — | yes | — | yes |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `portrait` | `asset` | Portrait | yes | — | yes | — | yes |
+| `ac` | `integer` | Armor Class | yes | — | yes | — | yes |
+| `hp` | `integer` | Hit Points | yes | — | yes | — | yes |
+| `speed` | `text` | Speed | yes | — | yes | — | yes |
+| `abilities` | `abilities` | Ability scores | yes | — | yes | — | yes |
+| `features` | `entry_list` | Features | yes | — | yes | — | yes |
+| `equipment` | `text_list` | Equipment | yes | — | yes | — | yes |
+| `notes` | `prose` | Notes | yes | — | yes | — | yes |
+
+#### `lore` — Lore Entry
+
+renderer `game_document` · audience `table` · **cites the corpus** · accent `arcane`
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | — | yes |
+| `qualifier` | common | Qualifier | yes | — | yes | — | — |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `region` | `text` | Region | yes | — | yes | — | — |
+| `era` | `text` | Era | yes | — | yes | — | — |
+| `status` | `text` | Status | yes | — | yes | — | — |
+| `summary` | `prose` | Summary | yes | — | yes | — | yes |
+| `history` | `prose` | History | yes | — | yes | — | — |
+| `rumours` | `text_list` | Rumours | yes | — | yes | — | — |
+
+#### `encounter` — Encounter
+
+renderer `game_document` · audience `table`
+
+| Key | Kind | Label | Editable | Required | Revealable | Group | Seeded |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `name` | common | Name | yes | yes | yes | — | — |
+| `qualifier` | common | Qualifier | yes | — | yes | — | — |
+| `tags` | common | Tags | yes | — | **never** | — | — |
+| `difficulty` | `text` | Difficulty | yes | — | yes | — | — |
+| `xp_budget` | `integer` | XP budget | yes | — | yes | — | — |
+| `party_level` | `integer` | Party level | yes | — | yes | — | — |
+| `setup` | `prose` | Setup | yes | — | yes | — | — |
+| `combatants` | `entry_list` | Combatants | yes | — | yes | — | — |
+| `terrain` | `prose` | Terrain & hazards | yes | — | yes | — | — |
+| `outcome` | `prose` | If it goes wrong ⚠ Would spoil the surprise | yes | — | yes | — | — |
+
+#### Per-field integer bounds
+
+A table of its own rather than a ninth column above: `bounds` is a pair of
+numbers, not a per-row yes or no, and it is absent on 59 of the 66 field rules.
+It is checked **after** the kind's own range, never instead of it — the kind
+says what an integer is at all, the field says what this use of one may mean —
+and the registry refuses a `bounds` on a field that is not an `integer`, one
+whose lowest is above its highest, or one outside the kind's own range.
+
+| Field | Lowest | Highest |
+| --- | --- | --- |
+| `statblock.ac` | 0 | 1,000,000 |
+| `statblock.hp` | 0 | 1,000,000 |
+| `statblock.xp` | -1,000,000 | 1,000,000 |
+| `session-notes.session` | 1 | 1,000,000 |
+| `character-sheet.ac` | 0 | 1,000,000 |
+| `character-sheet.hp` | 0 | 1,000,000 |
+| `encounter.xp_budget` | 0 | 1,000,000 |
+| `encounter.party_level` | 1 | 1,000,000 |
+
+`statblock.xp` is the one integer field deliberately left at the kind's own
+range. It is what keeps `-1,000,000` reachable through a declared field at all,
+and so keeps the two boundary examples in `Document.json` that pin the kind's
+floor honest. An armour class is not negative, and there is no session 0 or
+party level 0; experience points nothing consumes yet are not worth making the
+kind's floor untestable for.
+
+Bounds bind reads as well as writes: `Document`, `DocumentVersionSnapshot` and
+`read_stored_fields` all apply them, which is safe only because writes enforce
+them from the first document stored, so no stored row can violate one. It also
+means **tightening a bound later is a `type_version` bump**, with its adapter.
+
+Narrowing a field's bounds is an **incompatible change**: see *Schema
+revisions* below.
+
+#### Schema revisions
+
+`DOC_TYPE_VERSION` is `1` for all eight, and nothing is released, so no document
+needs carrying forward. The frame for when one does is
+`service/workbench_adapters.py` and `ui/src/gm/schemaAdapters.ts`: a registry of
+`(type, from_version) -> adapter`, walked one step at a time. It checks that
+every step exists **before** running any, so a document half-migrated by a
+skipped step is never returned; it refuses to downgrade a document newer than
+the target; and its error names the step, never the document's content (X-7).
+Adding a field or a kind is **not** a bump. But
+**making a declared field required**, narrowing a field's bounds, or retiring a
+key **is** an incompatible change: it bumps `type_version` and ships its adapter. That is what lets a read
+of an already-stored document ignore an undeclared key while still applying every
+bound and every kind rule — a document written before such a change sits at an
+older `type_version`, so the adapter walk reaches it before anything reads it.
+All eight types are still at `type_version` 1: nothing is released, so nothing
+this contract has done so far is a bump. An adapter that moves text from one key to another
+**resets the destination to `unclassified`** (ED-24): a class was granted for the
+text as it sat under the old key, and carrying it across would cover text the
+classifier never saw.
 
 ### Versions and the write revision
 
@@ -324,7 +701,7 @@ write on the past.
 | Request | Says | Answered with |
 | --- | --- | --- |
 | `FieldPatchRequest` | the fields one autosave touches, the write revision it was based on, and the type and type version it was built against (CANVAS-10). The author is always the GM and is never the client's to state | the whole `Document`, or a 409 whose `conflict` names what moved |
-| `DocumentCreateRequest` | New in a library category (LIB-12): a `command_id`, the campaign, the type and at least a name | the `Document` |
+| `DocumentCreateRequest` | New in a library category (LIB-12): a `command_id`, the campaign, the type and every field the type **requires** — for a stat block, a name, an AC and an HP | the `Document` |
 | `RestoreRequest` | a version number (CANVAS-26). Additive, so it needs no base | the `Document`, whose version says `restored_from` |
 | `LibraryQuery` | one page of one category (LIB-20 to LIB-23). A request **body** even without a search, because search text may never travel in a URL (X-7) | a `LibraryPage` that echoes the campaign and category it answers, so a stale response is dropped (LIB-25) |
 
@@ -334,7 +711,105 @@ never let a save response overwrite newer local text (CANVAS-10).
 
 `check_fields` in `workbench_contracts.py` is the validator behind all of these.
 `1kg.5.2` and `1kg.5.5` call it on a merged document before committing it
-(CANVAS-19). Its messages name keys and kinds and never quote a value.
+(CANVAS-19). Its messages name keys and kinds and never quote a value. Called as
+a write does — `whole=True` and nothing else — it enforces the type's required
+fields; `read_stored_fields` and the two response models opt out of that one rule
+and of nothing else.
+
+### Routes
+
+`1kg.5.2` serves the documents family under the campaign it belongs to. Every
+route is on the Workbench GM router: the origin check (`POST` and `PATCH`), the
+one 401, the `dm` gate and the one 404.
+
+| Method and path | Body | Answers |
+| --- | --- | --- |
+| `POST /campaigns/{campaign_id}/library` | `LibraryQuery` | `200 LibraryPage` |
+| `POST /campaigns/{campaign_id}/documents` | `DocumentCreateRequest` | `201 Document`, a replay too |
+| `GET /campaigns/{campaign_id}/documents/{document_id}` | — | `200 Document` |
+| `PATCH /campaigns/{campaign_id}/documents/{document_id}` | `FieldPatchRequest` | `200 Document`, a no-op too |
+| `GET …/documents/{document_id}/versions?limit=&cursor=` | — | `200 DocumentHistoryPage` |
+| `GET …/documents/{document_id}/versions/{number}` | — | `200 DocumentVersionSnapshot` |
+| `POST …/documents/{document_id}/restore` | `RestoreRequest` | `200 Document` |
+| `POST …/documents/{document_id}/seal` | none; one sent is not read | `200 Document` |
+| `POST …/documents/{document_id}/archive` | none; one sent is not read | `204` |
+| `POST …/documents/{document_id}/unarchive` | none; one sent is not read | `204` |
+| `POST …/documents/{document_id}/delete` | `DocumentDeleteRequest` | `204` |
+
+There is no list route beside the library and no `DELETE` method: a delete is a
+body-carrying `POST`, as a seat's Remove is.
+
+**The order of checks.** Origin (403), authentication (401), role (403); then
+the body and the query, each validated on nothing but itself (422); the
+database (503); the path ids' shapes — a `campaign_id`, `document_id` or
+version `number` outside its shape is the one 404, before any query; a body
+`campaign_id` that is not the path's (422, `field: "campaign_id"`); a cursor's
+own shape (422, `field: "cursor"`); then, in one transaction, ownership (the one
+404) and the document (the one 404). Only after both come the refusals that
+depend on the document, so none of them is reachable for a campaign the caller
+does not own: a patch whose `type` is not the stored one (422, `field: "type"`),
+a `base_write_revision` ahead of the document (422, `field:
+"base_write_revision"`, checked before the no-op, because it is always a client
+defect), `document_unsupported` (409), a touched field that moved after the base
+(409 `conflict`, naming the fields and the current write revision and never
+their text), a merged document that fails validation (422, no `field`), and a
+restore of a version the document does not have (422, `field:
+"version_number"`). A document of the GM's other campaign under this campaign's
+path, a deleted one and someone else's are the same 404.
+
+**Concurrency.** `base_write_revision` in the body is the only concurrency
+token; there is no `ETag`. A patch, a restore and a seal hold the document's row
+for their transaction, so two autosaves of one document are serialised and the
+second reads what the first committed. None of them takes the campaign lock or
+advances the campaign's authorisation revision: a content write changes no fact
+a display's preconditions read. **No document route consults the campaign's
+archived state**: reads, create, patch, restore, seal, the library, archive,
+unarchive and delete all work in an archived campaign, and every content write
+works on an archived document. That differs, deliberately,
+from `campaign_archived` on seats and from conversation create's 404: refusing
+would strand an open canvas's autosave when another tab archives.
+
+**Paging.** History is newest first, `?limit=` 1 to 50 (default 20), digits only
+— `1.0`, `+5` and `05` are refused, never clamped. Its cursor names a version of
+that document and no other, and `next_cursor` is `null` once a page reaches
+version 1, so the walk never ends on an empty page. The library's `limit` is 1 to
+50 (default 25). Its `next_cursor` is present whenever the server read a full
+page, so a page may be short, or empty, while it is non-null: a row this build
+cannot list is skipped (and counted in the service's log), never allowed to end
+the walk. A library cursor whose anchor document has since been deleted — the
+last row of an Archived page, deleted, then *Load more* — or that came from
+another campaign is `422` with `field: "cursor"`; the client answers it by
+reloading the list from the first page. Neither cursor ever holds text.
+
+**Body caps.** A create and a field patch may carry up to 6 MiB, because the
+largest valid document (a stat block at every bound, in four-byte code points)
+is about 5.2 MB of UTF-8; nginx's `/campaigns` location lets that through. Every
+other body on these routes stays at 8 KiB. A larger body is `422` with no
+`field`, refused as soon as it is known to be too long.
+
+**Archive, unarchive and delete** (LIB-16 to LIB-18) answer `204`, never a
+`Document`, so a document this build cannot render can still be archived and
+deleted. Archive and delete are fact-changing narrowings in two steps (RQ-5,
+RC-15): first, without the campaign lock, the campaign's live table is narrowed
+and that commits; then, under the campaign's exclusive lock, ownership is read
+again, the document changes, a table that went live in between is narrowed
+too, and the campaign's authorisation revision advances. When the lock cannot
+be had in time the answer is a retryable `503` whose message says the change
+is **not applied yet** — the display has already stopped — and the client
+retries; nothing is left to a background job. Unarchive takes the lock only
+when the document is archived. Each change writes one audit row naming the
+document by its id and nothing else; a repeat changes nothing and writes none.
+
+**Delete** takes only an archived document (`409 document_not_archived`
+otherwise, refused before anything narrows) and asks for the password again
+(SEC-40): its `DocumentDeleteRequest` is read first, then the database is
+checked, then the password — before any transaction opens and before the path
+ids are looked at — so a wrong password is `403 reauth_failed` and an outage
+of the check a retryable `503`. The check spends the **same attempt budget as
+signing in** — 10 per account in any 5 minutes, right or wrong — so the
+eleventh delete in five minutes is `429 throttled_user` with `retry_after_s`,
+and the account's sign-in waits with it. A delete dialog says so rather than
+retrying. The document goes with its whole history; its audit rows stay.
 
 ### AI edits
 
@@ -360,6 +835,251 @@ invocation, not an outcome.** The result never carries the document: documents
 travel through the document endpoints only, so neither the thread nor its export
 can hold a body (EXPORT-12).
 
+## The conversation family
+
+A conversation's identity and metadata: the index a sidebar is built from
+(`1kg.2.4`). What a conversation *says*, and when, is the timeline family's.
+The routes are `service/conversations_api.py`.
+
+| Route | Answers |
+| --- | --- |
+| `GET /conversations` | `ConversationPage`: the caller's own conversations, newest metadata first |
+| `POST /conversations` | `201` and the new `Conversation`. The body is a `ConversationCreateRequest` |
+| `GET /conversations/{id}` | the `Conversation`, archived or not |
+| `PATCH /conversations/{id}` | the `Conversation` after the change. The body is a `ConversationPatchRequest` |
+
+**`Conversation`.** Every key is present. `campaign_id`, `title`,
+`started_mode`, `updated_at` and `archived_at` are `null` where the row never
+recorded them (*Not recorded*), which is every one of them for a conversation
+that existed before this family. The owner's id, `selection_strategy`,
+`manual_alias` and `catalog_revision` are **never** on the wire: the owner is
+the session, and the model-routing columns are `/chat`'s own (owner decision
+D-9).
+
+- **`started_mode`** is the channel the conversation was started in, bound
+  first-writer-wins. It is not the mode of a turn — that stays per turn — and no
+  chat turn ever sets it.
+- **`updated_at`** moves on a metadata change and never on a chat turn, so the
+  index is ordered by metadata changes, not by recent activity (ruling R-2).
+- **Ids.** A conversation created here gets a server-minted id, `cnv_` and 22
+  more characters. Every client-minted UUID stays a valid conversation id on
+  every route, with no deprecation. An id outside the *Identifiers* grammar
+  cannot be carried: `GET` and `PATCH` answer the one `404`, and the index
+  leaves such a row out rather than failing, logging only how many it left out.
+  The legacy routes still read it. The index never lists at all a row whose id
+  could carry the page's cursor past the *Pagination* grammar's 512 characters:
+  it lists only an id of 1 to 64 printable ASCII characters (U+0020 to U+007E),
+  which every server-minted id and every UUID is. Only a hand-made `/chat`
+  request can mint any other id; such a row is left out uncounted, so a paging
+  walk is never cut short by one and always reaches every row behind it.
+
+**Titles.** A title a request sends is trimmed the way a brief is (see
+*Trimming*), is 1 to 200 code points after trimming, and is stored trimmed. It
+may not hold, anywhere, U+0000 to U+001F, U+007F to U+009F, U+202A to U+202E or
+U+2066 to U+2069 — the controls, and the bidirectional embeddings, overrides and
+isolates that can make a title read as something else. The refusal names the
+field `title` and never the value. A title a **response** carries is read as
+stored: bounded at 1 to 200, with no trim rule.
+
+**Create.** `started_mode` is required. `campaign_id` is optional, and a
+conversation inside a campaign is started in `gm` — otherwise `422` naming
+`campaign_id`, a body rule that runs before anything is looked up. A campaign
+that is missing, archived or someone else's is the same `404` as a missing
+conversation ("404 by campaign", threat model §8.1). There is no claim: the
+server mints the id and the owner is the session. There is no `command_id`
+either, so a retried create makes a second conversation, which archive recovers
+(see *Idempotency*).
+
+**Patch.** At least one of `title`, `archived`, `campaign_id` and
+`started_mode`, and none of them may be `null`: moving a conversation between
+campaigns, or taking one out of its campaign, is not in v1. One transaction,
+all or nothing, in this order:
+
+1. ownership — the one `404` for a conversation that is missing, foreign,
+   never owned or unreadable;
+2. the `422`s that depend on the conversation: linking needs a conversation
+   started in `gm` or never recorded (field `campaign_id`), and a conversation
+   that is in a campaign, or is being linked to one, binds no channel but `gm`
+   (field `started_mode`);
+3. the link: the campaign it is already in is a no-op, another campaign is
+   `409 already_linked`, and a campaign that is not a live one of the caller's is
+   the `404`;
+4. the channel, first writer wins — a different winner is the answer, not an
+   error;
+5. the title — the one it already has is a no-op;
+6. the archive flag — the state it is already in is a no-op.
+
+**The index.** Query parameters, each refused with a `422` naming it and never
+its value: `limit`, an integer from 1 to 100, default 100 (a refusal, not a
+clamp); `cursor`, of the *Pagination* grammar; `include_archived`, exactly
+`true` or `false`; `started_mode`, a channel; `campaign_id`, an identifier. A
+campaign the caller does not own matches nothing, so the page is empty — no
+`404`, no oracle. A parameter the route does not know is ignored. There is no
+title and no search parameter, and the cursor encodes the two ordering values
+only. A page may be short, or empty, with a non-null cursor.
+
+**The order of checks** is the threat model's (SEC-3), with the origin check in
+front of a write: SEC-7 (`403 forbidden`, *That request didn't come from this
+application.*) → the session (`401`, the one body above) → the `dm` role (`403
+forbidden`) → the body or the query (`422`) → the store (`503
+backend_unavailable`) → the path id → ownership (`404`) → validation that
+depends on the conversation (`422`) → its state (`409`). The first three are
+the Workbench router's, so they run before anything a route reads. SEC-7 compares the `Origin` host with the `Host` header's
+host, the port only when `Host` carries one and the scheme never; a
+`Sec-Fetch-Site` that is present must be `same-origin`; a body must be
+`application/json`; a request with neither browser header is not a browser's
+and is allowed. A body is at most 8,192 bytes.
+
+Deletion is not in this family: archive is reversible and destroys nothing, and
+deletion follows `agent-forge-harness-1ka.5`.
+
+## The campaigns and seats family
+
+A GM's campaigns and the seats at their table, and an account's own side of
+them (`1kg.2.2`; owner decisions D-1, D-5 and D-12; threat model SEC-2, SEC-3,
+SEC-40, SEC-50). Two routers: the GM routes on the `dm`-gated Workbench router,
+and the account routes on `account_router`, which is the same posture without
+the role — a player must reach them, and so must a GM seated at another GM's
+table. The account side lives under `/seats` because `GET /campaigns/{id}`
+would otherwise answer a player's `GET /campaigns/offers` with the role refusal.
+
+| Route | Answers |
+| --- | --- |
+| `GET /campaigns?limit&cursor&include_archived` | `CampaignPage`: the caller's campaigns, newest first (`created_at DESC, id DESC`, the id by code point) |
+| `POST /campaigns` | `201` and the new `Campaign`; the caller is its GM (D-5). The body is a `CampaignCreateRequest` |
+| `GET /campaigns/{campaign_id}` | the `Campaign`, archived or not |
+| `PATCH /campaigns/{campaign_id}` | the `Campaign` after a rename, archive, restore or tone-line change. The body is a `CampaignPatchRequest` |
+| `POST /campaigns/{campaign_id}/conclude` | the `Campaign`, marked concluded (bead `cfx`). No body; a repeat changes nothing |
+| `POST /campaigns/{campaign_id}/reopen` | the `Campaign`, no longer concluded. No body; a repeat changes nothing |
+| `GET /campaigns/{campaign_id}/participants?limit&cursor&include_removed` | `SeatPage`, oldest first |
+| `POST /campaigns/{campaign_id}/participants` | `201` and the new, open `Seat`. The body is a `SeatCreateRequest` |
+| `POST …/participants/{participant_id}/offer` | **`204` with no body, whatever the address holds**. The body is a `SeatOfferRequest` |
+| `POST …/participants/{participant_id}/confirm` | the confirmed `Seat` (D-12, SEC-50(5)) |
+| `POST …/participants/{participant_id}/remove` | `204`. The body is a `SeatRemoveRequest`: every Remove asks for the password (SEC-40) |
+| `GET /seats?limit&cursor` | `PlayerSeatPage`: the caller's accepted, live seats, newest acceptance first (`accepted_at DESC, campaign_id`, the id by code point); the cursor encodes those two, never a participant id (SEC-43) |
+| `GET /seats/offers?limit&cursor` | `SeatOfferPage`: the offers made to the caller's **verified** address, newest first |
+| `POST /seats/offers/{offer_id}/accept` | the `PlayerSeat`, `confirmed: false` until the GM confirms |
+| `POST /seats/offers/{offer_id}/decline` | `204`. The body is a `SeatDeclineRequest`; `block` refuses that GM's later offers, silently |
+
+Every list takes `limit` 1 to 50 (50 by default) and an opaque cursor; a page
+may be short while `next_cursor` is not null. No numeric account id is on the
+wire anywhere in this family (SEC-50(1)), every request forbids undeclared keys,
+and nothing on the account side names an address, a campaign's owner or a
+participant (SEC-43, SEC-50(4)).
+
+**An offer names an address, never an account**, and binds to one only at
+acceptance. Making it reads no account and no block, so the GM's answer — one
+`204`, byte for byte — cannot depend on whether anybody holds the address
+(SEC-50(2)). A repeat of an address the campaign already has a live offer or an
+accepted seat for changes nothing; the owner's own address is `422` naming
+`email`. A GM may write at most 30 offers in 24 hours across every campaign
+(`429 throttled_user` with `retry_after_s`); a repeat never spends that budget.
+An offer is open for 14 days. **No mail is sent**: the GM tells the player.
+
+**Only a Verified account whose verified address is the offer's may see or
+accept it** (SEC-50(4)). The address is compared with ASCII A–Z folded and
+nothing else, so a non-ASCII case variant fails closed. Until email
+verification ships (`yje.2.1`), no account is Verified and every account's
+offer list is empty (owner question OQ-1). Every refusal on the account side —
+missing, someone else's, expired, withdrawn, archived, blocked, already seated,
+the caller's own campaign — is the one `404`.
+
+**The GM confirms who accepted** (D-12, SEC-50(5)): a `Seat` reads
+`awaiting_confirmation`, with the address the account accepted under, until the
+GM confirms it. Until then the seat gets the table slot only.
+
+`Seat.status` is one of `open`, `offered`, `not_accepted` (declined, or
+expired), `awaiting_confirmation`, `confirmed` and `removed`; the words a GM
+reads are the design lane's. Withdrawing an offer is the GM's Remove.
+
+**Archive** narrows a live session first, in a step that never waits for the
+campaign lock, and then changes the fact under the lock; if the lock cannot be
+had in time the answer is `503 backend_unavailable`, retryable, and the change
+is *not applied yet*. Archive ends no session.
+
+### The tavern card (bead `cfx`)
+
+Every answer that carries a `Campaign` carries its card's facts, and every
+`PlayerSeat` carries the seated card's. Three are the GM's to state — stored by
+migration 0013 — and the rest are derived by the server at read time, never
+stored (`service/campaign_summary_store.py`). The rules the server applies are
+interactions ADR §19 A-31, which the owner may override.
+
+| Key | `Campaign` | `PlayerSeat` | Meaning |
+| --- | --- | --- | --- |
+| `tone` | yes | yes | the card's tone line, or `null`. Optional at create (only a name is required); `PATCH` sets it, `tone: null` clears it. 1 to 80 characters, trimmed as a name is |
+| `game_system` | yes | yes | `dnd5e`, the one system the service answers from |
+| `avatar_icon`, `avatar_tone` | yes | yes | a Material Symbols name and `ember` or `gold`: stable per campaign, the same for the owner and every seated player, until a GM can choose one |
+| `concluded_at` / `concluded` | timestamp or `null` | boolean | the GM's Mark concluded. **Not archive**: a concluded campaign keeps its seats, documents and table, stays in the list, and narrows or widens nothing |
+| `last_played_at` | yes | yes | when the table last met — an ended session's end, an expired one's expiry (whether or not the sweep has marked it yet), a live one's start — or `null`. Never later than the session's expiry: an End pressed after it is not a later meeting |
+| `live` | as `badge` | yes | a table session is running now |
+| `badge` | `live`, `ready` or `null` | — | LIVE wins; READY is prepared material waiting (an unarchived document edited after the table last met, or any, for a campaign that has never met); `null` means idle |
+| `seat_count` | 0 to 40 | — | seats not removed, open, offered and accepted alike |
+| `last_activity_at` | yes | — | the latest of a session played, a document edited and a GM turn in a conversation linked to the campaign, never before `created_at` |
+| `dormant` | yes | — | no activity for more than 30 days, and neither live, concluded nor archived |
+
+**A seated card is the table's and nothing more** (SEC-43): no participant id,
+no seat count, nothing about another player, and no signal of the GM's private
+prep — no READY and no last-edit time. `GET /campaigns` stays newest first by
+creation: the tavern orders by `last_activity_at` itself, because the
+"Concluded (N)" disclosure needs every page anyway.
+
+Conclude and Reopen are a rename's kind of write: one statement with the owner
+in it, no campaign lock and no `authz_revision` advance, answered through the
+same one `404` for a campaign that is not the caller's. Each change writes an
+audit row (`campaign.concluded`, `campaign.reopened`); a repeat writes none.
+Not yet recorded, so not on the wire: the card's "last beat" line and an avatar
+the GM chose.
+
+## The groups family
+
+A GM's named groups of seats (`btb`; owner decision O-3; shared eligibility ADR
+ED-4, ED-12, ED-13, ED-15). A group is a label the GM keeps for choosing an
+audience. **A group's name and its members are GM-only. No table-side shape
+carries either, and the audience a table sees never names a group (ED-15,
+REVEAL-24).** The routes are on the `dm`-gated Workbench router: the origin
+check, the one `401`, the role `403`, and the one `404` for anything that is
+not the caller's (SEC-2, SEC-3, SEC-7).
+
+| Route | Answers |
+| --- | --- |
+| `GET /campaigns/{campaign_id}/groups` | `GroupPage`: every live group, by the name's fold, then id |
+| `POST /campaigns/{campaign_id}/groups` | `201` and the new, empty `Group`; a repeat of the key answers `201` too. The body is a `GroupCreateRequest` |
+| `PATCH /campaigns/{campaign_id}/groups/{group_id}` | `200` and the renamed `Group`; the same name again changes nothing. The body is a `GroupPatchRequest` |
+| `POST …/groups/{group_id}/remove` | `204`, a repeat included. No body |
+| `POST …/groups/{group_id}/members/{participant_id}` | `204`, a repeat included. No body. A seat that is missing, removed or another campaign's is the one `404` |
+| `POST …/groups/{group_id}/members/{participant_id}/remove` | `204`, a seat that is not a member included. No body |
+
+A group that is missing, removed or another campaign's is the one `404` on
+every group-scoped route except remove, where a removed group answers `204`.
+
+**One page.** A campaign holds at most 50 live groups, so `GroupPage` holds them
+all: there is no `limit` or `cursor` parameter and `next_cursor` is always
+`null`. The key stays, so paging can arrive without a version bump.
+
+**`member_ids` is not an audience.** It lists the seats in the group that are
+not removed — open, offered, and accepted but not yet confirmed as well as
+confirmed — distinct and ascending by code point. Whatever delivers to a group's
+members applies SEC-50(5) and A-27 seat by seat: a group never widens delivery
+to a seat the GM has not confirmed.
+
+**Removal is permanent.** A removed group is kept for disclosure memory and is
+never restored, so the wire says *remove*, never *archive*, and a patch cannot
+carry one. A removed group frees its name. A name is unique among a campaign's
+live groups up to case (`Scouts` and `scouts` collide), and is checked by the
+alias rules on the server, which are stricter than the shape and answer the
+same `422`.
+
+**Eligibility.** Adding a member, removing one and removing a group each
+advance the campaign's authorisation revision under the campaign lock; creating
+and renaming a group change no one's eligibility and advance nothing
+(`docs/ARCHITECTURE.md`, the authorisation revision). Adding a member displays
+nothing (ED-13). Removing a member or a group is a narrowing (ED-12, RQ-5): it
+narrows the live session first, in a step that never waits for the lock, and
+then changes the fact under the lock; if the lock cannot be had in time the
+answer is `503 backend_unavailable`, retryable, and the change is *not applied
+yet*. No password is asked for: a narrowing never waits on one (X-3).
+
 ## The timeline family
 
 A conversation is read as a list of entries, one per **exchange**: a turn
@@ -368,7 +1088,11 @@ messages with reply pointers.
 
 - A page boundary can never separate a prompt from its result, so the rule in
   `1kg.4.2` — *pagination never splits a prompt/result association* — holds by
-  construction instead of by cursor arithmetic.
+  construction instead of by cursor arithmetic. That guarantee is why a
+  `TimelinePage` can come back short, or even with `items: []`, while
+  `next_cursor` is still non-null: skipping a whole legacy window is sometimes
+  the only way to avoid splitting one exchange across a page (see
+  *Pagination* above).
 - Tool results finish in any order (RAIL-16). Embedded, each one sits beneath the
   turn that asked for it without the client regrouping anything.
 - It is what the client already keeps: `useChat` pairs stored rows into
@@ -411,6 +1135,15 @@ optional usage ideas, routing disclosures, spell card and stat block that
 filled the gaps with `sources: []` and `answerable: true`. For rows written
 before the durable timeline those facts are honestly unknown, which the contract
 says with `null` (see *Not recorded* above).
+
+A routing disclosure never tells the user which model or provider answered
+(owner decision D-9, `agent-forge-harness-au3`). `requested`, `effective` and
+`fallback_from` hold a public model id from `PUBLIC_MODELS` in
+`service/model_catalog.py`, or `auto`, and never a catalog alias. The server
+never sets `provider`. The key stays declared and optional so that rows stored
+before au3, which carry an alias and a provider, still read. This is not a
+version bump: no deployed client has read a timeline yet, and a stale bundle
+would show its placeholder for the entry.
 
 The pieces of an answer are the existing `service/models.py` shapes, reused
 rather than re-declared. That is how the evidence provenance that
@@ -467,21 +1200,30 @@ Stop all (AUDIO-9), and carries no epoch, because a Stop is never stale (X-3).
 
 ## The table-session family
 
-Four bearer secrets exist (threat model §6.2); two of them are on the wire, each
-exactly once, in a POST body: the **table token** a table link carries and the
-**enrolment code** a personal link carries. Both are 32 CSPRNG bytes as
-`secrets.token_urlsafe` spells them — 43 base64url characters — and the contract
-pins that length. Neither ever appears in a URL the server sees (REVEAL-19).
+There is **no table link, no join and no enrolment** (threat model §15, owner
+decisions D-1 and D-13): a player is an account, seated by the GM (SEC-41), and
+no bearer secret is on the wire for any account (SEC-43). The one bearer secret
+left is the **screen grant** (SEC-48): 32 CSPRNG bytes the owner mints on the
+browser they are signed in on. It leaves the server once, in the `Set-Cookie`
+of the answer that mints it, and is in no body, no URL and no list.
 
-| Request | Answer |
-| --- | --- |
-| `TableJoinRequest` — the token | `TableJoinResponse`: `joined` with the device's role (`participant`, or `guest` with TABLE-13's line), `full` (SEC-10), or `inactive` — the one answer for a wrong, ended, expired or rotated token (TABLE-9). No reason, ever |
-| `EnrolRequest` — the code | `EnrolResponse`: `enrolled` or `inactive` (TABLE-16). No reason, ever |
-| `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; only `rotate` may also reset personal links (REVEAL-17) | `TableSessionAnswer`: the `TableSession` and, for a start or a rotation, the new token — the one time a token is in a body. An end carries `null` |
+| Route | Request | Answer |
+| --- | --- | --- |
+| `GET /campaigns/{campaign_id}/table-session` | — | `TableSessionAnswer`: the campaign's live session, else the one most recently started, else `session: null`. A session still `live` past `ends_at` reads `ended`, with `ended_at` its `ends_at`. Writes nothing |
+| `POST /campaigns/{campaign_id}/table-session` | `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; End and Rotate name their `session_id`, Start names none | `TableSessionAnswer`: the session as it stands after the command. `409 live_elsewhere` for a Start while the GM is live in another campaign; `429 throttled_user` with `retry_after_s` for a Start or a Rotate past SEC-35's per-campaign bound (End is never refused); `503 backend_unavailable`, retryable |
+| `DELETE /campaigns/{campaign_id}/table-session/screens/{screen_id}` | — | `204`, a repeat too. Another GM's screen, or none, is the one `404` |
+| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in |
+| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`, always: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49) |
 
-`TableSession` is the GM's view: state, link generation, when it started and
-ends, whether table audio is on, and how many devices hold a credential. It never
-carries the token: a token is not re-readable.
+`TableSession` is the GM's view: state, **admission generation** (`gen`, which
+§15.11 keeps), when it started and ends, whether table audio is on, and
+`screens` — the live grants of a live session, each as `{screen_id, created_at,
+last_seen_at}`, never the grant or its digest; an ended session lists none. The
+list carries up to 16, above SEC-48's per-session bound of four (*suggested*), so
+tuning the bound is not a contract change. The GM routes are Workbench GM routes
+(the `dm` gate, SEC-2, SEC-3); the two `/table/` routes are the table router's
+(SEC-44 to SEC-46): Fetch Metadata first, then SEC-7, then one principal — a
+live screen grant alone, else the account session.
 
 ## The realtime family
 
@@ -505,8 +1247,8 @@ threat model §8.3):
 
 | Channel | Kinds | Carries |
 | --- | --- | --- |
-| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `presence`, `asset`, `ready`, `reconnect` | lane status with the embedded invocation; the `TableSession` with the audio epoch; audio slots by cue id and title, with the audio epoch two GM tabs converge on (AUDIO-24); presence with participants' aliases and guest counts (AUDIO-21); an asset's state change (MS-3) |
-| Table, `TableEvent` | `session`, `inactive`, `audio`, `ready`, `reconnect` | whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29). No generation, no epoch, no id a table client has no use for (SEC-15) |
+| GM, `GmEvent` | `tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect` | lane status with the embedded invocation; the `TableSession` with **both** epochs; audio slots by cue id and title, with the audio epoch two GM tabs converge on (AUDIO-24); presence with participants' aliases and guest counts (AUDIO-21); an asset's state change (MS-3); **one reveal slot with its `RevealLive`, the reveal epoch and the generation, and the whole reveal picture as `RevealState`** |
+| Table, `TableEvent` | `session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect` | whether table audio is on and this device's own role; the one generic inactive event, after which the connection closes (TABLE-9); audio slots by handle, never a title (AUDIO-29); **one reveal slot as `table` or `mine` with its projection, and the opening picture of the slots this device is entitled to**. No generation, no epoch, no disclosure id, no id a table client has no use for (SEC-15) |
 
 Every audio frame names its slot and the slot's sequence (AUDIO-15: per slot,
 monotonic, assigned by the database): a client applies a frame only above its
@@ -514,13 +1256,376 @@ mark for that slot. A GM frame also names the link generation it was produced
 under (SEC-9); a table frame does not, because it is the server that writes a
 frame only to a stream of the same generation, and the number is nothing a
 table client needs. A one-shot never
-loops and is at most 30 s, on both channels. The `snapshot` and `slot` kinds —
-the reveal projection — arrive with the reveal family once
-`agent-forge-harness-1ir.1.2` is decided; until then a table snapshot is a
-`session` frame, one `audio` frame per slot and `ready`. Adding that kind before
-v1 is declared complete is not a version bump; `parseGmEvent`, `parseTableEvent`,
-`parseGmSnapshot` and `parseTableSnapshot` already read an unknown kind as a
-placeholder.
+loops and is at most 30 s, on both channels. The `snapshot` and `slot` kinds are
+the reveal family's, and both channels now carry them — see *The reveal family*.
+Adding them before v1 was declared complete was not a version bump;
+`parseGmEvent`, `parseTableEvent`, `parseGmSnapshot` and `parseTableSnapshot`
+read an unknown kind as a placeholder, which is what made that safe.
+
+## The reveal family
+
+The family through which GM-private text could reach a player, so its shapes are
+a security boundary rather than a convenience. Two rules govern all of it. First,
+**a projection is built, never filtered** (SEC-14): one server-side builder takes
+a sealed version, a mask and an audience and emits only allowlisted keys, and the
+player-safe export and print call the same builder (EXPORT-3, EXPORT-7). Second,
+**a table client is told less than the GM at every turn** — no epoch, no link
+generation, no session id, no participant id, no sequence of a slot it is not
+entitled to (SEC-15, REVEAL-24).
+
+### What may be revealed
+
+A mask names **explicit field keys**, never a wildcard: `all` is expanded by the
+client into the keys that exist at the moment the GM decides, so a field added to
+a type later is never revealed by an old wildcard (REVEAL-9, ED-8). Because `all`
+matches the field-key shape, it is refused by name wherever a mask key is
+expected; `*` and `%` never matched it.
+
+The revealable set is a registry fact, and it is an **allowlist** with exactly
+one source — `1kg.5.3`'s per-field rule:
+
+```
+revealable(type) = { key ∈ common_fields ∪ type.fields | rule(type, key).revealable }
+```
+
+A key whose rule does not say `revealable` is not revealable. That is the whole
+answer to *may this field reach a player*: there is no second list, no opt-out
+and no default, so a field a type gains later is withheld until the registry
+says otherwise, and `tags` — the only entry of REVEAL-10's never-list that is a
+document *field* at all — is off it on every type. `npc.true_identity` is ED-20's
+worked case: a field the type declares, that the GM edits, and that no mask and
+no projection can name.
+
+Both contract modules hold the allowlist as a constant, because the registry
+module imports them and cannot be imported back; **both suites pin the constant
+to `registry.json` for every type**, so the copy cannot answer differently from
+the rule it copies.
+
+### The mutations
+
+| Shape | Says | Answered with |
+| --- | --- | --- |
+| `RevealAudience` | `table`, or **one or more participants by id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). A reveal to one player is a list of one; there is no singular shape. Nothing ties an audience to a document type: under owner decision O-2 a participant audience is legal for **any** type, and the registry's `audience` flag now says only whose default reveal a type seeds | — (it is a member, not a request) |
+| `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) | **`RevealState`** — the GM's whole reveal picture, the new epoch included |
+| `RevealStopRequest` | Stop showing, by `scope`: a `document`, or `all` (REVEAL-6, REVEAL-7). **There is no slot scope** — see below. **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) | **`RevealState`**, the same |
+
+**Why both are answered with the picture.** REVEAL-22 advances the reveal epoch
+on *every* narrowing, "on an empty slot too" — a Stop with nothing live, a
+Rotate with nothing live, a participant removed. No slot changed, so there is no
+`slot` frame to carry the new number, and one re-sent with an unchanged `seq`
+would be dropped by RT-4's per-slot mark. Answering the mutation with the
+picture means **the acting tab can never trip over its own narrowing**: it has
+the new epoch before it composes its next Confirm, so an ordinary
+stop-then-reveal is not a 409.
+
+Other tabs converge three ways, and all three are needed: the server re-sends
+the GM `snapshot` frame after an **epoch-only** advance; a GM client takes
+`reveal_epoch` from **every** `slot` and `snapshot` frame regardless of its
+per-slot marks, because the epoch is a property of the session and not of the
+slot; and `TableSession` carries `reveal_epoch` beside `audio_epoch`, so a tab
+that reloads the session resource has it too (AUDIO-24's twin).
+
+**Group displays, and what a disclosure is** (owner decision O-3, amending §7.1,
+REVEAL-7 and NG-20). Showing one document to several players is
+**per-recipient copies of one disclosure**: one Confirm names the recipients,
+the server fills one slot per recipient, and every copy carries the same
+`disclosure_id`. A **document has at most one live disclosure**, and a
+disclosure is *either* the table slot alone *or* one or more participant slots —
+never both, which would make *stop all copies* ambiguous and let a private copy
+be mistaken for the one everybody can see. A Stop on the document therefore
+clears every copy by construction.
+
+A **named group is expanded by the client into its member ids** at the moment
+the GM confirms, exactly as `all` is expanded into field keys (ED-8). No group
+id and no wildcard ever travels or is stored, so a group whose membership
+changes tomorrow cannot silently widen a reveal that is live tonight. An
+audience may name many participants; a **slot** names one, which is why
+`RevealSlotRef` is its own shape.
+
+**Why a Stop names a document and not a slot.** REVEAL-22 is *a Stop clears a
+slot only if it holds what the Stop names*; a slot-scoped Stop names an audience
+and nothing else, so it could not honour that. Since a Stop is retried until it
+is acknowledged (REVEAL-16), tab A's retry would clear whatever tab B had
+deliberately revealed into that slot meanwhile — the "kill a later, deliberate
+reveal" REVEAL-16 rules out. Naming the document makes both rules hold by
+construction: a GM client always knows the document, because every slot's
+document id is in its reveal picture, and a document has **at most one live
+disclosure** (O-3, amending ED-15's "at most one slot"), so *what the Stop
+names* is unambiguous however many copies that disclosure has. The `document`
+scope exists so that the canvas header can stop *that document* without knowing
+which slots hold it, and `all` is the workspace indicator's panic button.
+
+### What the GM sees
+
+`RevealLive` is what one slot holds: the document, the pinned version, the mask,
+`stale_text`, `pending_delivery` and its `disclosure_id`. `stale_text` is
+REVEAL-8's notice, and the comparison behind it is **of text, not of version
+numbers** — ten autosaves raise one notice and reverting the text clears it.
+
+`pending_delivery` is AUD-10: a reveal to a participant who is **not enrolled,
+or enrolled and not currently connected** confirms normally and waits, and never
+falls back to the table. Both cases are the same flag, because they are the same
+fact for the GM — *nobody is reading this yet* — and telling them apart on the
+wire would let a sheet report who is online from a reveal (AUD-11); the GM reads
+who is connected from the presence frame, which is where that belongs.
+
+`RevealState` is the whole picture — session, generation, epoch, one entry per
+slot — and rides the GM channel's `snapshot` frame and nothing else. The threat
+model's §8.3 row is the rule: *reveal state, with the epoch, every slot, version
+numbers and mask keys* is GM **yes**, participant **never**, guest **never**.
+
+The **table slot is always listed**: "nothing revealed" is the table slot,
+present and empty, never an absent entry, because a GM client must not read
+missing state as *nothing revealed* (REVEAL-13). Each entry names **one** slot,
+a slot is listed once, and the disclosure rules above are enforced here: every
+entry of one document carries the same `disclosure_id`, one `disclosure_id`
+belongs to one document, and no disclosure is on the table and in a private slot
+at once. `pending_delivery` stays **per entry**, because one recipient may be
+waiting for a device while the others holding copies are not (AUD-10).
+
+Nothing of this reaches a table client. A player's frames name `table` or
+`mine`, carry no `disclosure_id`, no recipient count and no other participant's
+id, so a private display never says that it is one copy of several (REVEAL-24).
+
+### What a player sees
+
+`TableProjection` carries `content_kind`, the type, and one entry per masked key
+holding that key and its value — **and nothing else**. The heading is not on the
+wire: the table client renders the registry's label for `(type, key)`, which its
+bundle already holds. That is deliberate. Every other member of a projection is
+closed — a literal, an enum, a key on the type's allowlist, a value checked
+against that key's kind — and a free-text member, however tightly bounded, would
+be the one place a document's title, a participant's alias, an asset's filename,
+a version or an id could ride to a table with every gate green. The page title is
+still built from the projection, so a document's name reaches a player only when
+`name` is masked (TABLE-3).
+
+**The emitter is the confidentiality boundary.** Every refusal above is a
+refusal *by the server*: by the time a table client's Zod schemas run, the bytes
+are already on the device, so what the client does with an undeclared key —
+strip it, as the versioning table requires of every response — cannot be the
+guard. Both halves are pinned: the server refuses each smuggled key (the
+`applies_to: ["server"]` fixtures, `extra="forbid"` at every level) and the
+client's strip is asserted at every depth, by feeding what it kept back through
+the strict server model. Two requirements follow for `1kg.7.2`:
+
+- **Every emitted table frame is validated against its Pydantic model before it
+  is sent.** The model is the last thing between a builder's mistake and a
+  player's screen, and it only helps if the route runs it.
+- **The canary suite (T-1) asserts on the raw response bytes, never on a parsed
+  result.** A parse is exactly the step that would hide a smuggled key, so a
+  canary that reads one proves nothing.
+
+A masked key is present and non-empty in the pinned version (REVEAL-5, ED-9), so
+nothing arrives as a blank heading: text and prose are non-blank after trimming
+and refuse exactly the characters stored text refuses (*Fields*, above),
+a list has at least one item, an `integer` is a number rather than `null`, an
+ability block holds at least one score and no `null`s, and an entry carries both
+its name and its text. An `asset` value is a **`TableAssetRef`** — a per-slot
+opaque handle that dies with its slot — never the GM-side `AssetRef`, which
+carries an `asset_id` that would let two slots showing one portrait be correlated
+(SEC-15, REVEAL-21).
+
+`content_kind` has exactly **one** member in v1, `document`. Adding a member
+later **is** a version bump; what reserving the discriminator buys is that a v1
+table client meets an unknown kind as its **neutral placeholder** rather than as
+a parse failure. That is why `TABLE_EVENT_DISCRIMINATORS` names the kind at both
+paths it can arrive on — a `slot` frame's `content`, and a `snapshot` frame's
+`slots[].content` — and why the path walker gained an array segment to reach the
+second.
+
+**A table client that cannot read a `slot` or `snapshot` frame blanks the
+revealed content it holds for that slot and shows the placeholder; it never
+keeps showing what it had** (X-4). So the placeholder carries what is still
+readable: `parseTableEvent` answers `{ kind: 'unknown', reason, slot, seq }`
+whenever the slot name and the sequence parse, and per-entry results for a
+`snapshot` frame, so one unreadable entry does not discard the readable table
+slot beside it. This is not a future-version concern only: a table client checks
+a projection's keys against its **own** copy of the field definitions, so a
+server one deploy ahead of a table bundle — a type gained a revealable field,
+which this document's own table calls *no bump* — makes a frame unreadable
+today. Without the slot name the page has nothing to blank, the natural
+implementation skips the frame, and document A stays on the player's screen
+while the GM's indicator says B.
+
+### The frames
+
+| Channel | Kind | Carries |
+| --- | --- | --- |
+| GM | `slot` | the session, the link generation, the reveal epoch, the slot as a `RevealSlotRef`, its sequence and `RevealLive` or `null` — the twin of `GmAudioEvent` |
+| GM | `snapshot` | `RevealState`: the whole picture in one frame |
+| Table | `slot` | the slot as **`table` or `mine`**, its sequence, and a `TableProjection` or `null` — the twin of `TableAudioEvent`, and nothing else |
+| Table | `snapshot` | one or two slots: the table slot, always, and with the enrolled device credential this device's own. It is the **opening** frame only |
+
+A table `snapshot` frame is sent when a stream opens and when a snapshot
+resource is read, and at no other time: **every later change is a `slot` frame,
+to the clients entitled to that slot**. A service that re-broadcast the whole
+picture on each change would hand a guest a no-op frame every time a private
+reveal happened, and a frame that arrives whenever something invisible changes
+is exactly the inference channel WT-7 and T-8 rule out.
+
+A table client is never told a participant id. Every table-side shape in this
+contract is already id-free — `TableRole` is an enum, `ScreenMintAnswer` carries
+a time alone — and which participant `mine` is, the server resolves from the
+table principal, *never from request fields*. A slot a device is not entitled to is **absent**, never marked:
+a marker would confirm both that the slot exists and that a private reveal is
+happening (WT-7, T-8, threat model §8.2).
+
+**The role decides the slots.** A `TableSnapshot` carries exactly one `session`
+frame while live — two could disagree about the role — and that frame's `role`
+is what says whether a `mine` slot may appear at all. A **guest** holds the table
+slot and nothing else: no `mine` in the picture, and no later `mine` `slot`
+frame either. An enrolled **participant**'s picture is exactly `table` and
+`mine`, because for an entitled device *absent* and *present and empty* are
+different facts and only the second is legal — otherwise a page cannot tell
+"nothing is revealed to me" from "I was not told". This is the entitlement rule
+the family is built on, and it is checked where `1kg.7.2` validates what it is
+about to emit, so a snapshot route that resolved a revoked device as a guest
+(TABLE-13) and still attached its slot cannot send it.
+
+Both snapshot resources carry **one** reveal picture while their session is live
+and **none** when there is none — `GmSnapshot`'s *no session running* and
+`TableSnapshot`'s *inactive table* (TABLE-9) are unchanged by this family. A
+snapshot is complete before `ready`, so a client that has seen `ready` knows
+every slot it is entitled to, and a GM client never reads missing state as
+"nothing revealed" (ADR RT-4, REVEAL-13).
+
+**A dead table projects nothing, in every frame that can carry a projection.**
+A `TableSnapshot` is **live** when it carries a `session` frame **and no
+`inactive` frame** — `TableSessionEvent` exists only while live, and `inactive`
+is what a dead table says (TABLE-9). Both facts, and neither order nor count
+changes either: an `inactive` frame kills the resource wherever it sits in the
+list and however often it is repeated. That one predicate is what the picture
+rule and the frame rules below read, in the Pydantic model, in the Zod schema
+and in the readers.
+
+Ending, expiring or rotating a link *clears every projection* (REVEAL-17,
+AE-51), so a `TableSnapshot` that is not live carries no reveal picture, no
+`slot` frame holding content, and no `mine` `slot` frame at all. An **empty**
+`table` `slot` frame stays legal, because reporting that a region holds nothing
+is what a cleared table looks like: `[inactive, slot(table, …, content: null),
+ready]` is a valid resource. There is no role on a dead resource, so the
+entitlement rule above never runs over it and these rules are the only ones that
+can. The scope is projections; a table `audio` frame is governed by the audio
+family and survives an inactive resource on both sides, so a table client that
+has gone inactive stops its own ambience rather than inferring it from this
+rule.
+
+An `inactive` frame and a `session` frame are **mutually exclusive** in a
+well-formed resource, and a resource carrying both is refused on its own clause.
+This is the confused emitter the rule exists to catch: a snapshot route
+answering a link the GM has just rotated (SEC-9, TABLE-13) builds the `inactive`
+frame and then appends the head frames it had buffered for the session it was
+serving — session frame included — and were the session frame alone the test,
+that resource would read as live and switch off *every* rule here, carrying the
+projection in the reveal picture as readily as in a `slot` frame. It is refused
+where `1kg.7.2` validates what it is about to emit, so neither the buffered
+slots nor the buffered picture can be attached.
+
+A `GmSnapshot` carries **one** `session` frame, and its reveal picture describes
+**that** session: `GmSnapshot` refuses a picture whose `session_id` or `gen`
+differs from the session frame beside it. The reveal epoch is per session
+(ED-9), so a picture from another session — or from a generation before a
+Rotate — is exactly the "number from last night" a Confirm must never be able to
+match.
+
+AE-51's clearing is a table-client rule. **`GmSnapshot` is exempt**: `RevealLive`
+is GM-only by the threat model's section 8.3 row and carries ids, a version and
+mask key names — never field values — so a slot frame that outlives its session
+is a staleness defect, carried to `1kg.7.2` with V-4, and not a disclosure. The
+table resource's liveness is two facts, both pinned by fixtures: a `session`
+frame is present, and no `inactive` frame is.
+
+The **readers apply the reveal-picture rule too**, not only the emitter:
+`parseGmSnapshot` and `parseTableSnapshot` answer
+`{ kind: 'unknown', reason: 'invalid' }` for a live resource with no picture,
+for a resource with no live session that carries one, and for two pictures.
+Without this a GM tab in RT-9's polling mode would read a snapshot whose picture
+failed to build as `ok`, find no `snapshot` frame, and render *nothing revealed*
+while the table shows a dossier.
+
+`parseTableSnapshot` applies the **liveness rule** above as well — the same
+predicate, the same two dead-resource clauses and the same mutual exclusion — so
+a resource the two models refuse for liveness is a resource the reader refuses.
+A table client is told elsewhere in this contract to blank a slot it cannot
+read; a reader that answered `ok` for `[inactive, slot(mine, …), ready]` would
+hand it the projection instead of something to blank. One rule, three places
+that agree.
+
+Both are counted on the raw `event` values, so a picture this bundle cannot
+parse still counts as a picture and becomes one placeholder inside an otherwise
+readable snapshot. The liveness clauses are read the same way, with one
+deliberate softness: a `slot` frame with **no** `content` key at all shows
+nothing, so it becomes one placeholder rather than making the whole resource
+unreadable. The models refuse that frame anyway — `content` is required and
+nullable on both sides.
+
+### Refusals
+
+A mask the server will not accept is a **422** whose error names the keys at
+fault in `keys` — **keys only, never their text**, because an error body is where
+logs and traces look (X-7), and the field-key shape makes prose unrepresentable.
+It is an additive field and no version bump. A stale epoch is `409 conflict` and
+is never retried automatically: the sheet reloads live state, keeps the GM's
+draft and asks for a fresh Confirm (REVEAL-15, REVEAL-22).
+
+**There are no eligibility fields in v1.** Workbench v1 ships mask-only: the GM's
+explicit Confirm, which names every field it shows and previews its exact text,
+is the authorisation (ED-11, X-2). Eligibility binds reveal from `1ir.11.1`, and
+the refusal it needs is an **additive error code**, which this contract's own
+rules allow without a bump. A suite test asserts that no schema declares a class
+or a revision, and another that no request shape a table client can send names a
+participant.
+
+### Amendments the interaction record needs
+
+These shapes are consistent with `docs/adr/gm-workbench-interactions.md`, but
+several of its rows are now less precise than the contract they govern, and two
+were amended by the owner on 2026-09-20. The lead applies these to the record;
+this bead only lists them.
+
+1. **REVEAL-5** says a Confirm carries "the document, the sealed version, the
+   explicit mask, the audience and the reveal epoch". It must also say **the
+   session** — ED-9 added it so that an epoch from an earlier session can never
+   match, and the wire now requires it. The record should also say what a
+   Confirm and a Stop are **answered with**: the GM's reveal picture, the new
+   epoch included, so the acting tab cannot trip over its own narrowing when
+   REVEAL-22 advances the epoch without changing a slot.
+2. **REVEAL-6** describes Stop as stopping "that document" or "every reveal".
+   The wire has **two** scopes and no slot scope, and the record should say why:
+   REVEAL-22 makes a Stop clear a slot only if it holds what the Stop names, and
+   a scope that named an audience alone could not honour that under REVEAL-16's
+   retries. The `document` scope exists so that the canvas header can stop *that
+   document* without knowing which slot holds it.
+3. **REVEAL-8** is the source of the rule that the comparison is of text, not of
+   version numbers. The GM-side field is named `stale_text` for that reason,
+   while the `1kg.1.6` alignment calls it "whether a newer version exists". The
+   record should carry the field name so the two readings cannot drift apart.
+   **This is the one place where the alignment's wording and the ADR differ, and
+   the ADR was followed.**
+4. **AUD-8** says "one table slot, plus one private slot per participant". The
+   table channel names them `table` and `mine`, because a slot reference is an
+   id and a table client is told no ids (SEC-15); the record should say so, or a
+   reader will expect `participant:<id>` on both channels.
+5. **TABLE-3** says a table client renders the labels it is given. It is the
+   other way round: a projection carries `key` and `value` only, and the client
+   renders **the registry's label** for `(type, key)`. The record should say so,
+   because the reason is a security one — a free-text member is a channel
+   through which a title, an alias or a filename would pass every gate.
+6. **§7.1, REVEAL-7 and NG-20** are amended by **owner decision O-3**: group
+   displays ship, as per-recipient copies of one disclosure. A document has at
+   most one live disclosure; a disclosure is either the table slot or
+   one-or-more participant copies, never both; a Stop on the document clears
+   every copy. §7.1's "a document is live in at most one slot" no longer holds
+   as written.
+7. **AUD-9 and NG-22** are amended by **owner decision O-2**: a participant
+   audience is legal for **any** document type, and the registry's `audience`
+   flag now says only whose default reveal a type seeds.
+
+A smaller one: **REVEAL-10**'s never-list mixes document fields with things that
+are not fields at all. The contract expresses it as an **allowlist** — a field
+is revealable only where `1kg.5.3`'s per-field rule says so — and the record
+could say which of its items are fields and which are simply never on the wire.
 
 ## Legacy compatibility
 

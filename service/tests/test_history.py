@@ -92,6 +92,14 @@ class _ExplodingStore:
     def conversation_strategy(self, conversation_id):
         return self._strategies.get(conversation_id)
 
+    def conversation_binding(self, conversation_id):
+        bound = self._strategies.get(conversation_id)
+        return None if bound is None else (*bound, None)
+
+    def rebind_conversation_strategy(self, conversation_id, *, strategy, manual_alias, catalog_revision):
+        del catalog_revision
+        self._strategies[conversation_id] = (strategy, manual_alias)
+
     def has_content(self, conversation_id):
         return False
 

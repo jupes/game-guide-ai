@@ -65,6 +65,15 @@
   gap: var(--aether-space-2);
 }
 
+/* The role="combobox" wrapper around the field (agent-forge-harness-27h).
+   Purely structural: it has to take the width the fullWidth TextField used to
+   take straight from the flex row, or declaring the role would quietly reflow
+   the composer. */
+.gm-composer__combobox {
+  flex: 1;
+  min-width: 0;
+}
+
 .gm-composer__sr-only {
   position: absolute;
   width: 1px;

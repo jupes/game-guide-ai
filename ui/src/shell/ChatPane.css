@@ -78,25 +78,11 @@
   flex-shrink: 0;
 }
 
-/* Spell-usage suggestion cards (channel-chats CP-C) */
+/* Spell-usage suggestion cards (channel-chats CP-C): their place in the feed.
+   The cards' own layout is components/SuggestionCards.css. */
 .chat-pane__suggestions {
   align-self: flex-start;
   max-width: 44rem;
-}
-
-.chat-pane__suggestion-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-3, 0.75rem);
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.chat-pane__suggestion {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-3, 0.75rem);
 }
 
 /* File attachments (swe1.6) */
@@ -108,8 +94,12 @@
 }
 
 /* The real control is the attach IconButton; the input is triggered
-   programmatically and stays visually + AT hidden via off-screen clipping
-   (not display:none, so it remains focusable/operable for automation). */
+   programmatically. AT-hiding comes from `aria-hidden` + `tabIndex={-1}`
+   on the element (agent-forge-harness-vnx) — clipping alone is NOT AT
+   hiding, as `.chat-pane__sr-only` below proves: it uses this exact
+   clipping technique and its entire job is to stay announced. This stays
+   visually off-screen (not display:none, so a programmatic `.click()` still
+   opens the picker). */
 .chat-pane__file-input {
   position: absolute;
   width: 1px;
@@ -133,7 +123,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 36px;
+  min-height: var(--aether-touch-min); /* was 36px: the 44px floor (0rn, INF-13) */
   padding: 0 14px;
   border-radius: var(--md-sys-shape-corner-full);
   border: 1px solid var(--md-sys-color-outline-variant);

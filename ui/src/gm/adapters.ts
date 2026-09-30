@@ -11,7 +11,8 @@
  * (timeline, documents, reveal, audio) adds its adapters here beside its schemas.
  */
 
-import type { InvocationStatus, ToolResult, ToolSuggestion } from './contracts'
+import type { ChatAnswer, InvocationStatus, ToolResult, ToolSuggestion } from './contracts'
+import type { SpellCardProps } from '../ds/SpellCard'
 import type { StatBlockCardProps } from '../ds/StatBlockCard'
 
 /** `AssistantLaneProps.status`, plus the `cancelled` state decision RAIL-22 adds. */
@@ -52,6 +53,35 @@ export function suggestionFor(
 
 /** Taken from the contract rather than re-declared, so it cannot drift from the wire. */
 type StatBlockContent = Extract<ToolResult, { result_kind: 'card' }>['card']['stat_block']
+type SpellContent = NonNullable<ChatAnswer['spell_content']>
+
+/**
+ * A spell answer as `SpellCard` wants it. It lived privately in `ChatPane` until
+ * the GM thread (1kg.3.4) needed it too; `/chat`'s `SpellContent` is the same
+ * shape, so every channel reads it through here.
+ */
+export function toSpellCardProps(spell: SpellContent): SpellCardProps {
+  return {
+    name: spell.name,
+    level: spell.level ?? undefined,
+    school: spell.school ?? undefined,
+    castingTime: spell.casting_time ?? undefined,
+    range: spell.range ?? undefined,
+    duration: spell.duration ?? undefined,
+    components: spell.components
+      ? {
+          v: spell.components.v ?? undefined,
+          s: spell.components.s ?? undefined,
+          m: spell.components.m ?? undefined,
+        }
+      : undefined,
+    description: spell.description,
+    higherLevels: spell.higher_levels ?? undefined,
+    classes: spell.classes ?? undefined,
+    concentration: spell.concentration ?? undefined,
+    ritual: spell.ritual ?? undefined,
+  }
+}
 
 /**
  * A `stat_block` card result as `StatBlockCard` wants it (1kg.3.2). The wire

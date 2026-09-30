@@ -16,7 +16,7 @@ Out-of-corpus questions are refused, not hallucinated. Beyond chat it persists
 | `rag.py` | `RagService` — thin invoke wrapper around the graph; dependency injection seams (retriever, reranker, LLM client, secondary retriever). Home of the stubbed **secondary world-corpus retriever** seam for GM mode. |
 | `generate.py` | Context assembly (full chunk texts, never previews), per-mode persona prompts, grounded answer + spell-suggestion LLM calls, `Source` building. |
 | `models.py` | Pydantic request/response contract (mirrored by `ui/src/api.ts`). Home of the canonical `REFUSAL` string. |
-| `history.py` | `MessageStore` protocol + Postgres/in-memory impls — `chat.messages` / `chat.attachments` in the same DB as the corpus; idempotent `ensure_schema()` at startup. |
+| `history.py` | `MessageStore` protocol + Postgres/in-memory impls — `chat.messages` / `chat.attachments` in the same DB as the corpus; goes through the bounded connection gate (`db.py`). |
 | `attachments.py` | Pure text extraction for uploaded files (`.txt`/`.md` decode, `.pdf` via PyMuPDF) + `cap_text`. Deliberately separate from `ingestion/extract*.py` (those are whole-book, path-based). |
 | `tracing.py` | Env-gated Langfuse tracing (`RAG_TRACING`, off by default) — node-level trace + token/cost span per request. |
 
@@ -115,10 +115,10 @@ Attachment **metadata** only (extracted text never leaves the server); health + 
 | --- | --- |
 | `401` | No / invalid / expired session, or the account no longer exists |
 | `403` | Wrong role for the channel (GM is DM-only), or another user's conversation |
-| `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape) |
+| `422` | Validation (empty prompt, unknown mode, bad upload body, bad credentials shape), or a request the model provider rejects as invalid, at generation or at query embedding (`invalid_request`) |
 | `429` | Auth attempt budget exhausted for this account or source — carries `Retry-After` and `X-Auth-Throttled: 1`. That header marks the response as *ours*: Cloud Run also returns 429 when no instance is available, and nothing else distinguishes them |
-| `502` | LLM upstream failed (timeout/rate limit) — retryable |
-| `503` | Retrieval backend, embedding (missing `OPENAI_API_KEY`), store or auth unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted |
+| `502` | Generation's LLM upstream failed (timeout, connection, 5xx, credentials, quota) — retryable where the body says so. Never an embedding failure: that is a `503` |
+| `503` | Retrieval backend (vector search, chunk fetch, the GM secondary corpus), embedding (a missing `OPENAI_API_KEY`, or any embeddings API failure except an invalid request), store or auth unavailable, the conversation routing store (strategy binding) unavailable, `SESSION_SECRET` unusable, or hashing capacity exhausted. A reranker failure is not an error: the answer keeps the vector order |
 | `500` | Bug in our code (full traceback logged) |
 
 History writes are **best-effort by design**: a failed persist logs a warning and never
@@ -131,7 +131,7 @@ Access is invite-gated; `/chat` and `/conversations/*` require a session.
 
 | Module | Role |
 | --- | --- |
-| `auth_store.py` | `AuthStore` protocol + Postgres/in-memory impls — `auth.users` / `auth.invites`, idempotent `ensure_schema()`. Invite redemption is **atomic** (`UPDATE ... WHERE used_at IS NULL ... RETURNING`), so concurrent redeemers can't both win. |
+| `auth_store.py` | `AuthStore` protocol + Postgres/in-memory impls — `auth.users` / `auth.invites`; `ensure_schema()` runs the ordered migrations. Invite redemption is **atomic** (`UPDATE ... WHERE used_at IS NULL ... RETURNING`), so concurrent redeemers can't both win. |
 | `hashing.py` | argon2id hash/verify with **explicit** parameters, plus a semaphore capping concurrent hashes — argon2 is memory-hard and `/auth/login` hashes on every attempt, so unbounded concurrency is an OOM lever. |
 | `session.py` | itsdangerous-signed httpOnly cookie carrying user id + role. Stateless: no session table; rotating `SESSION_SECRET` logs everyone out. |
 | `invites.py` | Token generation (`secrets.token_urlsafe(32)`) + redeemability rules (used / expired / revoked). |
@@ -172,11 +172,11 @@ The constraint migrations check `pg_constraint` and only run when a constraint i
 **missing or wrong** — the predicate pins the child and referenced tables, the delete
 action (`confdeltype`) *and* the exact columns (`conkey`/`confkey`), so a same-named
 foreign key on a different column can't pass for the real one and leave the intended
-column unprotected. `ensure_schema()` runs at every startup and
-Cloud Run scales to zero, so an unconditional `DROP`/`ADD` would take an `ACCESS
-EXCLUSIVE` lock on a live table at each cold start — blocking queries until the startup
-transaction commits and serializing simultaneous starts — and would re-scan the table to
-re-validate the invites FK every time.
+column unprotected. These files were re-applied at every startup until the ordered
+migration runner (`migrations.py`, [docs/migrations.md](../docs/migrations.md)) made them
+migrations 0001 and 0002: they now run once per database, and the guards are what let
+them adopt a database that already holds these tables without an `ACCESS EXCLUSIVE`
+`DROP`/`ADD` or a re-validation of the invites FK.
 
 ## Run
 
@@ -207,8 +207,12 @@ fails CI if either front end is missing one; see also the proxy invariant in
 | `RAG_SNIPPET_MAX` | `240` | display-snippet length |
 | `RAG_ANSWERABLE_DISTANCE` | `0.50` | koz grounding gate (top-1 cosine distance) |
 | `RAG_FALLBACK_DISTANCE` | `0.42` | ipl filtered→unfiltered retry — **eval-only**, never used live |
+| `RAG_EMBED_REQUEST_TIMEOUT_S` | `10` | per-wait bound on one query-embedding attempt; the service makes 2 attempts on a transient fault, no SDK retries (30.5 s worst case against a silent provider) |
+| `RAG_EMBED_CONNECT_TIMEOUT_S` | `5` | connect bound for the same embeddings client |
 | `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | generation model |
 | `RAG_TEMPERATURE` | `0.2` | generation temperature |
+| `RAG_LLM_REQUEST_TIMEOUT_S` | `60` | per-attempt provider request timeout (agent-forge-harness-ihz); must be finite and > 0 |
+| `RAG_LLM_CONNECT_TIMEOUT_S` | `5` | per-attempt provider connect timeout; must be finite and > 0 |
 | `RAG_HISTORY_LIMIT` | `50` | messages returned per conversation |
 | `RAG_ATTACHMENT_MAX_BYTES` | `2000000` | max decoded upload size |
 | `RAG_ATTACHMENT_MAX_CHARS` | `6000` | max attachment chars injected into the prompt |

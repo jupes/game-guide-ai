@@ -11,11 +11,13 @@ them at startup and tests can fake them.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ingestion.retrieval import RagRetriever, RetrievalResult, RetrievedChunk
 
+from .evidence import EvidenceAttempt
 from .generate import DEFAULT_MODEL, LLMClient
 
 # Canonical home is service/models.py (response-contract constant); re-exported
@@ -23,6 +25,8 @@ from .generate import DEFAULT_MODEL, LLMClient
 from .models import REFUSAL as REFUSAL  # noqa: F401
 from .models import ChatMode, ChatResponse
 from .providers import ProviderClientFactory
+
+log = logging.getLogger(__name__)
 
 # Mode → retrieval scope mapping lives in the canonical leaf module
 # `ingestion/scope.py` (`scope_for_mode`); the retriever applies it. The service
@@ -56,6 +60,15 @@ class StubSecondaryRetriever:
         return SecondaryResult()
 
 
+@dataclass(frozen=True)
+class AnswerOutcome:
+    """One turn's response, the full chunk texts the LLM saw, and the
+    retrieval stages that degraded on the way (internal; never serialized)."""
+    response: ChatResponse
+    contexts: list[str]
+    attempts: tuple[EvidenceAttempt, ...]
+
+
 # ---------------------------------------------------------------------------
 # RagService
 # ---------------------------------------------------------------------------
@@ -66,8 +79,10 @@ class RagService:
         model: str = DEFAULT_MODEL, llm_client: LLMClient | None = None,
         factory: ProviderClientFactory | None = None,
         secondary_retriever=None,
+        connect=None,
     ):
-        self.retriever = retriever or RagRetriever(dsn)
+        # `connect`: the service's gated connection factory (service/db.py).
+        self.retriever = retriever or RagRetriever(dsn, connect=connect)
         self.reranker = reranker
         self.model = model
         # ProviderClientFactory is the only path generation reads a client
@@ -123,6 +138,17 @@ class RagService:
         self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
         attachment_context: str | None = None, attachment_label: str | None = None,
     ) -> tuple[ChatResponse, list[str]]:
+        """`answer_with_evidence`'s response and contexts (the eval consumers' pair)."""
+        outcome = self.answer_with_evidence(
+            prompt, mode=mode, conversation_id=conversation_id,
+            attachment_context=attachment_context, attachment_label=attachment_label,
+        )
+        return outcome.response, outcome.contexts
+
+    def answer_with_evidence(
+        self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
+        attachment_context: str | None = None, attachment_label: str | None = None,
+    ) -> AnswerOutcome:
         """Like `answer`, but also returns the full retrieved chunk texts the
         generation context was built from (empty on any refuse path — the LLM
         saw nothing). Eval consumers (Ragas `contexts`, zgm) need the full
@@ -133,6 +159,9 @@ class RagService:
         mode before retrieval and routes empty prompts to refuse. This method
         is invoke + response mapping only. Langfuse tracing is attached here,
         env-gated + off by default (see tracing.py).
+
+        `attempts` are the retrieval stages that degraded (xiu.2.3), each
+        logged here once, content-free: the class, never the message.
         """
         from . import usage_capture
         from .generate import context_texts
@@ -167,7 +196,14 @@ class RagService:
         contexts: list[str] = []
         if final.get("route") == "generate" and final.get("result") is not None:
             contexts = context_texts(final["result"])
-        return resp, contexts
+        attempts = tuple(final.get("attempts") or ())
+        for attempt in attempts:
+            log.warning(
+                "retrieval stage degraded (mode=%s, conversation_id=%s, source=%s, stage=%s, outcome=%s, "
+                "error=%s)",
+                mode, conversation_id, attempt.source_kind, attempt.stage, attempt.outcome, attempt.error_class,
+            )
+        return AnswerOutcome(resp, contexts, attempts)
 
     def _compiled_graph(self):
         """Lazily build + cache the pipeline graph (langgraph imported on first use

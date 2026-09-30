@@ -32,3 +32,8 @@ spikes/raw-extract-*.jsonl
 
 # Beads runtime state - the tracker is owned by the parent harness repo
 .beads/
+
+# Decision benchmark (agent-forge-harness-cps): live OpenAI recordings (the embedding one runs
+# to over ten megabytes) and the generated report.
+ingestion/eval_data/block_choice/recordings/
+ingestion/decision_bench_results.json

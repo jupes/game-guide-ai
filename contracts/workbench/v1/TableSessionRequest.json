@@ -1,46 +1,92 @@
 {
   "schema": "TableSessionRequest",
   "direction": "request",
-  "note": "Start, End and Rotate (REVEAL-17), idempotent by command_id. Rotate may also reset every personal link (AUD-5); nothing else may.",
+  "note": "Start, End and Rotate (REVEAL-17), idempotent by command_id, on POST /campaigns/{campaign_id}/table-session: the path names the campaign. End and Rotate name their session, so a retried End of yesterday's session can never end today's; Start names none.",
   "valid": [
     {
       "name": "start",
       "value": {
         "schema_version": 1,
         "command_id": "cmd_9c0d1e2f3a4b5c6d",
-        "campaign_id": "cmp_4b1d9e7a",
         "action": "start"
       }
     },
     {
-      "name": "end",
+      "name": "end names its session",
       "value": {
         "schema_version": 1,
         "command_id": "cmd_9c0d1e2f3a4b5c6e",
-        "campaign_id": "cmp_4b1d9e7a",
-        "action": "end"
+        "action": "end",
+        "session_id": "ses_0c1d2e3f"
       }
     },
     {
-      "name": "rotate, and also reset personal links",
+      "name": "rotate names its session",
       "value": {
         "schema_version": 1,
         "command_id": "cmd_9c0d1e2f3a4b5c6f",
-        "campaign_id": "cmp_4b1d9e7a",
         "action": "rotate",
-        "reset_personal_links": true
+        "session_id": "ses_0c1d2e3f"
       }
     }
   ],
   "invalid": [
     {
-      "name": "a start that resets personal links",
-      "why": "REVEAL-17: only Rotate offers it",
+      "name": "a start that names a session",
+      "why": "Start makes a session; it names none",
       "value": {
         "schema_version": 1,
         "command_id": "cmd_9c0d1e2f3a4b5c6d",
-        "campaign_id": "cmp_4b1d9e7a",
         "action": "start",
+        "session_id": "ses_0c1d2e3f"
+      }
+    },
+    {
+      "name": "an end that names no session",
+      "why": "an End names the session it ends",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6e",
+        "action": "end"
+      }
+    },
+    {
+      "name": "a rotate that names no session",
+      "why": "a Rotate names the session it rotates",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6f",
+        "action": "rotate"
+      }
+    },
+    {
+      "name": "a null session id",
+      "why": "send a session id, or leave the key out",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6e",
+        "action": "end",
+        "session_id": null
+      }
+    },
+    {
+      "name": "the retired campaign id in the body",
+      "why": "the path names the campaign; the body does not",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6d",
+        "action": "start",
+        "campaign_id": "cmp_4b1d9e7a"
+      }
+    },
+    {
+      "name": "the retired personal-link reset",
+      "why": "threat model 15.11: there are no personal links",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_9c0d1e2f3a4b5c6f",
+        "action": "rotate",
+        "session_id": "ses_0c1d2e3f",
         "reset_personal_links": true
       }
     },
@@ -50,7 +96,6 @@
       "value": {
         "schema_version": 1,
         "command_id": "cmd_9c0d1e2f3a4b5c6d",
-        "campaign_id": "cmp_4b1d9e7a",
         "action": "pause"
       }
     },
@@ -59,7 +104,15 @@
       "why": "a retried Start must not start a second session",
       "value": {
         "schema_version": 1,
-        "campaign_id": "cmp_4b1d9e7a",
+        "action": "start"
+      }
+    },
+    {
+      "name": "a command id too short to be a key",
+      "why": "CommandId is 16 to 64 URL-safe characters",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_short",
         "action": "start"
       }
     }

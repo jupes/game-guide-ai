@@ -1,10 +1,11 @@
 """
-The canonical schema files enforce what the application relies on.
+The application schema enforces what the application relies on.
 
-`service/sql/*.sql` is the single definition of the `chat` and `auth` schemas.
-Both the fresh-database path (compose init dir, `scripts/bootstrap-db.sh`) and
-the existing-database path (`ensure_schema()` at every service startup) apply
-these same files, so there is no second copy to drift.
+`service/sql/migrations/*.sql` is the single definition of the `chat`, `auth` and
+`app` schemas, and the ordered runner (`service/migrations.py`, 1kg.1.5) is the
+single path that applies it — to a fresh database and to an old one alike — so
+there is no second copy and no second mechanism to drift. The runner itself is
+tested in `tests/test_migrations_db.py`.
 
 The tests below therefore check *behaviour against a real PostgreSQL* rather
 than comparing text: what tables and columns exist, which columns each foreign
@@ -23,12 +24,17 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
+if TYPE_CHECKING:
+    from service.history import InMemoryMessageStore
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SQL_DIR = REPO_ROOT / "service" / "sql"
+SQL_DIR = REPO_ROOT / "service" / "sql" / "migrations"
 DSN = os.environ.get("DATABASE_URL") or None
 
 needs_db = pytest.mark.skipif(DSN is None, reason="no DATABASE_URL (CI always sets it)")
@@ -37,32 +43,67 @@ needs_db = pytest.mark.skipif(DSN is None, reason="no DATABASE_URL (CI always se
 # ── The canonical files reach the places that apply them ─────────────────────
 
 
-def test_the_schema_files_load_through_the_package():
-    """`ensure_schema()` reads them via importlib, so an image that ships the
-    code without the SQL cannot migrate a database."""
-    from service.schema import ALL_SCHEMAS, load
+def test_the_migrations_load_through_the_package():
+    """The runner reads them via importlib, so an image that ships the code
+    without the SQL cannot bring a database up to its own schema."""
+    from service.migrations import discover
 
-    for name in ALL_SCHEMAS:
-        assert "CREATE" in load(name).upper(), f"{name} loaded empty"
+    packaged = discover()
+    assert len(packaged) >= 3
+    for migration in packaged:
+        assert "CREATE" in migration.sql.upper(), f"{migration.filename} loaded empty"
 
 
-def test_packaging_ships_the_sql():
+def test_packaging_ships_the_sql_and_its_manifest():
     text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert re.search(r"\[tool\.setuptools\.package-data\]", text), (
-        "service/sql/*.sql must be declared as package-data or `pip install .` "
+        "the migrations must be declared as package-data or `pip install .` "
         "silently produces an image that cannot apply its own schema"
     )
-    assert re.search(r'service\s*=\s*\[[^\]]*sql/\*\.sql', text)
+    declared = re.search(r'service\s*=\s*\[([^\]]*)\]', text)
+    assert declared is not None
+    assert "sql/migrations/*.sql" in declared.group(1)
+    assert "sql/migrations/manifest.txt" in declared.group(1), (
+        "without the manifest the packaged runner refuses to start"
+    )
 
 
-def test_compose_mounts_the_canonical_files():
-    """Not a second copy under vector-db/init/ — that duplication is what this
-    layout removes."""
+def test_every_file_in_the_migrations_directory_is_shipped():
+    """The package-data globs are `*.sql` and the manifest. Anything else in the
+    directory would exist in a checkout and not in the image — the kind of
+    difference that only shows in production."""
+    names = sorted(p.name for p in SQL_DIR.iterdir() if p.is_file())
+    assert all(name.endswith(".sql") or name == "manifest.txt" for name in names), names
+
+
+def test_the_image_build_context_keeps_the_migrations():
+    """Both Dockerfiles `COPY service/` and `pip install .`; the package-data
+    globs then pick the files up. A `.dockerignore` line that dropped SQL or text
+    files from the context would build an image that refuses to start — and only
+    the image, never a checkout."""
+    ignored = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    patterns = [line.strip() for line in ignored if line.strip() and not line.startswith("#")]
+    dropped = ("service/sql", "service/**", "**/*.sql", "*.sql", "**/*.txt", "*.txt")
+    for pattern in patterns:
+        assert not pattern.startswith(dropped), (
+            f".dockerignore excludes the migrations from the build context: {pattern}"
+        )
+    for dockerfile in ("Dockerfile.cloud", "Dockerfile.service"):
+        text = (REPO_ROOT / dockerfile).read_text(encoding="utf-8")
+        assert "COPY service/ service/" in text, f"{dockerfile} must copy the whole service package"
+
+
+def test_there_is_one_path_to_the_application_schema():
+    """Compose initialises the corpus schema and nothing of the application's:
+    the service's migration runner builds that, for a fresh volume and an old
+    one alike. A second path would produce databases with no ledger — and no
+    second copy of the files may reappear under vector-db/init/."""
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    for name in ("04-chat-schema.sql", "05-auth-schema.sql"):
-        assert f"./service/sql/{name}:" in compose, f"compose must mount {name}"
-        assert not (REPO_ROOT / "vector-db" / "init" / name).exists(), (
-            f"vector-db/init/{name} is back — the schema has one definition"
+    assert "service/sql" not in compose, "the init directory must not apply application DDL"
+    for stale in ("04-chat-schema.sql", "05-auth-schema.sql"):
+        assert not (REPO_ROOT / "vector-db" / "init" / stale).exists()
+        assert not (REPO_ROOT / "service" / "sql" / stale).exists(), (
+            f"service/sql/{stale} is back — it is migration 000x now"
         )
 
 
@@ -90,7 +131,10 @@ def test_initdb_files_are_mounted_individually_not_nested_in_a_directory_mount()
 
 
 def test_the_stores_do_not_embed_their_own_ddl():
-    for module in ("service/history.py", "service/auth_store.py"):
+    for module in (
+        "service/history.py", "service/auth_store.py", "service/jobs.py", "service/db.py",
+        "service/document_store.py",
+    ):
         text = (REPO_ROOT / module).read_text(encoding="utf-8")
         assert "CREATE TABLE" not in text.upper(), (
             f"{module} embeds DDL again; the .sql file is the definition"
@@ -112,18 +156,17 @@ def _target_dsn(dsn: str, dbname: str) -> str:
 
 @pytest.fixture(scope="module")
 def db():
-    """A throwaway database with the canonical schema applied, as a fresh
-    install would."""
-    from service.schema import ALL_SCHEMAS, load
+    """A throwaway database brought up by the migration runner, as a fresh
+    install is."""
+    from service.migrations import migrate
 
     assert DSN is not None
     name = f"schema_{uuid.uuid4().hex[:12]}"
     with _connect(DSN) as admin:
         admin.execute(f'CREATE DATABASE "{name}"')
     try:
+        migrate(_target_dsn(DSN, name))
         with _connect(_target_dsn(DSN, name)) as conn:
-            for sql in ALL_SCHEMAS:
-                conn.execute(load(sql))
             yield conn
     finally:
         with _connect(DSN) as admin:
@@ -257,20 +300,22 @@ def test_deleting_an_account_keeps_the_invite_as_a_spent_token(db):
 
 @needs_db
 def test_reapplying_over_legacy_rows_succeeds_and_leaves_them_alone(db):
-    """NOT VALID is what makes the startup migration safe.
+    """NOT VALID is what makes adopting an old database safe.
 
     Conversations predating the ownership table have messages with no parent
     row. A validating constraint would refuse to be created against that data —
-    on the production volume only — so every startup would fail after deploy.
+    on the production volume only — so the baseline migration would fail there.
     """
-    from service.schema import CHAT_SCHEMA, load
+    from service.migrations import discover
+
+    chat_schema = discover()[0].sql
 
     orphan = f"orphan-{uuid.uuid4().hex[:8]}"
     db.execute("ALTER TABLE chat.messages DROP CONSTRAINT messages_conversation_fkey")
     db.execute("INSERT INTO chat.messages (conversation_id, mode, role, content) "
                "VALUES (%s, 'sage', 'user', 'legacy')", (orphan,))
 
-    db.execute(load(CHAT_SCHEMA))  # the startup migration path
+    db.execute(chat_schema)  # what adopting a pre-ledger database runs
 
     row = db.execute(FK_QUERY, ("messages_conversation_fkey",)).fetchone()
     assert row is not None, "the migration did not restore the constraint"
@@ -280,11 +325,14 @@ def test_reapplying_over_legacy_rows_succeeds_and_leaves_them_alone(db):
 
 
 @needs_db
-def test_reapplying_is_a_no_op(db):
-    """Every cold start re-applies this against a live database. Re-creating a
-    constraint would take an ACCESS EXCLUSIVE lock each time; identical OIDs
-    prove nothing was dropped and re-added."""
-    from service.schema import ALL_SCHEMAS, load
+def test_reapplying_the_baseline_is_a_no_op(db):
+    """The baseline (0001, 0002) is applied over every database that predates the
+    ledger, live. Re-creating a constraint there would take an ACCESS EXCLUSIVE
+    lock and re-validate it; identical OIDs prove nothing was dropped and
+    re-added."""
+    from service.migrations import discover
+
+    baseline = [m.sql for m in discover()[:2]]
 
     def oids():
         return dict(db.execute(
@@ -294,12 +342,58 @@ def test_reapplying_is_a_no_op(db):
 
     before = oids()
     for _ in range(3):
-        for sql in ALL_SCHEMAS:
-            db.execute(load(sql))
+        for sql in baseline:
+            db.execute(sql)
     assert oids() == before, "re-applying the schema rebuilt constraints"
 
 
 # ── The daily cost ceiling counts the same rows in both stores (x5bz.3.3) ────
+
+
+def _calls_today_rows_around(reference: datetime) -> list[tuple[str, str, datetime]]:
+    """(content, role, created_at) for the comparison below: two of today's user
+    turns, today's assistant reply and yesterday's user turn, so exactly two
+    count as today's calls in either store."""
+    return [
+        ("today-user-1", "user", reference),
+        ("today-assistant", "assistant", reference),
+        ("today-user-2", "user", reference - timedelta(minutes=5)),
+        ("yesterday-user", "user", reference - timedelta(days=1)),
+    ]
+
+
+def _calls_today_rows(now: datetime | None = None) -> list[tuple[str, str, datetime]]:
+    """The rows the DB test inserts, placed around noon of `now`'s UTC day.
+
+    `now` defaults to the real clock; it is a parameter only so that
+    `test_calls_today_boundary_survives_utc_midnight` can run this exact code
+    at a simulated instant. The DB test passes nothing.
+
+    Placed around the raw reading instead, `now - 5 minutes` falls on
+    yesterday's UTC date for the first five minutes after midnight, and "today"
+    undercounts by one because of the clock, not the query
+    (agent-forge-harness-01z; CI run 36500893320, 00:03 UTC, PR #136). The pin
+    is today's noon, read again on every run, not a fixed date: PostgreSQL's
+    `calls_today` compares against the server's own `now()`, so a fixed past
+    date would always count as yesterday.
+    """
+    now = datetime.now(UTC) if now is None else now
+    reference = now.replace(hour=12, minute=0, second=0, microsecond=0)
+    return _calls_today_rows_around(reference)
+
+
+def _in_memory_store_holding(
+    conversation_id: str, rows: list[tuple[str, str, datetime]],
+) -> InMemoryMessageStore:
+    from service.history import InMemoryMessageStore, _Row
+
+    fake = InMemoryMessageStore()
+    fake._rows.extend([
+        _Row(id=i, conversation_id=conversation_id, mode="sage", role=role,
+             content=content, suggestions=None, created_at=created)
+        for i, (content, role, created) in enumerate(rows, start=1)
+    ])
+    return fake
 
 
 @needs_db
@@ -318,10 +412,18 @@ def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
     Asserted as a DELTA, not an absolute: `calls_today()` counts the whole
     database and the `db` fixture is module-scoped, so an absolute count would
     depend on which other tests ran first.
-    """
-    from datetime import UTC, datetime, timedelta
 
-    from service.history import InMemoryMessageStore, PostgresMessageStore, _Row
+    The rows come from `_calls_today_rows()`, which places them around noon of
+    today's UTC date rather than the raw clock reading (agent-forge-harness-01z):
+    `now - 5 minutes` taken from the raw reading lands on *yesterday's* UTC
+    date for the first five minutes after midnight, undercounting "today" by
+    one and failing this assertion because of the clock, not a bug (CI run
+    36500893320, 00:03 UTC, PR #136). The same rows go to PostgreSQL and to the
+    in-memory fake. `test_calls_today_boundary_survives_utc_midnight` runs that
+    helper at a simulated 00:02 UTC and at every minute of a day, and the test
+    after it checks that this test still builds its rows with the helper.
+    """
+    from service.history import PostgresMessageStore
 
     # Built from DSN, not db.info.dsn — psycopg strips the password from the
     # latter, so the store would fail to authenticate.
@@ -330,13 +432,8 @@ def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
     real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
     before = real.calls_today()
 
-    now = datetime.now(UTC)
-    rows = [
-        ("today-user-1", "user", now),
-        ("today-assistant", "assistant", now),
-        ("today-user-2", "user", now - timedelta(minutes=5)),
-        ("yesterday-user", "user", now - timedelta(days=1)),
-    ]
+    # Around today's UTC noon, not the raw clock reading; see the docstring.
+    rows = _calls_today_rows()
 
     # The owning rows come first. messages_conversation_fkey is NOT VALID, which
     # exempts rows that predate it — it still enforces every new INSERT, so
@@ -355,16 +452,105 @@ def test_calls_today_counts_the_same_rows_as_the_in_memory_fake(db):
             (conv, "sage", role, content, created),
         )
 
-    fake = InMemoryMessageStore()
-    fake._rows.extend([
-        _Row(id=i, conversation_id=conv, mode="sage", role=role,
-             content=content, suggestions=None, created_at=created)
-        for i, (content, role, created) in enumerate(rows, start=1)
-    ])
+    fake = _in_memory_store_holding(conv, rows)
 
     assert real.calls_today() - before == fake.calls_today() == 2, (
         "both stores must count today's USER rows only — two of these four"
     )
+
+
+def test_calls_today_boundary_survives_utc_midnight():
+    """Regression for agent-forge-harness-01z, without DATABASE_URL.
+
+    Runs the SAME helpers the DB test above builds its rows with
+    (`_calls_today_rows`, `_in_memory_store_holding`) under a simulated clock,
+    so reverting or weakening the noon pin there turns this red. The next test
+    checks that the DB test really does use them. The in-memory store applies
+    the SQL's rule (user rows since UTC midnight), and the CI flake failed at
+    `fake.calls_today() == 2` whatever PostgreSQL returned, so the fake alone
+    is a faithful DB-free stand-in.
+
+    - At 00:02 UTC, the minute of the CI failure: rows placed around the raw
+      reading undercount (the bug, kept to prove it still reproduces), and the
+      pinned rows count both of today's user turns.
+    - At every minute of a UTC day, and the last microsecond before midnight:
+      the pinned rows count both, so a partial pin (to the top of the hour, say)
+      cannot pass either.
+    """
+    from unittest.mock import patch
+
+    import service.history as history_module
+
+    # wraps= keeps every other `datetime` attribute real; only now() is frozen.
+    with patch.object(history_module, "datetime", wraps=datetime) as clock:
+
+        def counted_at(instant: datetime, rows: list[tuple[str, str, datetime]]) -> int:
+            clock.now.return_value = instant
+            return _in_memory_store_holding("cap", rows).calls_today()
+
+        at_0002 = datetime(2026, 9, 29, 0, 2, tzinfo=UTC)
+        assert counted_at(at_0002, _calls_today_rows_around(at_0002)) == 1, (
+            "rows placed around the raw 00:02 UTC reading should undercount; if "
+            "they don't, the boundary bug this guards against is gone"
+        )
+        assert counted_at(at_0002, _calls_today_rows(at_0002)) == 2, (
+            "the DB test's rows must count both of today's USER turns even when "
+            "the clock reads 00:02 UTC"
+        )
+
+        day = datetime(2026, 9, 29, tzinfo=UTC)
+        instants = [day + timedelta(minutes=m) for m in range(24 * 60)]
+        instants.append(day + timedelta(days=1, microseconds=-1))
+        miscounted = [
+            instant.isoformat() for instant in instants
+            if counted_at(instant, _calls_today_rows(instant)) != 2
+        ]
+        assert miscounted == [], (
+            f"the DB test's rows miscount at {len(miscounted)} instants of a UTC day, "
+            f"first {miscounted[:3]}"
+        )
+
+
+def test_the_calls_today_db_test_builds_its_rows_with_the_guarded_helper():
+    """The midnight regression above guards `_calls_today_rows`, which covers the
+    DB test only while the DB test uses its rows as they come. Building them
+    inline again, reading the clock, or re-placing the helper's rows would move
+    the construction out of the guard's reach and let the flake come back
+    unnoticed. So this checks the DB test's code (not its docstring): one
+    `_calls_today_rows()` call on the real clock, bound once, and that same name
+    inserted into PostgreSQL and handed to `_in_memory_store_holding`."""
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(test_calls_today_counts_the_same_rows_as_the_in_memory_fake))
+    tree = ast.parse(source)
+    nodes = list(ast.walk(tree))
+    names = {node.id for node in nodes if isinstance(node, ast.Name)}
+    assert names.isdisjoint({"datetime", "timedelta", "UTC", "_calls_today_rows_around"}), (
+        "the DB test places rows in time itself; take them from _calls_today_rows()"
+    )
+
+    bindings = [
+        node for node in nodes
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name) and node.value.func.id == "_calls_today_rows"
+    ]
+    assert len(bindings) == 1 and bindings[0].value.args == [] and bindings[0].value.keywords == [], (
+        "the DB test must build its rows with exactly one _calls_today_rows() call on the real clock"
+    )
+    rows = ast.unparse(bindings[0].targets[0])
+    assert [n for n in nodes if isinstance(n, ast.Name) and n.id == rows and isinstance(n.ctx, ast.Store)] == [
+        bindings[0].targets[0]
+    ], f"`{rows}` must be bound once, by _calls_today_rows(), and not rebound"
+    assert any(isinstance(n, ast.For) and ast.unparse(n.iter) == rows for n in nodes), (
+        f"the DB test must insert `{rows}` itself into PostgreSQL"
+    )
+    assert any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_in_memory_store_holding"
+        and len(n.args) == 2 and ast.unparse(n.args[1]) == rows
+        for n in nodes
+    ), f"the DB test must build its in-memory fake from the same `{rows}`"
 
 
 # ── Conversation strategy binding (b8o.2, D1/D6) — behaviour, not just shape ──
@@ -438,3 +624,27 @@ def test_claim_conversation_strategy_without_an_ownership_row_raises(db):
             f"never-owned-{uuid.uuid4().hex[:8]}", strategy="auto",
             manual_alias=None, catalog_revision="r1",
         )
+
+
+@needs_db
+def test_conversation_binding_reads_back_the_winning_revision_from_a_real_database(db):
+    """a6o: /chat honours a pre-D-9 alias only on a binding made under the
+    pre-D-9 catalog revision, so the revision must read back as written, and
+    as the first writer's, not a later loser's."""
+    from service.history import PostgresMessageStore
+
+    current = db.execute("SELECT current_database()").fetchone()[0]
+    real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
+    conv = f"binding-{uuid.uuid4().hex[:8]}"
+    user_id = db.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+        (f"binding-{uuid.uuid4().hex[:8]}@example.com",),
+    ).fetchone()[0]
+    db.execute("INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s)",
+               (conv, user_id))
+
+    assert real.conversation_binding(conv) is None, "an owned but unbound conversation"
+    assert real.conversation_binding(f"missing-{uuid.uuid4().hex[:8]}") is None
+    real.claim_conversation_strategy(conv, strategy="manual", manual_alias="m", catalog_revision="r1")
+    real.claim_conversation_strategy(conv, strategy="auto", manual_alias=None, catalog_revision="r2")
+    assert real.conversation_binding(conv) == ("manual", "m", "r1")

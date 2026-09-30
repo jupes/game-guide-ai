@@ -73,6 +73,10 @@
       "value": { "schema_version": 1, "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d", "items": [], "next_cursor": null }
     },
     {
+      "name": "an empty page with more to come — a boundary skipped a whole legacy window rather than split an exchange",
+      "value": { "schema_version": 1, "conversation_id": "0b9c6f0e-6f3e-4a59-9a57-3a2f4f5b7c1d", "items": [], "next_cursor": "eyJiZWZvcmUiOjIwMH0" }
+    },
+    {
       "name": "a placeholder keeps its place and the rest of the thread renders (AE-43)",
       "value": {
         "schema_version": 1,

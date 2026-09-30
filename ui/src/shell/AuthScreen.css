@@ -4,7 +4,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
+  min-height: 100dvh; /* LAYOUT-8 */
   padding: var(--aether-space-4, 24px);
 }
 
@@ -35,11 +35,39 @@
 
 .auth-screen__error {
   margin: 0;
-  color: var(--aether-color-error, #b3261e);
+  /* Was `var(--aether-color-error, #b3261e)`. `--aether-color-error` is not a
+     token this design system defines, so the hard-coded light-theme red WAS
+     the value, in both themes — 2.62:1 against the dark tavern surface, a WCAG
+     AA failure on the sign-in form's error message, which is the one piece of
+     text a stuck user most needs to read. The real role tokenises per theme
+     (#ba1a1a light, #ffb4ab dark). agent-forge-harness-27h. */
+  color: var(--md-sys-color-error);
   font-size: 0.875rem;
 }
 
 .auth-screen__switch {
   text-align: center;
   font-size: 0.875rem;
+}
+
+/* The session-unavailable screen's "Try again" (App.tsx) is a plain <button>;
+   it gets the 44px floor at every width, not only on phones (0rn, INF-13). */
+.auth-screen__retry {
+  min-width: var(--aether-touch-min);
+  min-height: var(--aether-touch-min);
+}
+
+/* ── Phone (agent-forge-harness-0rn) ─────────────────────────────────────────
+   One column under 600px. `.auth-screen` is a ROW flexbox, which the
+   session-unavailable screen fills with a heading, a paragraph and a button
+   side by side; a column stacks them. Signup's "Already have an account?"
+   is a card action, so it spans the card. */
+@media (width < 600px) {
+  .auth-screen {
+    flex-direction: column;
+  }
+
+  .auth-screen__switch-button {
+    width: 100%;
+  }
 }

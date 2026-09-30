@@ -1,0 +1,174 @@
+/* ── GmThread (1kg.3.4) ───────────────────────────────────────────────────────
+   One exchange per element: the GM's narration, then the assistant lane close
+   beneath it, so the pair reads as one unit and the next exchange starts at the
+   thread's own gap. Nothing here reorders children — visual order is DOM order,
+   which is the reading order. Every value is a token, so both themes follow. */
+
+.gm-thread__exchange {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+}
+
+/* 1kg.3.7: where Load earlier hands keyboard focus once its control is gone. */
+.gm-thread__exchange:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-thread__exchange > .assistant-lane {
+  margin-bottom: 0;
+}
+
+/* RAIL-9: the tool's label as a badge on the GM's turn, in the lane badge's
+   voice so the turn and its lane visibly belong to one tool. */
+.gm-thread__tool {
+  display: inline-block;
+  margin-right: var(--aether-space-1);
+  padding: 1px var(--aether-space-2);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--aether-font-mono);
+  font-size: var(--md-sys-typescale-label-small-size);
+  line-height: var(--md-sys-typescale-label-small-line-height);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.gm-thread__creative {
+  margin: 0;
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  font-style: italic;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-thread__dice {
+  align-self: flex-start;
+}
+
+/* Compact citations: the lane supplies the chrome, so the list drops to the
+   small type role and runs the lane's full width. */
+.gm-thread__sources .sources {
+  max-width: 100%;
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+}
+
+.gm-thread__sources .source-snippet {
+  font-size: var(--md-sys-typescale-body-small-size);
+}
+
+/* Load earlier (1kg.3.6, ADR 12.2's GM-thread row) — paging behind a button
+   at the top of the thread, in VersionList's Load-more voice. */
+.gm-thread__load-earlier {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--aether-space-1);
+  margin-bottom: var(--aether-space-2);
+}
+
+.gm-thread__load-earlier-error {
+  margin: 0;
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  color: var(--md-sys-color-error);
+  text-align: center;
+}
+
+.gm-thread__load-earlier-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-2);
+  min-height: var(--aether-touch-min);
+  padding: 0 var(--aether-space-4);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-primary);
+  font-family: var(--aether-font-ui);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--aether-transition-button);
+}
+
+.gm-thread__load-earlier-button:hover:not(:disabled) {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.gm-thread__load-earlier-button:disabled {
+  cursor: progress;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-thread__load-earlier-button:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-thread__load-earlier-button .material-symbols-rounded {
+  font-size: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-thread__load-earlier-button {
+    transition: none;
+  }
+}
+
+/* Session dividers (1kg.3.5, I-10, I-11) — a line of text between two rules,
+   drawn between exchanges and never inside one. The rules are borders, so
+   forced colours keep them. On a phone the row wraps and the label may break
+   anywhere, so a long "… to …" never scrolls the page sideways. Nothing here
+   animates or transitions. */
+.gm-thread__divider {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--aether-space-2);
+  margin: var(--aether-space-1) 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* Load earlier's hand-off (1kg.3.7) may land here when a divider comes first. */
+.gm-thread__divider:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.gm-thread__divider-rule {
+  flex: 1 1 var(--aether-space-6);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.gm-thread__divider-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: center;
+  font-family: var(--aether-font-ui);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+/* Visually hidden, still read: the "to" of a span, whose dash is aria-hidden.
+   The same clip technique as ChatPane.css's .chat-pane__sr-only. */
+.gm-thread__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}

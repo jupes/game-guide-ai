@@ -106,7 +106,12 @@
 }
 
 /* A per-slot Stop (AUDIO-9) for §10.2's named list; it needs its own
-   aria-label, so it is built from tokens rather than the ds Button. */
+   aria-label, so it is built from tokens rather than the ds Button. Holds its
+   own 44px floor (LAYOUT-9) directly, rather than through a generic `button`
+   type selector: the ds `<Button>` above already carries its own floor from
+   Button.css, and a bare `button` rule here is exactly what the touch-target
+   leak guard (ds/touchTargetLeak.test.ts, agent-forge-harness-opn / #138 M-1)
+   now flags outside ds/. */
 .gm-audio-strip__slot-stop {
   min-height: var(--aether-touch-min);
   padding-inline: var(--aether-space-2);
@@ -129,11 +134,6 @@
 .gm-audio-strip :focus-visible {
   outline: 3px solid var(--md-sys-color-secondary);
   outline-offset: 2px;
-}
-
-/* Every control in the strip holds the 44px floor (LAYOUT-9). */
-.gm-audio-strip button {
-  min-height: var(--aether-touch-min);
 }
 
 /* ── Narrow (§10.2): the strip stacks rather than scrolling sideways ── */

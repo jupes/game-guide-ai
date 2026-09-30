@@ -1,0 +1,229 @@
+{
+  "schema": "PlayerSeat",
+  "direction": "response",
+  "note": "One of the caller's own seats. campaign_id is what the table address will name (SEC-43); a participant id never reaches a table client. confirmed is false until the GM confirms who accepted (D-12). The seated card's facts (bead cfx) are the table's alone: the GM's tone line and system, the avatar, concluded, when the table last met and whether it is live now. No seat count, no other player and no signal of the GM's prep.",
+  "valid": [
+    {
+      "name": "a seat awaiting the GM's confirmation",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": false,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": false
+      }
+    },
+    {
+      "name": "a confirmed seat",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": false
+      }
+    },
+    {
+      "name": "a seat at a table that is live now",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-16T19:00:00Z",
+        "live": true
+      }
+    },
+    {
+      "name": "a seat in a concluded campaign that never met",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": null,
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": true,
+        "last_played_at": null,
+        "live": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a participant id",
+      "why": "SEC-43: a table client is never told a participant id; a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": false,
+        "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": false
+      }
+    },
+    {
+      "name": "confirmed as text",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": "false",
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": false
+      }
+    },
+    {
+      "name": "a seat count on a seated card",
+      "why": "SEC-43: nothing about other players; a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": false,
+        "seat_count": 4
+      }
+    },
+    {
+      "name": "a READY badge on a seated card",
+      "why": "the GM's prep is the GM's own (bead cfx); a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": false,
+        "badge": "ready"
+      }
+    },
+    {
+      "name": "the GM's last edit on a seated card",
+      "why": "the GM's prep is the GM's own (bead cfx); a client strips what a newer server adds",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": false,
+        "last_activity_at": "2026-09-16T19:31:24Z"
+      }
+    },
+    {
+      "name": "live as text",
+      "why": "no coercion",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z",
+        "live": "true"
+      }
+    },
+    {
+      "name": "a missing live flag",
+      "why": "every key is present",
+      "value": {
+        "schema_version": 1,
+        "campaign_id": "cmp_4b1d9e7aQx2Lm8Rt5Vw3Zc",
+        "campaign_name": "The Nocturne Heist",
+        "alias": "Rook",
+        "accepted_at": "2026-09-16T19:31:24Z",
+        "confirmed": true,
+        "tone": "Mystery \u00b7 Low magic",
+        "game_system": "dnd5e",
+        "avatar_icon": "sailing",
+        "avatar_tone": "ember",
+        "concluded": false,
+        "last_played_at": "2026-09-12T23:05:00Z"
+      }
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+/* ── CampaignPicker (agent-forge-harness-1kg.2.5, PR-2) ───────────────────────
+   A labelled list of campaigns, its §12.2 states and the create form. No rule
+   here sizes a DS button (touchTargetLeak.test.ts): the list rows are this
+   file's own class, on the 44px floor like LeftNav's conversation rows. */
+
+.campaign-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  color: var(--md-sys-color-on-surface);
+}
+
+.campaign-picker__heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* Visually hidden, still announced (ChatPane's `.chat-pane__sr-only`). */
+.campaign-picker__status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.campaign-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.campaign-picker__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: 8px 12px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.campaign-picker__item[aria-pressed='true'] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.campaign-picker__item:focus-visible {
+  outline: 2px solid var(--md-sys-color-secondary);
+  outline-offset: 1px;
+}
+
+.campaign-picker__name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A skeleton row: never the only signal (the visible line below it), and
+   still under prefers-reduced-motion. */
+.campaign-picker__skeleton {
+  height: var(--aether-touch-min);
+  border-radius: 8px;
+  background: var(--md-sys-color-surface-container-high);
+  animation: campaign-picker-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes campaign-picker-pulse {
+  50% { opacity: 0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .campaign-picker__skeleton { animation: none; }
+}
+
+.campaign-picker__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.campaign-picker__message {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.campaign-picker__error {
+  flex-basis: 100%;
+  color: var(--md-sys-color-error);
+}
+
+.campaign-picker__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.campaign-picker__form > :first-child {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* A request of its own in flight: still focusable, visibly waiting. */
+.campaign-pending[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* ── Phone (agent-forge-harness-0rn) ─────────────────────────────────────────
+   One column under 600px: the name field and Create span the picker. The
+   media condition is PHONE_MEDIA (shell/breakpoints.ts). */
+@media (width < 600px) {
+  .campaign-picker__form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .campaign-picker__form > :first-child {
+    flex-basis: auto;
+  }
+}

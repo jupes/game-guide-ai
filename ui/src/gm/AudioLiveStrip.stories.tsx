@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, fn, userEvent, within } from 'storybook/test'
 
+import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { AudioLiveStrip } from './AudioLiveStrip'
 import { PRESENCE_MIXED, PRESENCE_SETTLED, makeGuests, makeParticipant } from './audioFixtures'
 
@@ -129,9 +130,9 @@ export const NarrowWithNamedStops: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Stop Thunderclap' }))
     await expect(args.onStopSlot).toHaveBeenCalledWith('one_shot')
     await expect(canvasElement.scrollWidth).toBeLessThanOrEqual(canvasElement.clientWidth + 1)
-    await expect(
-      canvas.getByRole('button', { name: 'Stop all' }).getBoundingClientRect().height,
-    ).toBeGreaterThanOrEqual(44)
+    // 1dw: was height-only; a narrower call-site rule could still shrink the
+    // width (the ds/Button `Sizes` story never renders this call site).
+    await expectTouchTarget(canvas, 'Stop all')
   },
 }
 

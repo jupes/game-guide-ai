@@ -30,6 +30,7 @@ import pytest
 
 from service.auth_store import PostgresAuthStore, User
 from service.invites import InviteError
+from service.migrations import migrate
 
 DSN = os.environ.get("DATABASE_URL") or None
 
@@ -80,6 +81,9 @@ def store() -> PostgresAuthStore:
 
     s = PostgresAuthStore(DSN)
     try:
+        # The test owns this database, so it brings it to the build's schema
+        # itself; the store only ever checks (it never changes a schema).
+        migrate(DSN)
         s.ensure_schema()
     except Exception as exc:
         failure = f"connected, but the auth schema would not apply ({type(exc).__name__})"

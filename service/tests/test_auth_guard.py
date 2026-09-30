@@ -11,12 +11,17 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import config
+from service import app as appmod
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
+from service.media_objects import MediaSettings
 from service.models import ChatMode, ChatResponse
+from service.workbench_api import api_route_dependants
 
 pytestmark = pytest.mark.real_auth
 
@@ -30,6 +35,9 @@ class _FakeService:
 
 @pytest.fixture
 def store(monkeypatch):
+    # 1kg.8.1.2's media routes match nothing while the capability is off, which
+    # it is by default; the matrix must see them live to test their guard.
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", False)
     s = InMemoryAuthStore()
@@ -61,11 +69,107 @@ PROTECTED_ROUTES: list[Route] = [
     ("GET", "/auth/me", "/auth/me", None),
     ("GET", "/conversations/{conversation_id}/messages",
      "/conversations/abc/messages", None),
+    ("GET", "/conversations/{conversation_id}/timeline",
+     "/conversations/abc/timeline", None),
     ("GET", "/conversations/{conversation_id}/attachments",
      "/conversations/abc/attachments", None),
     ("POST", "/conversations/{conversation_id}/attachments",
      "/conversations/abc/attachments",
      {"filename": "x.txt", "content_type": "text/plain", "data": "aGk="}),
+    ("GET", "/conversations", "/conversations", None),
+    ("POST", "/conversations", "/conversations", {"schema_version": 1, "started_mode": "sage"}),
+    ("GET", "/conversations/{conversation_id}", "/conversations/abc", None),
+    ("PATCH", "/conversations/{conversation_id}", "/conversations/abc", {"schema_version": 1, "archived": True}),
+    ("GET", "/campaigns", "/campaigns", None),
+    ("POST", "/campaigns", "/campaigns", {"schema_version": 1, "name": "Nocturne"}),
+    ("GET", "/campaigns/{campaign_id}", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
+    ("PATCH", "/campaigns/{campaign_id}", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa",
+     {"schema_version": 1, "archived": True}),
+    ("POST", "/campaigns/{campaign_id}/conclude", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/conclude", None),
+    ("POST", "/campaigns/{campaign_id}/reopen", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/reopen", None),
+    ("GET", "/campaigns/{campaign_id}/participants", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants", None),
+    ("POST", "/campaigns/{campaign_id}/participants", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants",
+     {"schema_version": 1, "alias": "Rook"}),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/offer",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants/prt_aaaaaaaaaaaaaaaaaaaaaa/offer",
+     {"schema_version": 1, "email": "wren@example.com"}),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/confirm",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants/prt_aaaaaaaaaaaaaaaaaaaaaa/confirm", None),
+    ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/remove",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants/prt_aaaaaaaaaaaaaaaaaaaaaa/remove",
+     {"schema_version": 1, "password": "password123"}),
+    ("GET", "/seats", "/seats", None),
+    ("GET", "/seats/offers", "/seats/offers", None),
+    ("POST", "/seats/offers/{offer_id}/accept", "/seats/offers/sof_aaaaaaaaaaaaaaaaaaaaaa/accept", None),
+    ("POST", "/seats/offers/{offer_id}/decline", "/seats/offers/sof_aaaaaaaaaaaaaaaaaaaaaa/decline",
+     {"schema_version": 1, "block": False}),
+    ("POST", "/campaigns/{campaign_id}/library", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/library",
+     {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa", "category": "npcs", "search": "",
+      "sort": "recent", "archived": False}),
+    ("POST", "/campaigns/{campaign_id}/documents", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents",
+     {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
+      "type": "npc", "type_version": 1, "data": {"name": "Mira"}}),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa", None),
+    ("PATCH", "/campaigns/{campaign_id}/documents/{document_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa",
+     {"schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": 1,
+      "fields": {"voice": "low"}}),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/versions", None),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/versions/{number}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/versions/1", None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/restore",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/restore",
+     {"schema_version": 1, "version_number": 1}),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/seal",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/seal", None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/archive",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/archive", None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unarchive",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/unarchive", None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/delete",
+     {"schema_version": 1, "password": "password123"}),
+    # 1kg.8.1.2, live for this module only (the `store` fixture switches media on).
+    ("POST", "/campaigns/{campaign_id}/assets", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets",
+     {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
+      "kind": "audio", "media_type": "audio/mpeg", "size_bytes": 10}),
+    ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa/bytes", None),
+    # 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the GM's table session.
+    ("GET", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session", None),
+    ("POST", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session",
+     {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "action": "start"}),
+    ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session/screens/tcr_aaaaaaaaaaaaaaaaaaaaaa", None),
+    # The screen mint calls `require_session` directly from its table principal
+    # (a live screen grant decides without it, SEC-44), so the dependency walk
+    # below cannot see it as guarded; it is listed so both halves run on it.
+    ("POST", "/table/screen", "/table/screen", {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa"}),
+    # 1kg.4.1 slice B: the GM's tool invocations.
+    ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
+     {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",
+      "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa", "conversation_id": "cnv_aaaaaaaaaaaaaaaaaaaaaa"}),
+    ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001", None),
+    ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations/inv_guard_0000000001/cancel", None),
+    # btb PR-2: the GM's named groups.
+    ("GET", "/campaigns/{campaign_id}/groups", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups", None),
+    ("POST", "/campaigns/{campaign_id}/groups", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups",
+     {"schema_version": 1, "command_id": "guard_command_0001", "name": "Scouts"}),
+    ("PATCH", "/campaigns/{campaign_id}/groups/{group_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa",
+     {"schema_version": 1, "name": "Wardens"}),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/remove",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa/remove", None),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa/members/prt_aaaaaaaaaaaaaaaaaaaaaa",
+     None),
+    ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}/remove",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/groups/grp_aaaaaaaaaaaaaaaaaaaaaa/members/prt_aaaaaaaaaaaaaaaaaaaaaa/remove",
+     None),
 ]
 
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"
@@ -74,6 +178,10 @@ PROTECTED_ROUTES: list[Route] = [
 OPEN_ROUTES: list[tuple[str, str, dict[str, object] | None]] = [
     ("GET", "/healthz", None),
     ("POST", "/metrics/ui", {"points": []}),
+    # Leave (SEC-49): a browser stops being a table screen. It never reads the
+    # account session and never signs an account out, so it is never a 401 —
+    # with no cookie at all it is a 204 that changes nothing.
+    ("POST", "/table/leave", {"schema_version": 1}),
 ]
 
 
@@ -102,25 +210,50 @@ def test_open_route_stays_open(store, method, path, body):
     assert _request(TestClient(app), method, path, body).status_code != 401
 
 
+def _depends_on(dependant: Dependant, target: object) -> bool:
+    """Whether `target` is anywhere in the dependency tree: directly, or through
+    a wrapper such as `workbench_api.gm_session`'s, where it is a sub-dependency."""
+    return any(d.call is target or _depends_on(d, target) for d in dependant.dependencies)
+
+
+def _session_guarded_routes(rows: list[tuple[str, APIRoute, Dependant]]) -> list[tuple[str, str]]:
+    """(method, effective path) of every route in `rows` behind `require_session`,
+    judged on the EFFECTIVE dependant, which holds include-time dependencies too."""
+    return [
+        (method, path)
+        for path, route, dependant in rows
+        if _depends_on(dependant, require_session)
+        for method in (route.methods or set()) - {"HEAD", "OPTIONS"}
+    ]
+
+
 def test_every_session_guarded_route_is_in_the_matrix(store):
     """The matrix cannot silently fall behind the app.
 
     Walk the real routing table for anything depending on `require_session` and
     require it to be listed above. A new guarded endpoint that nobody adds here
     would otherwise ship with no test that it is guarded at all.
+
+    The walk goes through `workbench_api.api_route_dependants()`, not
+    `app.routes`, for three reasons (agent-forge-harness-oe6). A router-mounted
+    route is not in `app.routes` at all: `include_router` appends one private
+    object there. A Workbench route reaches `require_session` through
+    `gm_session`'s wrapper, so it is a SUB-dependency; a check of the direct
+    dependencies alone would pass over it. And a guard passed to
+    `include_router(..., dependencies=...)` is on the route's effective
+    dependant only, never on the route object's own. Each way, the old walk
+    found nothing and passed.
     """
     listed = {(method, template) for method, template, _, _ in PROTECTED_ROUTES}
-    for route in app.routes:
-        dependant = getattr(route, "dependant", None)
-        if dependant is None:
-            continue
-        if not any(d.call is require_session for d in dependant.dependencies):
-            continue
-        for method in getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}:
-            assert (method, route.path) in listed, (
-                f"{method} {route.path} is behind require_session but is missing "
-                f"from PROTECTED_ROUTES — add it, so the guard is actually tested"
-            )
+    rows = api_route_dependants(app)
+    assert rows, "api_route_dependants() is empty; this walk would pass over nothing"
+    guarded = _session_guarded_routes(rows)
+    assert guarded, "found no route behind require_session; the walk is not seeing the app"
+    for method, path in guarded:
+        assert (method, path) in listed, (
+            f"{method} {path} is behind require_session but is missing "
+            f"from PROTECTED_ROUTES — add it, so the guard is actually tested"
+        )
 
 
 def test_chat_with_session_is_200(store):

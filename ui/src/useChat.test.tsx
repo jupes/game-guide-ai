@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { useState } from 'react'
 import { useChat } from './useChat'
 import type { ChatResult, ChatMode, MessagesResult, StoredMessage } from './api'
 import type { MetricPoint } from './metrics/metrics'
@@ -61,6 +62,104 @@ describe('useChat', () => {
     act(() => { result.current.send('and its damage?') })
     await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
     expect(adopted).toEqual([])
+  })
+
+  // ── Healing off a retired manual pick (agent-forge-harness-j9w) ───────────
+  // The server rebinds a conversation off a manual pick the catalog has
+  // since retired, and says so via routing.fallback_from. onPreferenceRebound
+  // is the one seam that tells the CLIENT: it is what lets ConversationStore
+  // stop sending the retired id on the very next turn.
+
+  function healedResult(fallbackFrom: string | null, effective: string): ChatResult {
+    return {
+      kind: 'ok',
+      response: {
+        ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+        conversation_id: 'conv-heal',
+        routing: { requested: effective, effective, strategy: 'manual', fallback_from: fallbackFrom },
+      },
+    } as ChatResult
+  }
+
+  it('reports a heal when the response carries fallback_from', async () => {
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => healedResult('traveller', 'adventurer')
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: 'conv-heal',
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(rebound).toEqual([['conv-heal', 'adventurer']]))
+  })
+
+  it('never reports a heal on an ordinary turn (fallback_from absent)', async () => {
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => healedResult(null, 'adventurer')
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: 'conv-heal',
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
+    expect(rebound).toEqual([])
+  })
+
+  it('reports a heal against the server-adopted id when this turn started with none', async () => {
+    // A first-ever turn can't already be a retired binding — but the seam
+    // itself must not assume a non-null conversationId; it uses whatever
+    // this turn actually resolved to.
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => healedResult('traveller', 'adventurer')
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: null,
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('hi') })
+    await waitFor(() => expect(rebound).toEqual([['conv-heal', 'adventurer']]))
+  })
+
+  it('does not throw when a heal happens with no onPreferenceRebound handler', async () => {
+    const post: PostFn = async () => healedResult('traveller', 'adventurer')
+    const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: 'conv-heal' }))
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(result.current.exchanges[0].status).toBe('done'))
+  })
+
+  // pr156 H-1: the real shape of a heal to 'auto', which is every heal while
+  // no catalog entry names a successor. `requested` ('auto') is the binding;
+  // `effective` ('traveller') is only the model that answered, and a client
+  // that adopted it would get a binding-mismatch 409 on every later turn.
+  it('reports the binding (routing.requested), not the model that answered, on a heal to auto', async () => {
+    const rebound: Array<[string, string]> = []
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: {
+        ...(GROUNDED.kind === 'ok' ? GROUNDED.response : {}),
+        conversation_id: 'conv-heal',
+        routing: {
+          requested: 'auto', effective: 'traveller', strategy: 'auto', fallback_from: 'unassigned-3',
+        },
+      },
+    }) as ChatResult
+    const { result } = renderHook(() =>
+      useChat({
+        post, mode: 'sage', conversationId: 'conv-heal', modelPreference: 'unassigned-3',
+        onPreferenceRebound: (id, preference) => rebound.push([id, preference]),
+      }),
+    )
+
+    act(() => { result.current.send('again') })
+    await waitFor(() => expect(rebound).toEqual([['conv-heal', 'auto']]))
   })
 
   // ── Per-conversation model preference (b8o.2) ─────────────────────────────
@@ -163,6 +262,38 @@ describe('useChat', () => {
     expect(result.current.exchanges).toHaveLength(2)
   })
 
+  // ── Announcing arrival (agent-forge-harness-ekf) — additive option ────────
+  // The seam ChatPane's announcer uses: fired once per turn THIS hook sent,
+  // at the settle, never from the recall effect or a re-render.
+
+  it('calls onTurnSettled with "done" on a successful post and "error" on a failed or rejecting one', async () => {
+    const settled: Array<'done' | 'error'> = []
+    const onTurnSettled = (outcome: 'done' | 'error') => settled.push(outcome)
+
+    const okPost: PostFn = async () => GROUNDED
+    const { result: okResult } = renderHook(() =>
+      useChat({ post: okPost, mode: 'sage', conversationId: null, onTurnSettled }),
+    )
+    act(() => { okResult.current.send('What is a Basilisk?') })
+    await waitFor(() => expect(okResult.current.exchanges[0].status).toBe('done'))
+
+    const errorPost: PostFn = async () => ({ kind: 'error', message: 'Service unavailable' })
+    const { result: errorResult } = renderHook(() =>
+      useChat({ post: errorPost, mode: 'sage', conversationId: null, onTurnSettled }),
+    )
+    act(() => { errorResult.current.send('Q') })
+    await waitFor(() => expect(errorResult.current.exchanges[0].status).toBe('error'))
+
+    const rejectingPost: PostFn = () => Promise.reject(new Error('boom'))
+    const { result: rejectingResult } = renderHook(() =>
+      useChat({ post: rejectingPost, mode: 'sage', conversationId: null, onTurnSettled }),
+    )
+    act(() => { rejectingResult.current.send('Q') })
+    await waitFor(() => expect(rejectingResult.current.exchanges[0].status).toBe('error'))
+
+    expect(settled).toEqual(['done', 'error', 'error'])
+  })
+
   it('ignores sends while a request is pending (no double-submit)', async () => {
     const { post, resolve } = deferredPost()
     const { result } = renderHook(() => useChat({ post, mode: 'sage', conversationId: null }))
@@ -232,6 +363,216 @@ describe('useChat', () => {
     rerender({ convId: 'conv-2' })
     await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('About dragons'))
     expect(result.current.exchanges).toHaveLength(1)
+  })
+
+  // ── settle() must not re-scope to a conversation the user left (agent-forge-harness-4pg) ──
+  // A turn sent from conv-1 that settles AFTER the user has switched to (and
+  // recalled) conv-2 used to stamp state.scopeId back to conv-1, stranding
+  // conv-2 on "Recalling the conversation…" forever (its recall effect deps
+  // hadn't changed, so it would never re-run to recover).
+
+  it('does not re-scope to a conversation the user has left when a stale send settles', async () => {
+    const { post, resolve: resolvePost } = deferredPost()
+    let resolveConv2History!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = (conversationId) => {
+      if (conversationId === 'conv-1') return Promise.resolve({ kind: 'ok', messages: [] })
+      return new Promise<MessagesResult>((res) => {
+        resolveConv2History = res
+      })
+    }
+
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+
+    // Send from conv-1; its post() is still in flight when the user switches away.
+    act(() => {
+      result.current.send('About goblins')
+    })
+    expect(result.current.exchanges).toHaveLength(1)
+
+    // Switch to conv-2 before the goblins turn settles, then let its recall land.
+    rerender({ convId: 'conv-2' })
+    expect(result.current.loadingHistory).toBe(true)
+    await act(async () => {
+      resolveConv2History({
+        kind: 'ok',
+        messages: [stored(9, 'user', 'About dragons'), stored(10, 'assistant', 'Dragons…')],
+      })
+    })
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+    expect(result.current.exchanges[0]?.prompt).toBe('About dragons')
+
+    // NOW the stale conv-1 turn settles — conv-2 must stay put, not strand.
+    await act(async () => {
+      resolvePost(GROUNDED)
+    })
+    expect(result.current.loadingHistory).toBe(false)
+    expect(result.current.exchanges).toHaveLength(1)
+    expect(result.current.exchanges[0]?.prompt).toBe('About dragons')
+  })
+
+  // ── onTurnSettled reports the SEND-TIME conversation (agent-forge-harness-swg) ──
+  // pr114 M-1: settle() already drops the state WRITE for a stale turn (the
+  // test above), but `onTurnSettled` used to still fire — and ChatPane has no
+  // other way to tell a stale settle apart from a current one, since it is
+  // never remounted on a conversation switch. Passing the conversation the
+  // turn was actually sent for (not whatever the hook happens to be scoped to
+  // right now) is what lets a consumer make that comparison itself.
+
+  it('passes the send-time conversation id to onTurnSettled, even for a stale settle after the user switched away', async () => {
+    const settled: Array<[string | null, 'done' | 'error']> = []
+    const onTurnSettled = (outcome: 'done' | 'error', conversationId: string | null) =>
+      settled.push([conversationId, outcome])
+
+    const { post, resolve: resolvePost } = deferredPost()
+    const loadHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId, onTurnSettled }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+
+    // Sent from conv-1; its post() is still in flight when the user switches.
+    act(() => {
+      result.current.send('About goblins')
+    })
+
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+    expect(settled).toEqual([]) // nothing settled yet — the switch alone must not fire it
+
+    await act(async () => {
+      resolvePost(GROUNDED)
+    })
+
+    // Settled for conv-1 — the conversation the turn was sent for — not
+    // conv-2, which is merely what the hook is scoped to now.
+    expect(settled).toEqual([['conv-1', 'done']])
+  })
+
+  // ── onTurnSettled says whether the settle was SHOWN (pr129 M-1) ───────────
+  // Comparing ids is not enough: after A -> B -> A the ids match again, but
+  // A's recall has replaced the exchange list, so the settle writes nothing
+  // and no answer is drawn. `shown` is decided by the settle's own state
+  // update (did it find and write its exchange?) and by the commit that
+  // follows (is that exchange on screen?).
+
+  it('reports shown=true for a settle drawn in the conversation on screen, and shown=false for one that is not (A -> B, A -> B -> A)', async () => {
+    const shownFlags: boolean[] = []
+    const onTurnSettled = (_outcome: 'done' | 'error', _conversationId: string | null, shown: boolean) =>
+      shownFlags.push(shown)
+
+    const resolvers: Array<(r: ChatResult) => void> = []
+    const post: PostFn = () => new Promise<ChatResult>((res) => { resolvers.push(res) })
+    const loadHistory: LoadHistoryFn = async (id) => ({
+      kind: 'ok',
+      messages: [
+        stored(id === 'conv-1' ? 1 : 3, 'user', `Question ${id}`),
+        stored(id === 'conv-1' ? 2 : 4, 'assistant', 'Stored'),
+      ],
+    })
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId, onTurnSettled }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+
+    // 1. A current settle: drawn, shown.
+    act(() => { result.current.send('first') })
+    await act(async () => { resolvers[0](GROUNDED) })
+    expect(result.current.exchanges.at(-1)?.status).toBe('done')
+    expect(shownFlags).toEqual([true])
+
+    // 2. A -> B, then the A turn settles: not shown.
+    act(() => { result.current.send('second') })
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-2'))
+    await act(async () => { resolvers[1](GROUNDED) })
+    expect(shownFlags).toEqual([true, false])
+
+    // 3. A -> B -> A, both recalls landed, then the A turn settles: the ids
+    // match again, but the exchange it was sent for is gone — not shown.
+    rerender({ convId: 'conv-1' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-1'))
+    act(() => { result.current.send('third') })
+    rerender({ convId: 'conv-2' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-2'))
+    rerender({ convId: 'conv-1' })
+    await waitFor(() => expect(result.current.exchanges[0]?.prompt).toBe('Question conv-1'))
+    await act(async () => { resolvers[2](GROUNDED) })
+    expect(result.current.exchanges.some((e) => e.prompt === 'third')).toBe(false)
+    expect(shownFlags).toEqual([true, false, false])
+  })
+
+  it('reports shown=false for a settle that lands after A -> B while B is still recalling (applied to A, drawn nowhere)', async () => {
+    // The settle still finds its exchange (state has not left A yet — B's
+    // recall is in flight), so it is APPLIED; but the hook already returns
+    // B's empty, loading view, so it is not DRAWN. Applied alone is not shown.
+    const settled: Array<[string | null, boolean]> = []
+    const onTurnSettled = (_outcome: 'done' | 'error', conversationId: string | null, shown: boolean) =>
+      settled.push([conversationId, shown])
+    const { post, resolve: resolvePost } = deferredPost()
+    let resolveConv2History!: (r: MessagesResult) => void
+    const loadHistory: LoadHistoryFn = (conversationId) =>
+      conversationId === 'conv-1'
+        ? Promise.resolve({ kind: 'ok', messages: [] })
+        : new Promise<MessagesResult>((res) => { resolveConv2History = res })
+
+    const { result, rerender } = renderHook(
+      ({ convId }: { convId: string | null }) =>
+        useChat({ post, loadHistory, mode: 'sage', conversationId: convId, onTurnSettled }),
+      { initialProps: { convId: 'conv-1' as string | null } },
+    )
+    await waitFor(() => expect(result.current.loadingHistory).toBe(false))
+    act(() => { result.current.send('About goblins') })
+
+    rerender({ convId: 'conv-2' })
+    expect(result.current.loadingHistory).toBe(true)
+    await act(async () => { resolvePost(GROUNDED) })
+    expect(result.current.exchanges).toEqual([])
+    expect(settled).toEqual([['conv-1', false]])
+
+    // B's recall landing afterwards reports nothing further.
+    await act(async () => { resolveConv2History({ kind: 'ok', messages: [] }) })
+    expect(result.current.loadingHistory).toBe(false)
+    expect(settled).toEqual([['conv-1', false]])
+  })
+
+  it('reports the first turn of a NEW conversation as shown once the consumer adopts the minted id', async () => {
+    const settled: Array<['done' | 'error', boolean]> = []
+    const onTurnSettled = (outcome: 'done' | 'error', _conversationId: string | null, shown: boolean) =>
+      settled.push([outcome, shown])
+    const post: PostFn = async () => ({
+      kind: 'ok',
+      response: { ...GROUNDED.kind === 'ok' ? GROUNDED.response : {}, conversation_id: 'srv-new' },
+    }) as ChatResult
+    const loadHistory: LoadHistoryFn = async () => ({ kind: 'ok', messages: [] })
+
+    const { result } = renderHook(() => {
+      const [conversationId, setConversationId] = useState<string | null>(null)
+      return {
+        conversationId,
+        chat: useChat({
+          post,
+          loadHistory,
+          mode: 'sage',
+          conversationId,
+          onConversationAdopted: setConversationId,
+          onTurnSettled,
+        }),
+      }
+    })
+
+    act(() => { result.current.chat.send('What is a Basilisk?') })
+    await waitFor(() => expect(result.current.conversationId).toBe('srv-new'))
+    await waitFor(() => expect(settled).toEqual([['done', true]]))
   })
 
   it('degrades to an empty thread with a notice when the history fetch fails', async () => {

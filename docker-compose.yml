@@ -21,9 +21,10 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgvector_data:/var/lib/postgresql/data
-      # Corpus schema (01-03), then the application schemas — which live in the
-      # package because the service applies the SAME files at startup to migrate
-      # an existing database (service/schema.py). One definition, both paths.
+      # The corpus schema (01-03a) only. The application schemas (chat, auth, app)
+      # are not initialised here: the service applies its ordered migrations at
+      # startup (service/migrations.py), so a fresh volume and an old one take
+      # the same path to the same schema.
       # Each file its own mount (not one :ro directory mount + nested file
       # mounts) — the OCI runtime creates a mountpoint for each nested file
       # mount by writing into its parent, which fails ("read-only file
@@ -32,8 +33,6 @@ services:
       - ./vector-db/init/02-schema.sql:/docker-entrypoint-initdb.d/02-schema.sql:ro
       - ./vector-db/init/03-hybrid-search.sql:/docker-entrypoint-initdb.d/03-hybrid-search.sql:ro
       - ./vector-db/init/03a-corpus-provenance.sql:/docker-entrypoint-initdb.d/03a-corpus-provenance.sql:ro
-      - ./service/sql/04-chat-schema.sql:/docker-entrypoint-initdb.d/04-chat-schema.sql:ro
-      - ./service/sql/05-auth-schema.sql:/docker-entrypoint-initdb.d/05-auth-schema.sql:ro
     healthcheck:
       test:
         [

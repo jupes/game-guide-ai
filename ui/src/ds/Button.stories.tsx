@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { fn } from 'storybook/test'
+import { expect, fn, within } from 'storybook/test'
 
 import { Button } from './Button'
 
@@ -44,14 +44,36 @@ export const Variants: Story = {
   ),
 }
 
+// rnm (agent-forge-harness-rnm): "small" carries the smallest visible padding
+// and type of the three sizes, but every size — small included — still has to
+// clear the design intake's explicit 44px minimum touch target (Material
+// Design's touch-target guidance, the same standard --aether-touch-min
+// already names; WCAG 2.2 AA's 24px-with-spacing alternative was not chosen).
+// Asserted here, not just by eye, because no axe rule checks target size.
+//
+// 1dw: "Small"'s own label is ~63px wide — wider than the 44px floor on its
+// own — so removing small's `min-width` rule entirely would not fail this
+// loop; the assertion would still be measuring the label, not the CSS. The
+// fourth button's one-character label fixes that: 28px of horizontal padding
+// plus a single glyph comes to well under 44px, so `min-width` is the only
+// thing that can carry it there.
 export const Sizes: Story = {
   render: () => (
     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
       <Button size="small">Small</Button>
       <Button size="medium">Medium</Button>
       <Button size="large">Large</Button>
+      <Button size="small">A</Button>
     </div>
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    for (const name of ['Small', 'Medium', 'Large', 'A']) {
+      const box = canvas.getByRole('button', { name }).getBoundingClientRect()
+      await expect(box.height).toBeGreaterThanOrEqual(44)
+      await expect(box.width).toBeGreaterThanOrEqual(44)
+    }
+  },
 }
 
 export const WithIcons: Story = {
@@ -76,3 +98,18 @@ export const FullWidth: Story = {
     fullWidth: true,
   },
 }
+
+// ── Dark Tavern ──────────────────────────────────────────────────────────────
+// agent-forge-harness-27h, rework 1. This file had NO dark story, so strict axe
+// had never rendered Button against the dark palette at all. That is exactly
+// the hole that hid `--aether-nat20` at 4.49:1 on its dark container until a
+// dark DiceRoll story was written for it: in a themed design system every
+// colour is a DIFFERENT value per theme, so a light-only story is half a test.
+
+export const Dark: Story = { ...Variants, globals: { theme: 'dark' } }
+
+// rnm: touch-target size is a layout property, not a themed one, but the
+// theme switch also swaps CSS files (see the design-system-diff note on
+// fonts/typography) — a dark run of the same assertion is what makes sure
+// nothing in that swap can silently shrink the floor back down.
+export const DarkSizes: Story = { ...Sizes, globals: { theme: 'dark' } }

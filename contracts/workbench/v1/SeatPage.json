@@ -1,0 +1,97 @@
+{
+  "schema": "SeatPage",
+  "direction": "response",
+  "note": "A campaign's seats, oldest first. The 40-seat cap means the live list fits one page.",
+  "valid": [
+    {
+      "name": "two seats",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+            "alias": "Rook",
+            "status": "open",
+            "address": null,
+            "created_at": "2026-09-16T19:20:11Z",
+            "offered_at": null,
+            "offer_expires_at": null,
+            "accepted_at": null,
+            "confirmed_at": null,
+            "removed_at": null
+          },
+          {
+            "schema_version": 1,
+            "participant_id": "prt_2Az8Sx7Dc6Fv5Gb4Hn3Jm1",
+            "alias": "Rook",
+            "status": "awaiting_confirmation",
+            "address": "Wren@Example.com",
+            "created_at": "2026-09-16T19:20:11Z",
+            "offered_at": "2026-09-16T19:20:11Z",
+            "offer_expires_at": "2026-09-30T19:31:24Z",
+            "accepted_at": "2026-09-16T19:31:24Z",
+            "confirmed_at": null,
+            "removed_at": null
+          }
+        ],
+        "next_cursor": null
+      }
+    },
+    {
+      "name": "a short page that is not the end",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+            "alias": "Rook",
+            "status": "open",
+            "address": null,
+            "created_at": "2026-09-16T19:20:11Z",
+            "offered_at": null,
+            "offer_expires_at": null,
+            "accepted_at": null,
+            "confirmed_at": null,
+            "removed_at": null
+          }
+        ],
+        "next_cursor": "WyIyMDI2LTA5LTE2VDE5OjIwOjExKzAwOjAwIiwiY21wXzRiMWQ5ZTdhUXgyTG04UnQ1VnczWmMiXQ"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "no cursor key",
+      "why": "next_cursor is required",
+      "value": {
+        "schema_version": 1,
+        "items": []
+      }
+    },
+    {
+      "name": "a seat of the wrong shape",
+      "why": "each item is a Seat",
+      "value": {
+        "schema_version": 1,
+        "items": [
+          {
+            "schema_version": 1,
+            "participant_id": "prt_7Hk2Lp9Qw4Er6Ty1Ui3Op5",
+            "alias": "Rook",
+            "status": 3,
+            "address": null,
+            "created_at": "2026-09-16T19:20:11Z",
+            "offered_at": null,
+            "offer_expires_at": null,
+            "accepted_at": null,
+            "confirmed_at": null,
+            "removed_at": null
+          }
+        ],
+        "next_cursor": null
+      }
+    }
+  ]
+}

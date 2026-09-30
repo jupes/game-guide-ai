@@ -5,9 +5,9 @@ Server-side message history.
 recent N of a conversation (served oldest-first for display). Two impls:
 
 - `PostgresMessageStore` — the real one, `chat.*` in the same Postgres instance
-  as the RAG corpus. `ensure_schema()` applies the canonical DDL
-  (`service/sql/04-chat-schema.sql`) at startup, which is the migration path for
-  databases that predate a schema change.
+  as the RAG corpus. The schema comes from the ordered migrations
+  (`service/migrations.py`), which the app runs once at startup;
+  `ensure_schema()` only checks that they have been applied.
 - `InMemoryMessageStore` — the test/dev fake with identical ordering + limit
   semantics.
 
@@ -18,13 +18,13 @@ wraps `append` so a history failure can never fail an answer.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
+from .db import Database, default_dsn
+from .migrations import Mode, migrate
 from .models import ChatMode, MessageRole, StoredMessage, Suggestion
-from .schema import CHAT_SCHEMA, load
 
 
 @dataclass
@@ -45,7 +45,7 @@ class MessageStore(Protocol):
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None: ...  # pragma: no cover - structural type
+    ) -> int | None: ...  # pragma: no cover - structural type
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         ...  # pragma: no cover - structural type
@@ -70,6 +70,25 @@ class MessageStore(Protocol):
         ...  # pragma: no cover - structural type
 
     def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
+        ...  # pragma: no cover - structural type
+
+    def conversation_binding(
+        self, conversation_id: str,
+    ) -> tuple[str, str | None, str | None] | None:
+        """`conversation_strategy` plus the catalog revision it was bound under."""
+        ...  # pragma: no cover - structural type
+
+    def rebind_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> None:
+        """Unconditionally overwrite an existing binding.
+
+        Unlike `claim_conversation_strategy` this is NOT first-writer-wins — it
+        always writes. Used only by the server's own healing of a manual pick
+        the catalog has retired (agent-forge-harness-j9w), once the client
+        names the successor the server chose: the (strategy, manual_alias)
+        written is always the server's, never one a client request picked."""
         ...  # pragma: no cover - structural type
 
     def has_content(self, conversation_id: str) -> bool:
@@ -98,16 +117,19 @@ class InMemoryMessageStore:
     _attachments: list[StoredAttachment] = field(default_factory=list)
     _owners: dict[str, int] = field(default_factory=dict)
     _strategies: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    _revisions: dict[str, str] = field(default_factory=dict)
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None:
-        self._rows.append(_Row(
+    ) -> int | None:
+        row = _Row(
             id=len(self._rows) + 1, conversation_id=conversation_id,
             mode=mode, role=role, content=content, suggestions=suggestions,
             created_at=datetime.now(UTC),
-        ))
+        )
+        self._rows.append(row)
+        return row.id
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         rows = [r for r in self._rows if r.conversation_id == conversation_id]
@@ -134,13 +156,24 @@ class InMemoryMessageStore:
         self, conversation_id: str, *, strategy: str, manual_alias: str | None,
         catalog_revision: str,
     ) -> tuple[str, str | None]:
-        # catalog_revision isn't read back today (nothing yet compares across
-        # revisions) but is accepted + stored to match the real store's shape.
-        del catalog_revision
+        self._revisions.setdefault(conversation_id, catalog_revision)
         return self._strategies.setdefault(conversation_id, (strategy, manual_alias))
 
     def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
         return self._strategies.get(conversation_id)
+
+    def conversation_binding(
+        self, conversation_id: str,
+    ) -> tuple[str, str | None, str | None] | None:
+        bound = self._strategies.get(conversation_id)
+        return None if bound is None else (*bound, self._revisions.get(conversation_id))
+
+    def rebind_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> None:
+        self._strategies[conversation_id] = (strategy, manual_alias)
+        self._revisions[conversation_id] = catalog_revision
 
     def owner_of(self, conversation_id: str) -> int | None:
         return self._owners.get(conversation_id)
@@ -172,22 +205,32 @@ def _to_message(r: _Row) -> StoredMessage:
 
 
 class PostgresMessageStore:
-    """`chat.messages` in the corpus Postgres. One connection per operation —
-    no pooling; chat traffic is single-user scale and psycopg connects fast."""
+    """`chat.messages` in the corpus Postgres. One short-lived connection per
+    operation: through the service's bounded gate when it is given one (`db`,
+    1kg.1.5), opened and closed on the spot otherwise (CLIs, tests)."""
 
-    def __init__(self, dsn: str | None = None):
-        self._dsn = dsn or os.environ.get(
-            "DATABASE_URL", "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
-        )
+    def __init__(self, dsn: str | None = None, *, db: Database | None = None):
+        self._given_dsn = dsn
+        self._dsn = dsn or default_dsn()
+        self._db = db
 
     def _connect(self):
+        if self._db is not None:
+            return self._db.connection()
         import psycopg
 
         return psycopg.connect(self._dsn)
 
     def ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.execute(load(CHAT_SCHEMA))
+        """Check — never change — that the database is at this build's schema.
+
+        An operator's checkout is not the deployed image: applying whatever
+        migrations it happens to hold, as a side effect of listing invites,
+        would put unreviewed DDL into production. Only the service's startup
+        and an explicit `python -m service.migrations migrate` change a schema;
+        this raises `MigrationsPending` and says so. With no DSN of its own
+        the runner chooses one, preferring the schema owner's."""
+        migrate(self._given_dsn, mode=Mode.VERIFY)
 
     def calls_today(self) -> int:
         """User turns recorded since UTC midnight — the daily cost ceiling (x5bz.3.3).
@@ -216,14 +259,15 @@ class PostgresMessageStore:
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
-    ) -> None:
+    ) -> int | None:
         with self._connect() as conn:
-            conn.execute(
+            row = conn.execute(
                 "INSERT INTO chat.messages (conversation_id, mode, role, content, suggestions) "
-                "VALUES (%s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (conversation_id, mode, role, content,
                  json.dumps(suggestions) if suggestions is not None else None),
-            )
+            ).fetchone()
+        return int(row[0])
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         with self._connect() as conn:
@@ -330,6 +374,34 @@ class PostgresMessageStore:
         if row is None or row[0] is None:
             return None
         return (row[0], row[1])
+
+    def conversation_binding(
+        self, conversation_id: str,
+    ) -> tuple[str, str | None, str | None] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT selection_strategy, manual_alias, catalog_revision "
+                "FROM chat.conversations WHERE conversation_id = %s",
+                (conversation_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return (row[0], row[1], row[2])
+
+    def rebind_conversation_strategy(
+        self, conversation_id: str, *, strategy: str, manual_alias: str | None,
+        catalog_revision: str,
+    ) -> None:
+        """Overwrite an existing binding outright — no `WHERE ... IS NULL`
+        gate, because the caller (j9w's retirement heal) is deliberately
+        replacing a binding that already exists."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE chat.conversations "
+                "SET selection_strategy = %s, manual_alias = %s, catalog_revision = %s "
+                "WHERE conversation_id = %s",
+                (strategy, manual_alias, catalog_revision, conversation_id),
+            )
 
     def owner_of(self, conversation_id: str) -> int | None:
         with self._connect() as conn:

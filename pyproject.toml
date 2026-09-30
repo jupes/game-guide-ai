@@ -11,7 +11,9 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "openai",
-    "psycopg[binary]",
+    # [pool]: the bounded connection pools of service/db.py (1kg.1.5). Per-operation
+    # connections cannot be bounded, and db-f1-micro allows 22 of them in all.
+    "psycopg[binary,pool]",
     "pydantic",
     # Observability migration (ziw.2 / Phase 1). All declared explicitly so a clean
     # `pip install .` can actually trace (env-gated via RAG_TRACING, off by default):
@@ -39,6 +41,12 @@ dependencies = [
     # python:3.12-slim/amd64, so no build deps in the image.
     "argon2-cffi>=23,<26",
     "itsdangerous>=2,<3",
+    # Media uploads (1kg.8.1.2, MS-6): images are decoded and re-encoded within
+    # their family, in a subprocess, so nothing uploaded is served as it arrived
+    # (SEC-27). Core, not an extra: the upload route runs it at request time.
+    # The capability ships OFF (WORKBENCH_MEDIA_ENABLED, Q-5); ffmpeg, the audio
+    # half, is a system binary that 1kg.9.5 installs in the images.
+    "pillow>=12.3,<13",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +54,8 @@ test = [
     "pytest",
     "httpx",
     "pytest-cov",
+    # The media Cloud Storage adapter's tests hold their fake to the real client.
+    "game-guide-ai[gcs]",
 ]
 # Everything CI needs to gate a change: the tests plus the static checks. Kept
 # separate from `test` so `--with '.[test]'` stays a lightweight "just run the
@@ -56,6 +66,15 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
+    "game-guide-ai[gcs]",
+]
+# The media object store on Cloud Storage (agent-forge-harness-1kg.8.1.4). An
+# extra, not a core dependency: the media capability ships off (media ADR Q-5),
+# so the default image carries no cloud client at all, and even an install that
+# has it imports it only when WORKBENCH_MEDIA_STORE=gcs (service/media_gcs.py).
+# Baking it into Dockerfile.cloud is 1kg.9.5's (docs/deploy-gcp.md section 13).
+gcs = [
+    "google-cloud-storage>=3,<4",
 ]
 # Answer-quality eval (ziw.3) — heavy + dev/CI-only, so NOT a core dependency
 # (the FastAPI service must not pull it). Run: uv run --with '.[eval]' python
@@ -101,10 +120,10 @@ packages = ["service", "ingestion"]
 py-modules = ["config"]
 
 [tool.setuptools.package-data]
-# The canonical schema DDL (service/schema.py). `ensure_schema()` reads these at
-# startup, so an image without them cannot migrate a database — it must ship in
-# the wheel, not just exist in the source tree.
-service = ["sql/*.sql"]
+# The ordered migrations and their manifest (service/migrations.py). The runner
+# reads them at startup, so an image without them cannot bring a database up to
+# its own schema — they must ship in the wheel, not just exist in the source tree.
+service = ["sql/migrations/*.sql", "sql/migrations/manifest.txt"]
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
 # Deliberately mainstream rather than maximal: ruff's wider families (PL*, FURB,
@@ -161,6 +180,16 @@ ignore = [
 python_version = "3.12"
 files = ["service", "config.py"]
 ignore_missing_imports = true
+# A statement after a `return` is what a validator looks like when it was edited
+# without being re-read; ruff and mypy's defaults both pass over one. This is the
+# gate that sees it, and the tree is clean under it.
+#
+# Scope: `files` above, so this is the PYTHON gate over `service/` and
+# `config.py` — every module in them, not only the ones whose author turned it
+# on — and it is not repository-wide. Policy, and how to silence a false
+# positive, are in `docs/ci.md`; the short version is `# type: ignore[unreachable]`
+# on the line, never by removing this flag.
+warn_unreachable = true
 
 [tool.pytest.ini_options]
 # Puts the repo root on sys.path so `import service` / `import ingestion` resolve

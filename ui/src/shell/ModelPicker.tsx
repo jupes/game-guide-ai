@@ -15,27 +15,14 @@
 import * as React from 'react'
 import { useAppNav } from './AppNav'
 import { useConversationStore } from './ConversationStoreContext'
+import { useModelCatalogState } from './ModelCatalogContext'
+import { FALLBACK_CATALOG, preferenceToSend } from './modelPreference'
+import type { ModelCatalog } from './modelPreference'
 import './ModelPicker.css'
 
-export interface ModelCatalogEntry {
-  id: string
-  display_name: string
-  tier?: string
-  supports_attachments?: boolean
-  description?: string
-}
-
-interface ModelCatalog {
-  default: string
-  models: ModelCatalogEntry[]
-}
+export type { ModelCatalogEntry } from './modelPreference'
 
 export type GetModelsFn = () => Promise<ModelCatalog>
-
-const FALLBACK_CATALOG: ModelCatalog = {
-  default: 'auto',
-  models: [{ id: 'auto', display_name: 'Automatic' }],
-}
 
 async function defaultGetModels(): Promise<ModelCatalog> {
   const res = await fetch('/models', { credentials: 'include' })
@@ -59,7 +46,9 @@ export function ModelPicker({
 }: ModelPickerProps): React.JSX.Element {
   const { mode, conversationId, setConversationId } = useAppNav()
   const store = useConversationStore()
-  const [catalog, setCatalog] = React.useState<ModelCatalog>(FALLBACK_CATALOG)
+  // agent-forge-harness-bta: the catalog lives where ChatPane reads it too
+  // (ModelCatalogProvider), so the pane never sends what this does not show.
+  const [catalog, setCatalog] = useModelCatalogState()
 
   React.useEffect(() => {
     let cancelled = false
@@ -73,10 +62,24 @@ export function ModelPicker({
     return () => {
       cancelled = true
     }
-  }, [getModels])
+  }, [getModels, setCatalog])
 
   const conversation = conversationId !== null ? store.get(conversationId) : undefined
-  const value = conversation?.modelPreference ?? catalog.default
+  // What this conversation's next turn sends — the same rule ChatPane posts by.
+  const value = preferenceToSend(conversation, catalog)
+  const stored = conversation?.modelPreference
+
+  // a6o: a stored preference the served catalog does not list (a model alias
+  // stored before D-9, or a retired id) goes back to the default, first prompt
+  // or not. It can no longer change what a started conversation SENDS — that
+  // is its `boundPreference` (bta) — so this only keeps the store honest. Only
+  // the served catalog can tell: the offline fallback lists 'auto' alone, and
+  // an alias list here would name the models in the bundle.
+  React.useEffect(() => {
+    if (catalog === FALLBACK_CATALOG || conversationId === null || stored === undefined) return
+    if (catalog.models.some((m) => m.id === stored)) return
+    store.setModelPreference(conversationId, catalog.default)
+  }, [catalog, conversationId, store, stored])
 
   const handleChange = (next: string): void => {
     if (conversationId === null || conversation === undefined) return

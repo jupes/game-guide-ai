@@ -63,6 +63,65 @@ describe('MemoryConversationStore', () => {
     expect(store.get(b.id)?.modelPreference).toBe('auto')
   })
 
+  // ── rebindPreference (agent-forge-harness-j9w) ──────────────────────────
+  // The server's own heal of a retired manual pick — the ONE way
+  // boundPreference moves after the first prompt.
+
+  it('rebindPreference moves boundPreference and modelPreference together, and notifies', () => {
+    const conv = store.create('sage')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    const listener = vi.fn()
+    store.subscribe(listener)
+
+    store.rebindPreference(conv.id, 'adventurer')
+
+    expect(store.get(conv.id)).toMatchObject({
+      boundPreference: 'adventurer', modelPreference: 'adventurer',
+    })
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  it('rebindPreference before the first prompt is a silent no-op', () => {
+    // Nothing is bound yet — there is nothing to heal, and doing it anyway
+    // would let the picker's own free choice (D6, before hasFirstPrompt) be
+    // silently overwritten by a call meant only for a started conversation.
+    const conv = store.create('sage')
+    const listener = vi.fn()
+    store.subscribe(listener)
+
+    store.rebindPreference(conv.id, 'adventurer')
+
+    expect(store.get(conv.id)).toMatchObject({ boundPreference: null, modelPreference: 'auto' })
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('rebindPreference to the preference already bound is a silent no-op', () => {
+    const conv = store.create('sage')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'adventurer')
+    const listener = vi.fn()
+    store.subscribe(listener)
+
+    store.rebindPreference(conv.id, 'adventurer')
+
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('rebindPreference on an unknown id is a silent no-op', () => {
+    const listener = vi.fn()
+    store.subscribe(listener)
+    expect(() => store.rebindPreference('not-a-real-id', 'adventurer')).not.toThrow()
+    expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('rebindPreference does not affect other conversations', () => {
+    const a = store.create('sage')
+    const b = store.create('sage')
+    store.recordFirstPrompt(a.id, 'a?', 'traveller')
+    store.recordFirstPrompt(b.id, 'b?', 'traveller')
+    store.rebindPreference(a.id, 'adventurer')
+    expect(store.get(b.id)?.boundPreference).toBe('traveller')
+  })
+
   it('list filters by mode — sage conversations do not appear under spell', () => {
     store.create('sage')
     store.create('spell')
@@ -225,6 +284,17 @@ describe('LocalStorageConversationStore', () => {
     expect(new LocalStorageConversationStore().list('sage')).toHaveLength(0)
   })
 
+  it('rebindPreference persists — a heal survives a reload (agent-forge-harness-j9w)', () => {
+    const conv = store.create('sage')
+    store.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    store.rebindPreference(conv.id, 'adventurer')
+
+    const reloaded = new LocalStorageConversationStore()
+    expect(reloaded.get(conv.id)).toMatchObject({
+      boundPreference: 'adventurer', modelPreference: 'adventurer',
+    })
+  })
+
   it('persists the first-prompt fallback through custom and blank renames', () => {
     const conv = store.create('sage')
     store.recordFirstPrompt(conv.id, 'What is a basilisk?')
@@ -322,6 +392,29 @@ describe('LocalStorageConversationStore', () => {
 
     const b = new LocalStorageConversationStore(userId)
     expect(b.get(conv.id)?.modelPreference).toBe('gpt-4o-mini')
+  })
+
+  it('records the preference a first prompt was sent with, once, and persists it (agent-forge-harness-bta)', () => {
+    const userId = 'alice@example.com'
+    const a = new LocalStorageConversationStore(userId)
+    const conv = a.create('sage', undefined, 'traveller')
+    expect(a.get(conv.id)?.boundPreference).toBeNull()
+
+    a.recordFirstPrompt(conv.id, 'What is a basilisk?', 'traveller')
+    a.recordFirstPrompt(conv.id, 'And a cockatrice?', 'auto')
+
+    const b = new LocalStorageConversationStore(userId)
+    expect(b.get(conv.id)?.boundPreference).toBe('traveller')
+  })
+
+  it('reads a started row stored before bta as bound to nothing recorded (agent-forge-harness-bta)', () => {
+    const rows = [
+      { id: 'pre-bta', mode: 'sage', title: 'How does grappling work?', createdAt: '2026-01-01T00:00:00.000Z',
+        derivedTitle: 'How does grappling work?', customTitle: null, hasFirstPrompt: true, modelPreference: 'gpt-4o-mini' },
+    ]
+    lsMock.setItem('game-guide-ai:conversations:alice@example.com', JSON.stringify(rows))
+    const store = new LocalStorageConversationStore('alice@example.com')
+    expect(store.get('pre-bta')).toMatchObject({ modelPreference: 'gpt-4o-mini', boundPreference: null })
   })
 
   it('create() does not throw when the write fails (quota exceeded) and warns instead', () => {

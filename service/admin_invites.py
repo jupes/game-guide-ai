@@ -25,6 +25,7 @@ import config
 
 from .auth_store import AuthStore, PostgresAuthStore
 from .invites import ROLES, Invite, Role
+from .migrations import MigrationError
 
 
 def build_signup_link(base_url: str, token: str) -> str:
@@ -94,7 +95,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     store = PostgresAuthStore()
-    store.ensure_schema()
+    try:
+        store.ensure_schema()  # checks; never applies (see PostgresAuthStore.ensure_schema)
+    except MigrationError as exc:
+        print(f"error: {exc}")
+        return 2
 
     if args.cmd == "create":
         try:

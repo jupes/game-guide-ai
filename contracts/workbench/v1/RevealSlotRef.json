@@ -1,0 +1,56 @@
+{
+  "schema": "RevealSlotRef",
+  "direction": "response",
+  "note": "Which slot a GM-side entry or `slot` frame is about: the table, or ONE participant by id. It is deliberately not a RevealAudience — under owner decision O-3 an audience may name several participants, because one Confirm fills one slot per recipient with copies of one disclosure, while a slot is one region of one screen and names one participant. It travels on the GM channel and in GmSnapshot only: a table client is told `table` or `mine` and never an id (SEC-15, threat model 8.2). An alias is a display name and never leaves the GM's channel (AUD-11).",
+  "valid": [
+    {
+      "name": "the table slot",
+      "value": { "kind": "table" }
+    },
+    {
+      "name": "one participant's slot",
+      "value": { "kind": "participant", "participant_id": "pt_4c1b9e7a" }
+    },
+    {
+      "name": "a participant whose id is the word table",
+      "value": { "kind": "participant", "participant_id": "table" }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a recipient list where a slot belongs",
+      "why": "owner decision O-3: an audience may name several participants, but a slot is one region of one screen — a list here would be a slot with two screens",
+      "value": { "kind": "participants", "participant_ids": ["pt_4c1b9e7a"] }
+    },
+    {
+      "name": "a participant slot with no id",
+      "value": { "kind": "participant" },
+      "why": "ED-10: a slot is named by an identity; there is nothing to address without one"
+    },
+    {
+      "name": "an alias beside the id",
+      "why": "AUD-11: an alias is a display name and never leaves the GM's channel, so it is refused even where the id beside it is correct",
+      "value": { "kind": "participant", "participant_id": "pt_4c1b9e7a", "alias": "Bex" }
+    },
+    {
+      "name": "the table slot carrying a participant id",
+      "why": "the table is not a participant; one shape per slot, and no half-named region",
+      "value": { "kind": "table", "participant_id": "pt_4c1b9e7a" }
+    },
+    {
+      "name": "the table client's own slot name",
+      "why": "SEC-15: `mine` is how a TABLE client is told which region a projection belongs in, because that side is id-free; the GM's picture names the participant, so the two vocabularies never meet",
+      "value": { "kind": "mine" }
+    },
+    {
+      "name": "a bare string",
+      "why": "a slot reference is a discriminated object, so a second kind cannot be added by string",
+      "value": "table"
+    },
+    {
+      "name": "a participant id outside the id alphabet",
+      "why": "identifiers are opaque: [A-Za-z0-9_-]{1,64}",
+      "value": { "kind": "participant", "participant_id": "pt/4c1b" }
+    }
+  ]
+}

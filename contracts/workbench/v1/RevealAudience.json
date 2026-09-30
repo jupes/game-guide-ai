@@ -1,0 +1,76 @@
+{
+  "schema": "RevealAudience",
+  "direction": "request",
+  "note": "Who a reveal is for (AUD-2, ED-10, owner decision O-3): the whole table, or ONE OR MORE participants by id. A reveal to one player is a list of one; there is no separate singular shape, because a group display is per-recipient copies of one disclosure. A named group is expanded by the client into its member ids at the moment the GM confirms, exactly as `all` is expanded into field keys (ED-8), so no group id and no wildcard ever travels or is stored and a group whose membership changes later cannot silently widen a live reveal. An audience is an identity, never a credential and never an alias (AUD-11). Nothing here ties an audience to a document type: owner decision O-2 makes a participant audience legal for ANY type, and the registry's `audience` flag now says only whose default reveal a type seeds. A SLOT names one participant, not a list (RevealSlotRef); a table client is never told either (SEC-15). Since a slot got its own shape, an audience travels in one place only — `RevealRequest.audience` — so this file is tagged `request`: an undeclared key, `__proto__` included, is a finding on both sides rather than the recorded response asymmetry.",
+  "valid": [
+    {
+      "name": "the whole table",
+      "value": { "kind": "table" }
+    },
+    {
+      "name": "one participant",
+      "value": { "kind": "participants", "participant_ids": ["pt_4c1b9e7a"] }
+    },
+    {
+      "name": "three participants, one disclosure in three copies",
+      "value": { "kind": "participants", "participant_ids": ["pt_4c1b9e7a", "pt_11aa22bb", "pt_33cc44dd"] }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "an empty recipient list",
+      "why": "O-3: a disclosure has at least one copy; an empty list is a Stop wearing a Confirm's shape",
+      "value": { "kind": "participants", "participant_ids": [] }
+    },
+    {
+      "name": "the same participant twice",
+      "why": "a recipient list is a set: a repeat would mean two copies of one disclosure for one participant, and a slot is listed once",
+      "value": { "kind": "participants", "participant_ids": ["pt_4c1b9e7a", "pt_4c1b9e7a"] }
+    },
+    {
+      "name": "an alias beside the recipient list",
+      "why": "AUD-11: an alias is a display name and never leaves the GM's channel, so it is refused even where the ids beside it are correct — there is no member it could ride in",
+      "value": { "kind": "participants", "participant_ids": ["pt_4c1b9e7a"], "alias": "Bex" }
+    },
+    {
+      "name": "a display name where an id belongs",
+      "why": "ED-10: an audience is an identity, and a display name with a space is not an opaque id. An alias that happens to match the id alphabet cannot be told from an id by shape — that is inherent in opaque ids, and is why the server resolves every id against the session's own participants (SEC-3)",
+      "value": { "kind": "participants", "participant_ids": ["pt_4c1b9e7a", "Bex Silvershod"] }
+    },
+    {
+      "name": "a recipient list beside the table audience",
+      "why": "the table is not a list of participants; one shape per audience, and no half-named disclosure",
+      "value": { "kind": "table", "participant_ids": ["pt_4c1b9e7a"] }
+    },
+    {
+      "name": "the singular participant shape",
+      "why": "owner decision O-3 replaced it: a reveal to one player is a list of one, so there is exactly one shape for every private disclosure and `stop all copies` never has a special case",
+      "value": { "kind": "participant", "participant_id": "pt_4c1b9e7a" }
+    },
+    {
+      "name": "a recipient list with no ids field",
+      "why": "ED-10: a participant audience is an identity; there is nothing to evaluate without one",
+      "value": { "kind": "participants" }
+    },
+    {
+      "name": "a bare string",
+      "why": "an audience is a discriminated object, so a second kind cannot be added by string",
+      "value": "table"
+    },
+    {
+      "name": "an audience kind this contract does not define",
+      "why": "closed vocabulary: a group is expanded into participant ids by the client (ED-8), so a group audience is not a value this wire ever carries",
+      "value": { "kind": "group", "group_id": "grp_1a2b3c4d" }
+    },
+    {
+      "name": "a participant id outside the id alphabet",
+      "why": "identifiers are opaque: [A-Za-z0-9_-]{1,64}",
+      "value": { "kind": "participants", "participant_ids": ["pt/4c1b"] }
+    },
+    {
+      "name": "a key named __proto__ beside the audience",
+      "why": "an audience travels only on a request and a request is strict; a key JavaScript treats specially is still a stray key. JSON.parse makes it an ordinary own key, so the client's `refusingProtoKeys` wrap must refuse it where the server's strict model refuses it — without the wrap the two sides disagree",
+      "value": { "kind": "table", "__proto__": { "participant_ids": ["pt_4c1b9e7a"] } }
+    }
+  ]
+}

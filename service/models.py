@@ -139,11 +139,12 @@ class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural-language D&D question")
     mode: ChatMode = Field(ChatMode.sage, description="Chat mode (sage|spell|rules|gm)")
     conversation_id: str | None = Field(None, description="Carried through; persistence is stubbed")
-    # b8o.2: "auto" or a specific enabled catalog alias (e.g. "gpt-4o-mini").
-    # Defaults to "auto" so existing callers that omit it keep working.
-    # Validated against the catalog and atomically bound to the conversation
-    # in the /chat handler, not here — Pydantic has no catalog access.
-    model_preference: str = Field("auto", description="'auto' or a specific enabled model alias")
+    # b8o.2: "auto" or an enabled entry's PUBLIC model id (D-9, au3:
+    # model_catalog.PUBLIC_MODELS, never the catalog alias). Defaults to "auto"
+    # so existing callers that omit it keep working. Resolved against the
+    # catalog, and its alias atomically bound to the conversation, in the /chat
+    # handler, not here — Pydantic has no catalog access.
+    model_preference: str = Field("auto", description="'auto' or an enabled public model id")
 
 
 class Source(BaseModel):
@@ -156,13 +157,19 @@ class Source(BaseModel):
 
 
 class RoutingInfo(BaseModel):
-    """Honest model/fallback disclosure for one provider call (b8o.2 D3).
-    All fields are bounded enums/aliases — never an endpoint, key state, or
-    internal error. `task_class`/`reason` stay None until Checkpoint 4's
-    classifier exists; `auto` resolves to the static baseline until then."""
+    """Which model answered one provider call, as the client may know it.
+    D-9 (au3) reverses b8o.2 D3's disclosure: `requested`, `effective` and
+    `fallback_from` are public model ids (model_catalog.PUBLIC_MODELS) or
+    "auto", never a catalog alias, and `provider` is never set. It stays
+    declared, optional, only so a row stored before au3 still parses. Never an
+    endpoint, key state, or internal error. `task_class`/`reason` stay None
+    until Checkpoint 4's classifier exists. `fallback_from` is set only on a
+    turn healed off a retired manual pick (agent-forge-harness-j9w): that
+    pick's public id or, for one the catalog has dropped entirely, the
+    preference the request itself sent; a client then adopts `requested`."""
     requested: str
     effective: str
-    provider: str
+    provider: str | None = None
     strategy: Literal["auto", "manual"]
     task_class: str | None = None
     reason: str | None = None
@@ -173,9 +180,10 @@ class SuggestionsRoutingInfo(BaseModel):
     """Same disclosure shape as RoutingInfo, for spell mode's second
     (suggestions) call (D3) — present only in spell mode, deliberately
     narrower (no `requested`/`strategy`: suggestions always route to the
-    economy subroute regardless of the answer's routing)."""
+    economy subroute regardless of the answer's routing). Public ids only and
+    no provider, exactly as RoutingInfo (D-9, au3)."""
     effective: str
-    provider: str
+    provider: str | None = None
     reason: str | None = None
     fallback_from: str | None = None
 

@@ -2,8 +2,10 @@
 `scripts/bootstrap-db.sh` — the one-shot schema bootstrap for a managed database.
 
 It is run by hand against a fresh production instance, and the files depend on
-each other: `05-auth-schema.sql` adds the ownership foreign key onto a table
-`04-chat-schema.sql` creates. Two defaults conspire to hide a failure — psql
+each other: `03-hybrid-search.sql` indexes the tables `02-schema.sql` creates.
+The application schema is not its job any more — that is the ordered migration
+runner's (`service/migrations.py`, 1kg.1.5), and the script says so when it is
+done. Two defaults conspire to hide a failure — psql
 continues past a SQL error unless told otherwise, and a shell block ending in
 `echo` exits 0 whatever it printed. So the invariants worth testing are: apply
 in order, stop at the first failure, and exit nonzero when you do.
@@ -28,10 +30,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "bootstrap-db.sh"
 DSN = "postgresql://user:pw@localhost:5432/db"
 
-#: In dependency order. 04/05 come from the canonical package location.
+#: In dependency order: the corpus schema, and nothing of the application's.
 EXPECTED_ORDER = [
     "01-extensions.sql", "02-schema.sql", "03-hybrid-search.sql", "03a-corpus-provenance.sql",
-    "04-chat-schema.sql", "05-auth-schema.sql",
 ]
 
 
@@ -79,12 +80,23 @@ def test_applies_every_schema_file_in_dependency_order(tmp_path):
 
 
 def test_stops_at_the_first_failure_and_exits_nonzero(tmp_path):
-    """03 fails: 04 and 05 must never run, and the exit status must say so —
+    """03 fails: 03a must never run, and the exit status must say so —
     otherwise automation reads a half-built database as ready."""
     code, applied, output = _run(tmp_path, DSN, fail_on="03-hybrid-search.sql")
     assert code == 1, f"a failed bootstrap must exit nonzero:\n{output}"
     assert applied == EXPECTED_ORDER[:3]
     assert "BOOTSTRAP FAILED" in output
+
+
+def test_the_application_schema_is_left_to_the_migration_runner(tmp_path):
+    """One mechanism (1kg.1.5). A second path that applied the application
+    schema through psql would produce databases with no migration ledger, and
+    nothing would notice until the two paths disagreed."""
+    code, applied, output = _run(tmp_path, DSN)
+    assert code == 0, output
+    assert "python -m service.migrations migrate" in output, "the operator must be told the next step"
+    assert "service/sql" not in SCRIPT.read_text(encoding="utf-8")
+    assert not any(name.startswith(("04", "05", "000")) for name in applied)
 
 
 def test_requires_a_dsn(tmp_path):
@@ -105,3 +117,6 @@ def test_the_runbook_invokes_the_script_rather_than_inlining_a_loop():
     runbook = (REPO_ROOT / "docs" / "deploy-gcp.md").read_text(encoding="utf-8")
     assert "scripts/bootstrap-db.sh" in runbook
     assert "BOOTSTRAP_OK" not in runbook, "the loop is back in the docs; call the script"
+    assert "python -m service.migrations migrate" in runbook, (
+        "the runbook must apply the application schema too — the script no longer does"
+    )

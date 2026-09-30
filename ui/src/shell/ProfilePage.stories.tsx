@@ -1,0 +1,161 @@
+/**
+ * ProfilePage — display name and avatar tone, both locally stubbed, plus the
+ * read-only role and the list of fields that do not exist yet.
+ */
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
+
+import { tabTo } from '../../.storybook/keyboard'
+import { withShell } from '../../.storybook/shellHarness'
+import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectViewport, type ViewportName } from '../../.storybook/viewports'
+import { ProfilePage } from './ProfilePage'
+
+const meta = {
+  title: 'Shell/ProfilePage',
+  component: ProfilePage,
+  tags: ['autodocs'],
+  parameters: { layout: 'fullscreen' },
+  decorators: [withShell({ screen: 'profile' })],
+} satisfies Meta<typeof ProfilePage>
+
+export default meta
+type Story = StoryObj<typeof meta>
+
+export const DungeonMaster: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('textbox', { name: 'Display name' })).toHaveValue('Alanna Quill')
+    const roleSwitch = canvas.getByRole('switch', { name: 'Dungeon Master role' })
+    await expect(roleSwitch).toBeChecked()
+    await expect(roleSwitch).toBeDisabled()
+  },
+}
+
+export const Player: Story = {
+  decorators: [withShell({ screen: 'profile', role: 'player', displayName: 'Tam Underbough' })],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('switch', { name: 'Dungeon Master role' })).not.toBeChecked()
+  },
+}
+
+/**
+ * Edited by keyboard alone: Tab into the field, type, and the avatar's initials
+ * follow. The tone buttons are `aria-pressed` toggles, so a screen reader
+ * hears which colour is selected.
+ */
+export const RenamedByKeyboard: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const field = canvas.getByRole('textbox', { name: 'Display name' })
+    await userEvent.tab()
+    await expect(field).toHaveFocus()
+
+    await userEvent.keyboard('{Control>}a{/Control}Grivvel Oakenshadow')
+    await expect(field).toHaveValue('Grivvel Oakenshadow')
+    // The header avatar and the four tone swatches all take their initials
+    // from the same value, so the rename is visible immediately.
+    await expect(canvas.getAllByText('GO')).toHaveLength(5)
+  },
+}
+
+/**
+ * Tone selection, driven from the keyboard, with the pressed state asserted.
+ *
+ * The swatch is reached with Tab presses (`tabTo`) rather than `.focus()`, so
+ * "from the keyboard" covers getting there as well as activating it — a colour
+ * swatch is exactly the kind of control that ends up as a pointer-only
+ * `<div onClick>`.
+ */
+export const TonePickedByKeyboard: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const ember = canvas.getByRole('button', { name: 'Ember avatar' })
+    await expect(canvas.getByRole('button', { name: 'Gold avatar' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await tabTo(ember)
+    await userEvent.keyboard('{Enter}')
+    await expect(ember).toHaveAttribute('aria-pressed', 'true')
+    await expect(canvas.getByRole('button', { name: 'Gold avatar' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
+  },
+}
+
+/** An empty display name — the field allows it, and nothing crashes on initials. */
+export const EmptyDisplayName: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const field = canvas.getByRole('textbox', { name: 'Display name' })
+    field.focus()
+    await userEvent.keyboard('{Control>}a{/Control}{Backspace}')
+    await expect(field).toHaveValue('')
+  },
+}
+
+/** A name long enough to wrap the header and stress the card's measure. */
+export const LongDisplayName: Story = {
+  decorators: [
+    withShell({
+      screen: 'profile',
+      displayName: 'Archmagister Seraphina Duskwhisper of the Ninefold Spire',
+      avatarTone: 'arcane',
+    }),
+  ],
+}
+
+export const Dark: Story = {
+  globals: { theme: 'dark' },
+}
+
+export const DarkVerdigris: Story = {
+  globals: { theme: 'dark' },
+  decorators: [withShell({ screen: 'profile', avatarTone: 'verdigris' })],
+}
+
+/**
+ * agent-forge-harness-0rn: Profile on a phone. The page's side padding drops
+ * to the gutter, "Back to chat" spans the card, and each avatar-tone
+ * swatch keeps its 44px target. `gutterEdge` is false where the card has
+ * reached its own max-width and is centred instead.
+ */
+async function expectPhoneProfile(
+  canvasElement: HTMLElement,
+  viewport: ViewportName,
+  gutterEdge = true,
+): Promise<void> {
+  await expectViewport(viewport)
+  const canvas = within(canvasElement)
+  await expectNoPageOverflow()
+  const card = canvasElement.querySelector('.profile-page__card')
+  if (!(card instanceof HTMLElement)) throw new Error('no profile card')
+  if (gutterEdge) await expectLeftEdge(card, 16)
+  await expectSpans(canvas.getByRole('button', { name: 'Back to chat' }), card)
+  const swatches = Array.from(canvasElement.querySelectorAll('.profile-page__tone'))
+  await expect(swatches.length).toBeGreaterThan(0)
+  for (const swatch of swatches) {
+    const box = swatch.getBoundingClientRect()
+    await expect(box.width).toBeGreaterThanOrEqual(44)
+    await expect(box.height).toBeGreaterThanOrEqual(44)
+  }
+}
+
+export const Phone390: Story = {
+  ...atViewport('phone390'),
+  play: async ({ canvasElement }) => expectPhoneProfile(canvasElement, 'phone390'),
+}
+
+/** AC-1's narrowest phone. */
+export const Phone320: Story = {
+  ...atViewport('phone320'),
+  play: async ({ canvasElement }) => expectPhoneProfile(canvasElement, 'phone320'),
+}
+
+/** One pixel inside the phone rule: "Back to chat" still spans the card. */
+export const Edge599: Story = {
+  ...atViewport('edge599'),
+  play: async ({ canvasElement }) => expectPhoneProfile(canvasElement, 'edge599', false),
+}

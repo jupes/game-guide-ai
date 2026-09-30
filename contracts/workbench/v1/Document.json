@@ -1,7 +1,7 @@
 {
   "schema": "Document",
   "direction": "response",
-  "note": "The GM-side read of a document, and what every document write answers with. A FIELD is a top-level key of data - one flat, snake_case namespace per type (CANVAS-19). Which keys a type has, and what kind of value each holds, is a registry fact (registry.json): common fields for every type, plus the type's own. npc is the worked example; 1kg.5.3 defines the other seven, and until it does they have common fields only. Nothing here says who may see a field: that is agent-forge-harness-1ir.1.2's decision.",
+  "note": "The GM-side read of a document, and what every document write answers with. A FIELD is a top-level key of data - one flat, snake_case namespace per type (CANVAS-19). Which keys a type has, and what kind of value each holds, is a registry fact (registry.json): common fields for every type, plus the type's own. All eight types declare their fields (1kg.5.3); a key a type does not name fails closed. Nothing here says who may see a field: the per-field rule in registry.json does, following ED-5, and the mask that acts on it is agent-forge-harness-1kg.1.6's.",
   "valid": [
     {
       "name": "an NPC dossier after an assistant edit",
@@ -22,7 +22,8 @@
           "wants": "The signet of the drowned saint, returned to the reliquary.",
           "leverage": "She knows who scuttled the Marrow.\nShe will not say it twice.",
           "if_attacked": "She walks into the water and is gone.",
-          "notes": ""
+          "notes": "",
+          "true_identity": "The drowned saint herself, and she knows it."
         },
         "write_revision": 14,
         "version": {
@@ -112,7 +113,157 @@
       }
     },
     {
-      "name": "an archived document of a type whose own fields 1kg.5.3 has yet to define",
+      "name": "a stat block, carrying one field of each structured kind (1kg.5.3)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": {
+          "name": "Tidewarden Drowned",
+          "qualifier": "Medium undead, neutral evil",
+          "tags": ["tidewardens"],
+          "ac": 12,
+          "hp": 33,
+          "abilities": { "str": 14, "dex": 10, "con": 16, "int": 6, "wis": 8, "cha": 5 },
+          "traits": [
+            { "name": "Amphibious", "text": "It breathes air and water." },
+            { "name": "Salt-bound", "text": "" }
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": ["name"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a character sheet with every structured field cleared",
+      "why": "an asset, an integer and an ability block clear to null, a text_list and an entry_list to [] — the kinds table of the wire contract. It is a CHARACTER SHEET because that is the one type declaring all five structured kinds whose only required field is its name: LIB-12 makes a stat block's ac and hp required, so no valid example may show either of those cleared",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3e",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "character-sheet",
+        "type_version": 1,
+        "data": { "name": "Untitled Character", "portrait": null, "ac": null, "hp": null, "abilities": null, "equipment": [], "features": [] },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": ["name"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a stat block that uses every field the type declares",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3f",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": {
+          "name": "The Harbourmaster, Drowned",
+          "qualifier": "Large undead, lawful evil",
+          "tags": ["tidewardens", "the marrow"],
+          "ac": 16,
+          "ac_note": "natural armour, and a coat of barnacles",
+          "hp": 104,
+          "hit_dice": "11d10 + 44",
+          "speed": "20 ft., swim 40 ft.",
+          "size": "Large",
+          "creature_type": "Undead",
+          "alignment": "Lawful evil",
+          "abilities": { "str": 18, "dex": 9, "con": 18, "int": 11, "wis": 13, "cha": 15 },
+          "saving_throws": "Con +7, Wis +4",
+          "skills": "Athletics +7, Intimidation +5",
+          "damage_immunities": "Poison, cold",
+          "condition_immunities": "Exhaustion, poisoned",
+          "senses": "Darkvision 120 ft., passive Perception 11",
+          "languages": "Common, Aquan",
+          "challenge_rating": "7",
+          "xp": 2900,
+          "traits": [
+            { "name": "Amphibious", "text": "It breathes air and water." },
+            { "name": "Ledger-bound", "text": "It cannot attack a creature whose name it has struck through." }
+          ],
+          "actions": [
+            { "name": "Multiattack", "text": "It makes two gaff attacks." },
+            { "name": "Gaff", "text": "Melee weapon attack: +7 to hit, reach 10 ft., one target. 11 (2d6 + 4) piercing damage." }
+          ],
+          "bonus_actions": [{ "name": "Undertow", "text": "It drags a grappled creature 10 feet toward the water." }],
+          "reactions": [{ "name": "Turn of the Tide", "text": "When a creature it can see stands up, it may make one gaff attack." }],
+          "legendary_actions": [{ "name": "Call the Water", "text": "The water rises a foot. At three feet, the lanterns go out." }]
+        },
+        "write_revision": 6,
+        "version": {
+          "number": 2,
+          "author": "assistant",
+          "summary": "Promoted from the bestiary",
+          "created_at": "2026-09-16T20:10:00Z",
+          "sealed": true,
+          "changed_fields": ["actions", "legendary_actions"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:10:00Z"
+      }
+    },
+    {
+      "name": "session notes that use every field the type declares (REVEAL-23)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5e55109b",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "session-notes",
+        "type_version": 1,
+        "data": {
+          "name": "Session 12 — The Marrow",
+          "qualifier": "Three hours, one drowning",
+          "tags": ["recap", "the marrow"],
+          "session": 12,
+          "date": "16 September, the second Tideday",
+          "present": ["Bryn", "Oda", "Kesh", "Marta (late)"],
+          "recap": "They found the ledger, and then the tide found them.\nOndrey was not where she said she would be.",
+          "beats": ["The ledger names the harbourmaster", "The Marrow was scuttled on purpose"],
+          "loose_threads": ["Who paid for the scuttling?", "The reliquary is still empty"]
+        },
+        "write_revision": 3,
+        "version": {
+          "number": 2,
+          "author": "assistant",
+          "summary": "Recap of session 12",
+          "created_at": "2026-09-16T23:01:00Z",
+          "sealed": true,
+          "changed_fields": ["recap", "beats", "loose_threads"],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T23:01:00Z",
+        "updated_at": "2026-09-16T23:20:00Z"
+      }
+    },
+    {
+      "name": "an archived session-notes document, with the common fields alone",
       "value": {
         "schema_version": 1,
         "document_id": "doc_5e55109a",
@@ -152,6 +303,91 @@
       }
     },
     {
+      "name": "an integer field at the top of its range",
+      "why": "1kg.5.3: an integer field holds a count, a score or a budget - never an id and never a revision. Both languages stop at 1,000,000, and these files are where that number is agreed",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c40",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Whole Tide", "ac": 1000000, "hp": 1000000, "xp": 1000000 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["ac", "xp"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an integer field at the bottom of its range",
+      "why": "the range is symmetric on both sides, and -1,000,000 is the floor. It is reachable through xp, which is the one integer field the registry leaves at the kind's own range - ac and hp are floored at 0, because an armour class is not negative",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c41",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Undertow", "ac": 16, "hp": 104, "xp": -1000000 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["xp"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "ability scores at both ends of their range",
+      "why": "0 because a creature can lack an ability outright, and 99 is the ceiling on both sides - well past anything the rules produce",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c42",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Scoured", "ac": 16, "hp": 104, "abilities": { "str": 99, "dex": 0, "con": 99, "int": 0, "wis": 0, "cha": 99 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["abilities"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry list of exactly 100 entries",
+      "why": "an entry_list holds at most 100 entries, the same ceiling a text_list has",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c43",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Hundred Habits", "ac": 16, "hp": 104, "traits": { "@repeat_value": { "name": "Habit", "text": "It does this again." }, "@count": 100 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry at its name and text ceilings",
+      "why": "an entry's name is a text field (1 to 200 characters, one line) and its text a list item (up to 2,000)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "ac": 16, "hp": 104, "traits": [{ "name": "@repeat:a:200", "text": "@repeat:a:2000" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
       "name": "a client strips a field key it does not know, so a type can gain fields without a version bump",
       "applies_to": ["client"],
       "value": {
@@ -166,6 +402,254 @@
         "archived": false,
         "created_at": "2026-09-16T20:00:00Z",
         "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a player handout, the one type that assumes it will be shown",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c01",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "handout",
+        "type_version": 1,
+        "data": {
+          "name": "The Harbourmaster's Ledger",
+          "qualifier": "A water-stained folio",
+          "tags": [
+            "the marrow"
+          ],
+          "portrait": {
+            "asset_id": "ast_5d4c3b2a",
+            "media_type": "image",
+            "alt": "A ledger page in a cramped hand"
+          },
+          "body": "Three names are struck through.\nThe fourth is yours."
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a quest log, whose three thread lists reveal separately (ED-3, ED-23)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c02",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "quest-log",
+        "type_version": 1,
+        "data": {
+          "name": "The Tidewarden Threads",
+          "open_threads": [
+            {
+              "name": "Who scuttled the Marrow?",
+              "text": "Ondrey knows."
+            }
+          ],
+          "cold_threads": [
+            {
+              "name": "The reliquary",
+              "text": ""
+            }
+          ],
+          "resolved_threads": [
+            {
+              "name": "The missing chaplain",
+              "text": "Found, drowned."
+            }
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a character sheet: an owner-audience type with an ability row (AUD-9)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c03",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "character-sheet",
+        "type_version": 1,
+        "data": {
+          "name": "Bryn Alder",
+          "qualifier": "Level 3 half-elf bard",
+          "portrait": {
+            "asset_id": "ast_3c2b1a09",
+            "media_type": "image",
+            "alt": "A bard with a borrowed lute"
+          },
+          "ac": 14,
+          "hp": 22,
+          "speed": "30 ft.",
+          "abilities": {
+            "str": 8,
+            "dex": 16,
+            "con": 12,
+            "int": 13,
+            "wis": 10,
+            "cha": 17
+          },
+          "features": [
+            {
+              "name": "Bardic Inspiration",
+              "text": "Three uses per rest."
+            }
+          ],
+          "equipment": [
+            "A lute",
+            "A signet nobody has explained"
+          ],
+          "notes": ""
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a lore entry, the one type that cites the corpus",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c04",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "lore",
+        "type_version": 1,
+        "data": {
+          "name": "The Drowned Saint",
+          "region": "The Marrow Coast",
+          "era": "Third Tide",
+          "status": "Venerated",
+          "summary": "A chaplain who walked into the water and did not stop.",
+          "history": "The Tidewardens keep her reliquary empty, and say it is on purpose.",
+          "rumours": [
+            "She answers, if you drown politely.",
+            "The signet was never hers."
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an encounter, whose outcome carries its own warning copy (REVEAL-11)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c05",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "encounter",
+        "type_version": 1,
+        "data": {
+          "name": "Ambush at the Sunken Tavern",
+          "difficulty": "Hard",
+          "xp_budget": 2400,
+          "party_level": 3,
+          "setup": "The tide is coming in and the door opens inward.",
+          "combatants": [
+            {
+              "name": "Tidewarden Drowned",
+              "text": "Four, in the rafters."
+            }
+          ],
+          "terrain": "Waist-deep water after round three. Difficult terrain, and the lanterns go out.",
+          "outcome": "They are taken alive, and wake on the Marrow."
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an npc whose name joins with a ZWNJ and whose prose holds an emoji sequence",
+      "why": "Lead ruling of 2026-09-21 (1kg.5.7.2): U+200C ZERO WIDTH NON-JOINER is orthographically required in real names (Persian, several Indic scripts), and U+200D ZERO WIDTH JOINER and U+FE0F VARIATION SELECTOR-16 make an emoji ZWJ sequence; stored text keeps all three",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": {
+          "name": "Khosrow\u200czadeh",
+          "notes": "Flies the \ud83c\udff3\ufe0f\u200d\ud83c\udf08 over the mill."
+        },
+        "write_revision": 14,
+        "version": {
+          "number": 3,
+          "author": "assistant",
+          "summary": "Wants the signet",
+          "created_at": "2026-09-16T19:36:02Z",
+          "sealed": true,
+          "changed_fields": [
+            "name",
+            "notes"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T19:31:24Z",
+        "updated_at": "2026-09-16T19:36:02Z"
       }
     }
   ],
@@ -182,6 +666,24 @@
         "type_version": 1,
         "data": { "name": "Sister Ondrey Vashe", "constructor": "x", "toString": "y" },
         "write_revision": 3,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an ability block with an ability the rules do not have, which a client strips",
+      "why": "1kg.5.3: the ability block has a closed key set, and a response is read the tolerant way — the client drops what it does not know so a type can gain structure without a version bump. The server still refuses to emit it",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "Ondrey", "ac": 16, "hp": 104, "abilities": { "str": 10, "luck": 3 } },
+        "write_revision": 1,
         "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
         "archived": false,
         "created_at": "2026-09-16T20:00:00Z",
@@ -435,7 +937,7 @@
     },
     {
       "name": "a cleared text field written as null",
-      "why": "one way to say empty per kind: text and prose clear to the empty string, a list to [], only an asset to null",
+      "why": "one way to say empty per kind: text and prose clear to the empty string, both lists to [], and an asset, an integer and an ability block to null",
       "value": {
         "schema_version": 1,
         "document_id": "doc_9k2f7a1c",
@@ -567,6 +1069,534 @@
         "data": { "name": "Sister Ondrey Vashe" },
         "write_revision": 3,
         "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a handout whose illustration is an audio asset",
+      "why": "an asset field on a document is an image; audio is a cue and never a document field",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c01",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "handout",
+        "type_version": 1,
+        "data": {
+          "name": "The Ledger",
+          "portrait": {
+            "asset_id": "ast_5d4c3b2a",
+            "media_type": "audio",
+            "alt": "A reading"
+          }
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a quest log whose threads are bare strings",
+      "why": "1kg.5.3: an entry_list holds {name, text} entries, not a text_list - the renderer shows the name as a heading",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c02",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "quest-log",
+        "type_version": 1,
+        "data": {
+          "name": "Threads",
+          "open_threads": [
+            "Who scuttled the Marrow?"
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a character sheet whose armour class is text",
+      "why": "1kg.5.3: ac is an integer field, so no renderer ever has to parse it",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c03",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "character-sheet",
+        "type_version": 1,
+        "data": {
+          "name": "Bryn Alder",
+          "ac": "14"
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a lore entry carrying an npc's field",
+      "why": "X-8 and the type's definition: a key another type declares is still undeclared here, and fails closed",
+      "applies_to": [
+        "server"
+      ],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c04",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "lore",
+        "type_version": 1,
+        "data": {
+          "name": "The Drowned Saint",
+          "voice": "Low, unhurried"
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an encounter whose party level is a decimal",
+      "why": "an integer field takes a whole number, and 3.5 is not one on either side",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c05",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "encounter",
+        "type_version": 1,
+        "data": {
+          "name": "Ambush",
+          "party_level": 3.5
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "name"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an integer field one past the top of its range",
+      "why": "1,000,001 is one past the ceiling. A drift in either language's constant would make this example pass on one side only",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c40",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Whole Tide", "hp": 104, "ac": 1000001 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["ac"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an integer field one past the bottom of its range",
+      "why": "-1,000,001 is one past the floor; the range is symmetric and both ends are checked. It has to be spelled on xp: ac is floored at 0 by its own per-field bounds, so a negative ac would fail for that instead",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c41",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Undertow", "ac": 16, "hp": 104, "xp": -1000001 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["xp"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an ability score one past its ceiling",
+      "why": "an ability score stops at 99. A client that reads a higher one and a server that stores it are the drift this example exists to catch",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c42",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Scoured", "ac": 16, "hp": 104, "abilities": { "str": 100 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["abilities"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an ability score below its floor",
+      "why": "0 is the floor - a creature that lacks an ability has none of it, and a modifier is never stored here",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c42",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Scoured", "ac": 16, "hp": 104, "abilities": { "str": -1 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["abilities"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry list of 101 entries",
+      "why": "an entry_list holds at most 100 entries",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c43",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Hundred Habits", "ac": 16, "hp": 104, "traits": { "@repeat_value": { "name": "Habit", "text": "It does this again." }, "@count": 101 } },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry name of 201 characters",
+      "why": "an entry's name is a text field: one line of at most 200 characters, because a renderer shows it as a heading",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "ac": 16, "hp": 104, "traits": [{ "name": "@repeat:a:201", "text": "" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an entry text of 2,001 characters",
+      "why": "RAIL-6: an entry's text is a list item, capped at 2,000 characters so a pasted page is refused before any provider work",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "ac": 16, "hp": 104, "traits": [{ "name": "Habit", "text": "@repeat:a:2001" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an armour class below its floor",
+      "why": "1kg.5.7, F-10: an integer FIELD may narrow the integer KIND. An armour class is not negative, so statblock.ac and character-sheet.ac are floored at 0 - well inside the kind's own -1,000,000",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c45",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Undertow", "ac": -1, "hp": 104 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a session number of zero",
+      "why": "1kg.5.7, F-10: there is no session 0, so session-notes.session starts at 1. The kind's own floor would have taken it",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5e55109c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "session-notes",
+        "type_version": 1,
+        "data": { "name": "Session Zero", "session": 0 },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["name"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a line break in an entry name",
+      "why": "an entry's name is one line, like every other text field; the body of the entry is where paragraphs go",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c44",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": { "name": "The Long-Winded", "ac": 16, "hp": 104, "traits": [{ "name": "Amphibious.\nSalt-bound.", "text": "" }] },
+        "write_revision": 1,
+        "version": { "number": 1, "author": "gm", "summary": "", "created_at": "2026-09-16T20:00:00Z", "sealed": false, "changed_fields": ["traits"], "restored_from": null },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an npc whose text field holds a NUL",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: stored text refuses NUL and the other C0 controls. PostgreSQL's text and jsonb refuse U+0000, so an unrefused NUL is a failure to store, a 500, rather than a 422 that names the field",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": {
+          "name": "Sister Ondrey Vashe",
+          "voice": "Low and\u0000 unhurried"
+        },
+        "write_revision": 14,
+        "version": {
+          "number": 3,
+          "author": "assistant",
+          "summary": "Wants the signet",
+          "created_at": "2026-09-16T19:36:02Z",
+          "sealed": true,
+          "changed_fields": [
+            "voice"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T19:31:24Z",
+        "updated_at": "2026-09-16T19:36:02Z"
+      }
+    },
+    {
+      "name": "an npc whose prose field holds an ESC",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: an escape character (U+001B) is a C0 control, and a terminal or a log viewer acts on it rather than showing it, so stored prose refuses it",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": {
+          "name": "Sister Ondrey Vashe",
+          "notes": "Keeps the ledger\u001b[31m in red ink."
+        },
+        "write_revision": 14,
+        "version": {
+          "number": 3,
+          "author": "assistant",
+          "summary": "Wants the signet",
+          "created_at": "2026-09-16T19:36:02Z",
+          "sealed": true,
+          "changed_fields": [
+            "notes"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T19:31:24Z",
+        "updated_at": "2026-09-16T19:36:02Z"
+      }
+    },
+    {
+      "name": "an npc whose tag holds a right-to-left override",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: U+202E RIGHT-TO-LEFT OVERRIDE is a bidirectional control: it makes the displayed text differ from its logical order (the Trojan Source class), so every item of a text_list refuses it",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_9k2f7a1c",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "npc",
+        "type_version": 1,
+        "data": {
+          "name": "Sister Ondrey Vashe",
+          "tags": [
+            "abbey",
+            "mill\u202ellim"
+          ]
+        },
+        "write_revision": 14,
+        "version": {
+          "number": 3,
+          "author": "assistant",
+          "summary": "Wants the signet",
+          "created_at": "2026-09-16T19:36:02Z",
+          "sealed": true,
+          "changed_fields": [
+            "tags"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T19:31:24Z",
+        "updated_at": "2026-09-16T19:36:02Z"
+      }
+    },
+    {
+      "name": "a quest whose entry name holds a byte order mark",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: U+FEFF inside a value is an invisible byte order mark, so two headings that look the same are different text; an entry's name refuses it",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c02",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "quest-log",
+        "type_version": 1,
+        "data": {
+          "name": "The Mill Road",
+          "open_threads": [
+            {
+              "name": "Find\ufeff the ledger",
+              "text": "It is under the mill."
+            }
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "open_threads"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "a quest whose entry text holds a left-to-right mark",
+      "why": "Requirement 6 (1kg.5.7.2), lead ruling of 2026-09-21: U+200E LEFT-TO-RIGHT MARK is refused with the rest of the Bidi_Control set: the need for it in a short name is not worth an exception to a rule that is easy to state, and an entry's text refuses it too",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_1a2b3c02",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "quest-log",
+        "type_version": 1,
+        "data": {
+          "name": "The Mill Road",
+          "open_threads": [
+            {
+              "name": "Find the ledger",
+              "text": "It is under\u200e the mill."
+            }
+          ]
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "open_threads"
+          ],
+          "restored_from": null
+        },
+        "archived": false,
+        "created_at": "2026-09-16T20:00:00Z",
+        "updated_at": "2026-09-16T20:00:00Z"
+      }
+    },
+    {
+      "name": "an ability score spelled as null",
+      "why": "Requirement 7e (1kg.5.7.2): there is one spelling of no score, and it is the key left out. A null score is a second spelling of the same fact, so it is refused on both sides; the whole block still clears to null",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_5b1a2c3d",
+        "campaign_id": "cmp_4b1d9e7a",
+        "type": "statblock",
+        "type_version": 1,
+        "data": {
+          "name": "Ondrey's Hound",
+          "ac": 13,
+          "hp": 11,
+          "abilities": {
+            "str": 14,
+            "dex": null,
+            "con": 12
+          }
+        },
+        "write_revision": 1,
+        "version": {
+          "number": 1,
+          "author": "gm",
+          "summary": "",
+          "created_at": "2026-09-16T20:00:00Z",
+          "sealed": false,
+          "changed_fields": [
+            "abilities"
+          ],
+          "restored_from": null
+        },
         "archived": false,
         "created_at": "2026-09-16T20:00:00Z",
         "updated_at": "2026-09-16T20:00:00Z"

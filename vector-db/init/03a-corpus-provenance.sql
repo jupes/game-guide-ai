@@ -8,9 +8,9 @@
 -- Idempotent by construction (IF NOT EXISTS / conditional constraint), so it is
 -- safe to run against a fresh database (picked up automatically here, lexically
 -- after 03-hybrid-search.sql) AND against an existing one that already has data —
--- unlike service/sql/04-*.sql and 05-*.sql, nothing re-applies vector-db/init/
--- files to a live database (see service/schema.py: ALL_SCHEMAS only covers the
--- chat/auth schemas), so this file must also be run manually once against any
+-- unlike the application schema, nothing applies vector-db/init/ files to a
+-- live database (service/migrations.py only covers the chat/auth/app
+-- schemas), so this file must also be run manually once against any
 -- existing database (local dev, the Cloud SQL pilot) — see vector-db/README.md.
 
 ALTER TABLE dnd.chunks ADD COLUMN IF NOT EXISTS source_type TEXT NOT NULL DEFAULT 'pdf';

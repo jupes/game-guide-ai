@@ -70,10 +70,14 @@ class ProviderClientFactory:
         return client
 
     def _build(self, profile: ModelProfile) -> LLMClient:
+        import httpx
+        import openai
         from langchain_openai import ChatOpenAI
         from pydantic import SecretStr
 
-        from config import TEMPERATURE
+        from config import LLM_CONNECT_TIMEOUT_S, LLM_MAX_OUTPUT_TOKENS, LLM_REQUEST_TIMEOUT_S, TEMPERATURE
+
+        from .provider_deadline import AttemptDeadlineTransport
 
         raw_key = os.environ.get(profile.secret_env) if profile.secret_env else None
         if profile.secret_env and not raw_key:
@@ -86,7 +90,27 @@ class ProviderClientFactory:
         # the SDK (agent-forge-harness-b8o.1, Checkpoint 1 step 5). base_url
         # unset (None) uses OpenAI's own default endpoint; every non-OpenAI
         # profile sets one to reach its own OpenAI-compatible endpoint.
+        # timeout: without one the client waits on a stalled provider forever
+        # (agent-forge-harness-ihz). ChatOpenAI hands it to both the sync and
+        # the async client, so invoke, stream and their async twins all carry
+        # it; the SDK raises APITimeoutError, which /chat already maps to 502.
+        # http_client: those bound each read alone, so a provider that trickles
+        # a byte at a time outlasted them; the sync client's transport also
+        # ends every attempt connect + request seconds after it starts, the
+        # per-attempt cost the retry budget assumes (agent-forge-harness-2bb,
+        # service/provider_deadline.py). follow_redirects=False keeps an attempt
+        # to that one request: each hop httpx follows is a request of its own,
+        # with a fresh deadline, and a provider POST is never redirected.
+        # max_completion_tokens (the field max_tokens, by its alias): every
+        # call's output cap (agent-forge-harness-nz78), so an answer ends inside
+        # its attempt's deadline instead of being billed, timed out and failed;
+        # a call that sets its own (document_generation) overrides it.
+        http_client = openai.DefaultHttpxClient(transport=AttemptDeadlineTransport(
+            LLM_CONNECT_TIMEOUT_S + LLM_REQUEST_TIMEOUT_S, limits=openai.DEFAULT_CONNECTION_LIMITS,
+        ), follow_redirects=False)
         return ChatOpenAI(
             model=profile.api_model, temperature=TEMPERATURE, max_retries=0,
-            base_url=profile.base_url, api_key=api_key,
+            max_completion_tokens=LLM_MAX_OUTPUT_TOKENS, base_url=profile.base_url, api_key=api_key,
+            timeout=httpx.Timeout(LLM_REQUEST_TIMEOUT_S, connect=LLM_CONNECT_TIMEOUT_S),
+            http_client=http_client,
         )
