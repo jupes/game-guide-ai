@@ -50,6 +50,7 @@ function serve(campaign: Reply = { status: 200, body: campaignBody('cmp_A') }) {
     calls.push(call)
     const answer = ((): Reply => {
       if (call.method === 'POST' && call.url === '/conversations') return { status: 201, body: threadBody(`cnv_new${calls.filter((c) => c.method === 'POST').length}`, call.body.campaign_id) }
+      if (call.method === 'GET' && call.url === '/campaigns') return { status: 200, body: { schema_version: 1, items: [campaignBody('cmp_A'), campaignBody('cmp_B')], next_cursor: null } }
       const one = /^\/campaigns\/(cmp_\w+)$/.exec(call.url)
       if (one !== null) return one[1] === 'cmp_A' ? campaign : { status: 200, body: campaignBody(one[1]) }
       const list = /campaign_id=(cmp_\w+)/.exec(call.url)
@@ -297,6 +298,70 @@ describe('a campaign switch scopes the pane (I-13, brief section 14; review pr21
     await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
     expect(post.mock.calls[1][2]).toBe('cnv_new2')
     await waitFor(() => expect(live.nav.conversationId).toBe('cnv_new2'))
+  })
+
+  it("a pick from the loaded list, with no re-read, drops A's failed first turn (P6)", async () => {
+    const { server } = await mount({ turns: [{ kind: 'error', message: 'The oracle is silent.' }] })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    act(() => live.c.loadCampaigns())
+    await waitFor(() => expect(live.c.list.kind).toBe('ready'))
+    await sendTurn()
+    expect(await screen.findByText('The oracle is silent.')).toBeInTheDocument()
+    await act(async () => { await live.c.selectCampaign(campaignBody('cmp_B')) })
+    expect(live.c.selection).toMatchObject({ kind: 'selected', campaign: { campaign_id: 'cmp_B' } })
+    expect(server.calls.filter((c) => c.url === '/campaigns/cmp_B')).toEqual([])
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    expect(screen.queryByText('The oracle is silent.')).toBeNull()
+  })
+
+  it("a pick from the loaded list drops A's first turn still in flight: never drawn under B, never adopted (P7)", async () => {
+    const { server, post } = await mount()
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    act(() => live.c.loadCampaigns())
+    await waitFor(() => expect(live.c.list.kind).toBe('ready'))
+    let answer: (result: ChatResult) => void = () => {}
+    post.mockImplementationOnce(() => new Promise<ChatResult>((resolve) => { answer = resolve }))
+    await sendTurn()
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    await act(async () => { await live.c.selectCampaign(campaignBody('cmp_B')) })
+    expect(server.calls.filter((c) => c.url === '/campaigns/cmp_B')).toEqual([])
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    await act(async () => {
+      answer({ kind: 'ok', response: { answer: 'Under the lighthouse stair.', sources: [], answerable: true, conversation_id: 'cnv_new1' } })
+    })
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    expect(screen.queryByText('Under the lighthouse stair.')).toBeNull()
+    expect(live.stored.conversationId).toBeNull()
+  })
+})
+
+describe('the pane keeps its turns where no switch happened (review pr212 M-1, M-3, L-1)', () => {
+  it('leaving GM while a campaign turn is in flight keeps the turn on screen until it settles, then crosses without it (P8)', async () => {
+    const { post } = await mount()
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    let answer: (result: ChatResult) => void = () => {}
+    post.mockImplementationOnce(() => new Promise<ChatResult>((resolve) => { answer = resolve }))
+    await sendTurn()
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    act(() => live.nav.setMode('sage'))
+    expect(screen.getByText(PROMPT)).toBeInTheDocument()
+    await act(async () => {
+      answer({ kind: 'ok', response: { answer: 'Under the lighthouse stair.', sources: [], answerable: true, conversation_id: 'cnv_new1' } })
+    })
+    expect(screen.queryByText(PROMPT)).toBeNull()
+    expect(live.stored.conversationId).toBeNull()
+  })
+
+  it('a campaign switch on the Sage side keeps the Sage pane (P9)', async () => {
+    const { post } = await mount()
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    act(() => live.nav.setMode('sage'))
+    await sendTurn('A Sage question before the switch')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('A Sage question before the switch')).toBeInTheDocument()
+    await act(async () => { await live.c.selectCampaign(campaignBody('cmp_B')) })
+    expect(live.c.selection).toMatchObject({ kind: 'selected', campaign: { campaign_id: 'cmp_B' } })
+    expect(screen.getByText('A Sage question before the switch')).toBeInTheDocument()
   })
 })
 
