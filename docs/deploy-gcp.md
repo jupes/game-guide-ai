@@ -471,10 +471,13 @@ gcloud run services proxy game-guide-ai --project="$PROJECT" --region="$REGION"
 
 # Terminal 2
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/auth/me   # 401 = auth build
-curl -s http://127.0.0.1:8080/openapi.json | grep -c '/auth/'            # 0 = pre-auth build
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/openapi.json   # 404 = API docs hidden
 ```
 
-`401` (not `404`) on `/auth/me` means the auth build is serving. Only then go to
+`401` (not `404`) on `/auth/me` means the auth build is serving. `404` on
+`/openapi.json` means the API docs are off, as they must be on Cloud Run
+(`agent-forge-harness-ust7`): `RAG_API_DOCS_ENABLED` is for a local run only,
+and the service ignores it wherever `K_SERVICE` is set. Only then go to
 §9 and restore unauthenticated invocation.
 
 ## 9. Open ingress (DEFERRED — `x5bz.1.6`)

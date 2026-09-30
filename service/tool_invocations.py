@@ -42,6 +42,9 @@ An executor's `run` reports a refused answer with one of two markers, which
 answered and the answer cannot become a result: `provider_failed`, retryable;
 1kg.4.4 I-3) and `NotInSources` (the rules corpus does not ground the brief:
 `not_in_sources`, final; 1kg.4.3 I-7). Neither carries a message of its own.
+`ExecutionContext.read` runs one lock-free read in a transaction of its own,
+closed before it returns, so `run` never holds a connection across a provider
+call; `ExecutionContext.now` is the route's clock (I-4).
 """
 
 from __future__ import annotations
@@ -202,6 +205,24 @@ class NotInSources(Exception):
     executor's `run` only; it carries no message of its own."""
 
 
+class ContextReader(Protocol):
+    """Runs one read in a transaction of its own (1kg.4.4 I-4)."""
+
+    def __call__[T](self, read: Callable[[UnitOfWork], T], /) -> T: ...  # pragma: no cover - structural type
+
+
+def context_reader(db: TransactionalDatabase) -> ContextReader:
+    """What `ExecutionContext.read` uses: one transaction per read, closed
+    before the answer is handed back. Lock-free reads only; nothing is held
+    across the provider call that follows."""
+
+    def read_once[T](read: Callable[[UnitOfWork], T], /) -> T:
+        with db.transaction() as unit:
+            return read(unit)
+
+    return read_once
+
+
 @dataclass(frozen=True)
 class InvocationTarget:
     """What an executor's precheck and run see. For a retry it is the STORED
@@ -290,7 +311,7 @@ class ExecutionContext:
 
     def __init__(
         self, admission: Admission, *, clock: Clock, factory: ProviderClientFactory,
-        probe: Callable[[], None],
+        probe: Callable[[], None], reader: ContextReader | None = None,
     ) -> None:
         self.target = admission.target
         self.attempt = admission.attempt
@@ -301,6 +322,7 @@ class ExecutionContext:
         self._clock = clock
         self._factory = factory
         self._probe = probe
+        self._reader = reader
 
     def __repr__(self) -> str:
         return f"ExecutionContext(tool={self.target.tool_id.value}, attempt={self.attempt})"
@@ -326,6 +348,18 @@ class ExecutionContext:
 
     def remaining_s(self) -> float:
         return (self.deadline - self._clock()).total_seconds()
+
+    def read[T](self, read: Callable[[UnitOfWork], T]) -> T:
+        """`read(unit)` in one short transaction of its own, closed before this
+        returns (RQ-8). A context built without a reader is a server defect:
+        `RuntimeError`, stored as `backend_unavailable`."""
+        if self._reader is None:
+            raise RuntimeError("this context has no reader")
+        return self._reader(read)
+
+    def now(self) -> datetime:
+        """The route's clock: the service's one clock."""
+        return self._clock()
 
 
 def cancellation_probe(
