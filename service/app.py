@@ -1176,11 +1176,15 @@ async def _chat_request(request: Request, _session: SessionData = Depends(requir
     _require_json(request)
     try:
         parsed = json.loads(raw)
-    except ValueError as exc:  # a JSONDecodeError, or bytes that are no Unicode text
+    except (ValueError, RecursionError) as exc:
+        # A JSONDecodeError, bytes that are no Unicode text, or nesting past the
+        # recursion limit, which was a 500 (PR #217 second review M1).
         # justification: RequestValidationError takes pydantic's untyped error dicts.
         errors: list[Any] = [{"type": "json_invalid", "loc": ("body", getattr(exc, "pos", 0)),
                               "msg": "JSON decode error"}]
     else:
+        if parsed is None:  # FastAPI took a JSON null as no body at all (PR #217 second review L1).
+            raise RequestValidationError([{"type": "missing", "loc": ("body",), "msg": "Field required"}])
         try:
             # from_attributes, as FastAPI validates a declared body: JSON that is
             # no object gets model_attributes_type, as it did (PR #217 review M1).

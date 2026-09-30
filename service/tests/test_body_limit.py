@@ -320,15 +320,24 @@ def _empty_objects(size: int, *, closed: bool = True) -> bytes:
     return body + b" " * (size - len(body))
 
 
+@pytest.mark.parametrize(("path", "size"), [
+    ("/chat", DEFAULT_MAX_BODY_BYTES),
+    ("/metrics/ui", ANONYMOUS_MAX_BODY_BYTES),
+], ids=["chat-read-by-hand", "metrics-ui-declared-body"])
 @pytest.mark.parametrize("closed", [True, False], ids=["not-the-schema", "not-json"])
-def test_a_refused_body_is_let_go_once_answered(closed: bool) -> None:
+def test_a_refused_body_is_let_go_once_answered(path: str, size: int, closed: bool) -> None:
     """Review H1. The 422's error held its traceback, the traceback held the
     frame that raised the error, and the frame held the parsed body: a cycle
     only a full garbage collection frees. With the collector off, reference
-    counting alone must free every refused body."""
+    counting alone must free every refused body.
+
+    Since dl7x, /chat reads its own body, so only a declared body model still
+    goes through the frame the handler's traceback clearing frees: /metrics/ui,
+    public and anonymous, at its 64 KiB ceiling (PR #217 second review H1). Its
+    budget is under one raw body per refusal; /chat keeps its whole-default-body one."""
     app.dependency_overrides[get_service] = lambda: _Answering()
     app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
-    body = _empty_objects(DEFAULT_MAX_BODY_BYTES, closed=closed)
+    body = _empty_objects(size, closed=closed)
 
     async def refuse(times: int) -> list[int]:
         """Raw ASGI on one event loop, keeping only each status: TestClient, or
@@ -345,7 +354,7 @@ def test_a_refused_body_is_let_go_once_answered(closed: bool) -> None:
 
             scope: Scope = {
                 "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
-                "scheme": "http", "path": "/chat", "raw_path": b"/chat", "query_string": b"", "root_path": "",
+                "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"", "root_path": "",
                 "headers": [(b"host", b"testserver"), (b"content-type", b"application/json"),
                             (b"content-length", str(len(body)).encode())],
                 "client": ("203.0.113.9", 50000), "server": ("testserver", 80),
@@ -367,7 +376,8 @@ def test_a_refused_body_is_let_go_once_answered(closed: bool) -> None:
         gc.enable()
         if started:
             tracemalloc.stop()
-    assert held < DEFAULT_MAX_BODY_BYTES, f"{held / MIB:.1f} MiB still held after five refused bodies"
+    budget = min(DEFAULT_MAX_BODY_BYTES, 5 * size)
+    assert held < budget, f"{held / MIB:.2f} MiB still held after five refused bodies"
 
 
 @pytest.mark.real_auth
@@ -432,21 +442,43 @@ NOT_AN_OBJECT = [{"type": "model_attributes_type", "loc": ["body"],
 @pytest.mark.parametrize(("headers", "body", "detail"), [
     ({"content-type": "text/plain"}, json.dumps({"prompt": MARKER}), NOT_AN_OBJECT),
     ({}, json.dumps({"prompt": MARKER}), NOT_AN_OBJECT),
+    ({"content-type": "application/x-www-form-urlencoded"}, json.dumps({"prompt": MARKER}), NOT_AN_OBJECT),
+    ({"content-type": "multipart/form-data; boundary=x"}, json.dumps({"prompt": MARKER}), NOT_AN_OBJECT),
     (JSON, "", [{"type": "missing", "loc": ["body"], "msg": "Field required"}]),
     (JSON, json.dumps([MARKER]), NOT_AN_OBJECT),
     (JSON, json.dumps(MARKER), NOT_AN_OBJECT),
-], ids=["text-plain-json", "no-content-type", "empty", "json-array", "json-string"])
+    (JSON, "null", [{"type": "missing", "loc": ["body"], "msg": "Field required"}]),
+], ids=["text-plain-json", "no-content-type", "form-urlencoded-json", "multipart-json", "empty", "json-array",
+        "json-string", "json-null"])
 def test_a_signed_in_chat_body_is_refused_as_fastapi_refused_it(
         headers: dict[str, str], body: str, detail: list[dict[str, object]]) -> None:
-    """PR #217 review H1, M1 and M2. Since dl7x, /chat reads its own body, so
-    FastAPI's checks are the route's own to keep. The content type matters
-    most: a text/plain or header-less POST is a CORS simple request, sent
-    cross-site with no preflight, and /chat is cookie-authenticated."""
+    """PR #217 review H1, M1 and M2, and the second review's H2 and L1. Since
+    dl7x, /chat reads its own body, so FastAPI's checks are the route's own to
+    keep. The content type matters most: a text/plain, form-urlencoded,
+    multipart or header-less POST is a CORS simple request, sent cross-site
+    with no preflight, and /chat is cookie-authenticated."""
     svc = _Counting()
     app.dependency_overrides[get_service] = lambda: svc
     app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
     r = TestClient(app).post("/chat", content=body, headers=headers)
     assert (r.status_code, r.json()) == (422, {"detail": detail})
+    assert svc.calls == 0
+
+
+@pytest.mark.parametrize("body", [
+    "[" * 100_000,
+    '{"prompt": ' + "[" * 5_000 + "]" * 5_000 + "}",
+], ids=["deep-array", "deep-prompt"])
+def test_a_signed_in_chat_body_nested_too_deep_is_a_422_not_a_500(body: str) -> None:
+    """PR #217 second review M1. The standard library's decoder raises
+    RecursionError, not ValueError, past the recursion limit: uncaught, it was
+    a 500 with none of the app's security headers."""
+    svc = _Counting()
+    app.dependency_overrides[get_service] = lambda: svc
+    app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
+    r = TestClient(app, raise_server_exceptions=False).post("/chat", content=body, headers=JSON)
+    assert r.status_code == 422, r.text[:200]
+    assert r.json() == {"detail": [{"type": "json_invalid", "loc": ["body", 0], "msg": "JSON decode error"}]}
     assert svc.calls == 0
 
 
