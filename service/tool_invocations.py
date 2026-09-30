@@ -20,6 +20,11 @@ Three steps, so that every interleaving can be tested without threads:
    deadline) is taken first; only through it does an outcome land, and only
    then does the executor's `finish` run, in the same transaction (X-6).
 
+**The cap and the day are shared with AI edits** (`1kg.5.5`, I-3). The X-5
+count and the pilot day are read through `stores.load`, a
+`service/workbench_load.py` reader that counts tool invocations and AI document
+edits alike, so neither route can run past the other's work.
+
 `read` and `cancel` are one transaction each. Every path that meets a `working`
 row past its deadline settles it there (I-13, lazy expiry): `cancelled` when a
 cancel was asked for, else `failed` with `attempt_expired`.
@@ -76,6 +81,7 @@ from .workbench_contracts import (
     ToolResult,
     redacted_errors,
 )
+from .workbench_load import WorkbenchLoad
 from .workbench_registry import REGISTRY
 
 log = logging.getLogger(__name__)
@@ -108,6 +114,9 @@ UNAVAILABLE_MESSAGE: Final = "GM tools are briefly unavailable. Try again."
 TOOL_DISABLED_MESSAGE: Final = "That tool isn't available yet."
 NOTHING_TO_RECAP_MESSAGE: Final = "Nothing to recap yet."
 CAP_REACHED_MESSAGE: Final = "Two tools are already running."
+#: The cap's sentence when an AI edit holds a slot (`1kg.5.5`, C-15): "two
+#: tools" would be false. Placeholder copy the design lane (`cub`) may reword.
+EDIT_CAP_REACHED_MESSAGE: Final = "Two assistant tasks are already running."
 THROTTLED_DAILY_MESSAGE: Final = "The pilot's daily limit is spent. It resets overnight."
 THROTTLED_USER_MESSAGE: Final = "That's a lot at once. Try again shortly."
 PROVIDER_TIMEOUT_MESSAGE: Final = "The model took too long to answer."
@@ -262,6 +271,21 @@ class _BoundedClient:
         return self._inner.invoke(input, config=config, **{**kwargs, "timeout": min(PROVIDER_CALL_MAX_S, left)})
 
 
+def bounded_client(factory: ProviderClientFactory, alias: str, remaining_s: Callable[[], float]) -> LLMClient:
+    """The ONE builder of a Workbench provider client (SEC-39, `1kg.5.5` I-20):
+    `alias` re-checked against the Workbench allowlist before anything is
+    built, and every call bounded by `remaining_s` (C-7).
+
+    **Call it only with an admitted attempt's alias and deadline, inside the
+    `usage_capture` operation that attempt began** (C-24). A client built any
+    other way reaches a provider with no admission, no attempt row, no X-5
+    count and no ledger operation. `service/tests/test_bounded_client_callers.py`
+    pins every call site."""
+    if workbench_profile(alias) is None:
+        raise ProviderNotAllowed()
+    return _BoundedClient(factory.client_for(alias), remaining_s)
+
+
 class ExecutionContext:
     """What `run` and `finish` are handed."""
 
@@ -285,9 +309,7 @@ class ExecutionContext:
     def client(self) -> LLMClient:
         """The one path from an executor to a provider: the admission's model,
         re-checked against the Workbench allowlist before anything is built."""
-        if workbench_profile(self.model_alias) is None:
-            raise ProviderNotAllowed()
-        return _BoundedClient(self._factory.client_for(self.model_alias), self.remaining_s)
+        return bounded_client(self._factory, self.model_alias, self.remaining_s)
 
     # justification: LangChain's `RunnableConfig` is a JSON-shaped dict of mixed values.
     def run_config(self) -> dict[str, Any]:
@@ -338,6 +360,9 @@ class InvocationStores:
     campaigns: CampaignStore
     conversations: ConversationStore
     timeline: ToolTimeline
+    #: The X-5 count and the pilot day, across tools AND AI edits (I-3). A
+    #: required field: a defaulted one would be a count this route could skip.
+    load: WorkbenchLoad
 
 
 # ── Refusals the routes turn into answers ────────────────────────────────────
@@ -599,18 +624,22 @@ def _target_of(row: InvocationRow) -> InvocationTarget:
 
 
 def admit_attempt(
-    unit: UnitOfWork, stores: InvocationStores, owner_id: int, *, now: datetime, chat_turns_today: int,
+    unit: UnitOfWork, load: WorkbenchLoad, owner_id: int, *, now: datetime, chat_turns_today: int,
 ) -> None:
     """The admission seam (§5.8): the X-5 cap, the pilot day, the per-user
-    window, in that order. `yje.5.2`'s reservation and `0o2`'s limit states plug
-    in here. The window is last because it is the only guard that spends: no
-    request refused by another guard costs a token (I-8)."""
-    in_flight = stores.invocations.in_flight_ids(unit, owner_id, now=now)
-    if len(in_flight) >= IN_FLIGHT_CAP:
-        raise Refused(409, ErrorCode.CAP_REACHED, CAP_REACHED_MESSAGE, retryable=True,
-                      in_flight=in_flight[:IN_FLIGHT_LISTED])
+    window, in that order — for a tool and an AI edit alike (`1kg.5.5`, I-3),
+    both counted through `load`. `yje.5.2`'s reservation and `0o2`'s limit
+    states plug in here. The window is last because it is the only guard that
+    spends: no request refused by another guard costs a token (I-8). The cap's
+    sentence says what holds it (C-15): "two tools" only when both slots are
+    tools."""
+    running = load.in_flight(unit, owner_id, now=now)
+    if len(running) >= IN_FLIGHT_CAP:
+        message = CAP_REACHED_MESSAGE if all(kind == "tool" for _, kind in running) else EDIT_CAP_REACHED_MESSAGE
+        raise Refused(409, ErrorCode.CAP_REACHED, message, retryable=True,
+                      in_flight=[invocation_id for invocation_id, _ in running][:IN_FLIGHT_LISTED])
     midnight = _utc(now).replace(hour=0, minute=0, second=0, microsecond=0)
-    if chat_turns_today + stores.invocations.attempts_since(unit, midnight) >= config.CHAT_DAILY_CAP:
+    if chat_turns_today + load.attempts_since(unit, midnight) >= config.CHAT_DAILY_CAP:
         raise Refused(429, ErrorCode.THROTTLED_DAILY, THROTTLED_DAILY_MESSAGE)
     wait: int | None = None
     try:
@@ -642,7 +671,7 @@ def _guards(
         if code not in PRECHECK_CODES:
             raise ExecutorFailed()
         raise Refused(409, code, _PRECHECK_MESSAGES[code])
-    admit_attempt(unit, stores, target.owner_id, now=now, chat_turns_today=chat_turns_today)
+    admit_attempt(unit, stores.load, target.owner_id, now=now, chat_turns_today=chat_turns_today)
     return alias
 
 

@@ -57,6 +57,7 @@ from service.tool_invocations import (
 )
 from service.workbench_api import FORBIDDEN_ORIGIN_DETAIL, FORBIDDEN_ROLE_DETAIL, NOT_FOUND_DETAIL
 from service.workbench_contracts import BRIEF_MAX_CHARS, ErrorCode, ToolId, ToolInvocation, validation_error_body
+from service.workbench_load import InMemoryWorkbenchLoad
 
 GM_A, GM_B = 1, 2
 T0 = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
@@ -183,7 +184,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     messages = InMemoryMessageStore()
     stores = InvocationStores(
         InMemoryToolInvocationStore(db), InMemoryCampaignStore(db), InMemoryConversationStore(db),
-        InMemoryTimelineStore(db, messages=messages),
+        InMemoryTimelineStore(db, messages=messages), InMemoryWorkbenchLoad(db),
     )
     made = World(db, messages, stores, {tool: Recording(tool) for tool in ToolId}, FakeLLM(), Sink())
     factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: made.llm})
