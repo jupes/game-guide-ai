@@ -1289,8 +1289,10 @@ scaffolding.
 
 **Off by default.** A tool runs only when `WORKBENCH_ENABLED_TOOLS` names it,
 its registry capability is in `WORKBENCH_CAPABILITIES`, and an executor is
-registered for it — and none is registered yet (`1kg.4.3`, `1kg.4.4` and
-`1kg.8.3` add theirs). Availability is decided in one function,
+registered for it. `npc` and `encounter` are registered (`1kg.4.4`; `recap`
+follows, and `1kg.4.3` and `1kg.8.3` add theirs), and registered is not
+enabled: with the variables unset every tool still answers `409 tool_disabled`.
+Availability is decided in one function,
 `tool_availability`, which `1kg.9.6` replaces. Setting `WORKBENCH_ENABLED_TOOLS`
 in production needs E-8's owner-chosen limits, the tool's `1kg.4.6` threshold
 and the SEC-39 terms record; `portrait` and `map` are paid under D-3, so
@@ -1337,3 +1339,41 @@ model (D-8; bead `iov` gives it the tier mapping), and the client can send none.
 OpenAI only), enforced at admission and on the one client an executor can ask
 for. No answer, entry or log line of these routes names a model or a provider
 (D-9), and no tracing callback rides on a tool call (SEC-24).
+
+### Document tools (1kg.4.4)
+
+`service/document_tools.py` is the executor of every tool whose result is a new
+document: `npc` and `encounter` today (`recap` follows with its session
+window). It holds no SQL, builds no client and adds no route; the generation is
+`document_generation`'s (1kg.5.4) and everything around the attempt is the
+invocation service's.
+
+- **`run` reads once, then spends.** The campaign's name and tone are read
+  through `ExecutionContext.read` — one short transaction of its own, closed
+  before any provider call — keyed by the fenced admission's owner. A cancel is
+  checked once, then the document is generated with `ctx.client()` (the one
+  allowlisted path), the ledger's config and as many attempts as the deadline
+  fits. The GM's brief and the campaign facts travel only in the nonce-fenced
+  data block. `run` writes nothing: it returns a placeholder result
+  (`doc_pending`) and carries the validated document to `finish`, keyed by the
+  context object itself (weakly, under a lock).
+- **`finish` creates the document inside the fenced T2.** Sealed version 1 by
+  `assistant`, with the admission's campaign and the route's clock, in the same
+  transaction that settles the invocation and rewrites its timeline entry. So
+  the document exists before a link to it can render (X-6), exactly once however
+  the attempt was retried, fenced out, expired or cancelled (RAIL-23, RAIL-27),
+  and a T2 that rolls back takes it with it. It takes no campaign lock and
+  writes no slot, disclosure, eligibility or audit row: every field starts
+  `unclassified`, and creation reveals nothing (M-5, X-2).
+- **The answer links; it does not carry.** The stored result is a
+  `DocumentResult` whose `document` is the link (id, type, `name` as the
+  title, category) and whose prose is closed server sentences — the tool's
+  lead sentence and `document_generation`'s disclosure — with no suggestions.
+  No other field of the document appears in a response, an entry or a log
+  line.
+- **Failures.** A model answer that cannot become a document raises
+  `tool_invocations.OutputRefused` and is stored as `provider_failed`,
+  retryable — never as an outage; a deadline too short for an attempt is
+  `provider_timeout`; any other refusal of the request, or a campaign gone
+  between admission and `run`, is `backend_unavailable`. None of them leaves a
+  document.
