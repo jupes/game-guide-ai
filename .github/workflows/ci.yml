@@ -108,8 +108,16 @@ jobs:
         run: uv run --frozen --no-sync ruff check .
       - name: Typecheck (mypy — service/ + config.py)
         run: uv run --frozen --no-sync mypy
+      # -n auto --dist loadfile (agent-forge-harness-eddy): auto picks one worker
+      # per available core (this repo is public, so GitHub's 4 vCPU Linux runner —
+      # docs/ci.md), and loadfile keeps every test module's fixtures — including
+      # its module-scoped ones — in a single worker, so nothing splits a fixture
+      # across workers. pytest-cov combines each worker's coverage data, so the
+      # gate is unchanged. Proven flake-free first: three consecutive local
+      # `-n 4 --dist loadfile` runs plus a reversed-file-order run all matched the
+      # serial baseline's passed/skipped counts (docs/ci.md).
       - name: pytest (service + ingestion + repo guards) + coverage gate
-        run: uv run --frozen --no-sync python -m pytest -q --cov
+        run: uv run --frozen --no-sync python -m pytest -q --cov -n auto --dist loadfile
 
   # The PostgreSQL integration suite, split out of `python-tests` so it runs in
   # parallel with the unit/coverage step instead of after it
