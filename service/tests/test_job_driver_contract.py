@@ -46,6 +46,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 import service.app as appmod
 from service import job_driver, jobs
+from service.body_limit import BodyLimitMiddleware
 from service.db import Database
 from service.job_driver import (
     JOB_LOCK,
@@ -250,6 +251,7 @@ def test_every_declaration_that_existed_before_the_job_runner_is_unchanged() -> 
     stack = [(m.cls, m.kwargs.get("dispatch")) for m in appmod.app.user_middleware]
     expected = [
         (BaseHTTPMiddleware, appmod.set_security_headers),
+        (BodyLimitMiddleware, None),  # agent-forge-harness-ust7
         (JobHookMiddleware, None),
         (BaseHTTPMiddleware, appmod.capture_chat_metrics),
     ]
@@ -477,5 +479,5 @@ def test_a_degraded_instance_has_no_job_driver_until_its_database_returns(
     assert isinstance(driver, JobDriver)
     assert driver.lock is JOB_LOCK and driver.runner._single_flight is JOB_LOCK
     assert driver.healthy() and appmod._state["migrations"] == "current"
-    hooked = appmod.app.user_middleware[1].kwargs["driver"]
+    hooked = appmod.app.user_middleware[2].kwargs["driver"]  # [1] is the body limit (ust7)
     assert callable(hooked) and hooked() is appmod._job_driver(), "the hook sees the recovered driver too"

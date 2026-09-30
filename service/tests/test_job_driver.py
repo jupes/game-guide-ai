@@ -682,6 +682,7 @@ def test_the_hook_is_outside_chat_metrics_and_inside_the_security_headers():
     stack = [(m.cls.__name__, getattr(m.kwargs.get("dispatch"), "__name__", None)) for m in app.user_middleware]
     assert stack == [
         ("BaseHTTPMiddleware", "set_security_headers"),
+        ("BodyLimitMiddleware", None),  # agent-forge-harness-ust7
         ("JobHookMiddleware", None),
         ("BaseHTTPMiddleware", "capture_chat_metrics"),
     ]

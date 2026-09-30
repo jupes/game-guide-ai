@@ -36,6 +36,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 from . import (
     asset_jobs,
     assets_api,
+    body_limit,
     campaigns_api,
     conversations_api,
     document_lifecycle_api,
@@ -470,7 +471,17 @@ async def lifespan(app: FastAPI):
     del app.state.metrics_sink
 
 
-app = FastAPI(title="D&D 5e RAG — Agent Service", version="1.0", lifespan=lifespan)
+# /docs, /redoc and /openapi.json exist only for a local run that asks for them
+# (agent-forge-harness-ust7, release review S2). Tests read `app.openapi()`,
+# which needs none of the three.
+app = FastAPI(
+    title="D&D 5e RAG — Agent Service",
+    version="1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if config.API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if config.API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if config.API_DOCS_ENABLED else None,
+)
 install_workbench(app)
 
 
@@ -779,6 +790,12 @@ async def capture_chat_metrics(request: Request, call_next):
 # so it wraps `capture_chat_metrics` (job time never enters the chat duration)
 # and `set_security_headers` stays the outermost, as its docstring requires.
 app.add_middleware(job_driver.JobHookMiddleware, driver=lambda: _state.get("jobs"))
+
+# The body ceiling (agent-forge-harness-ust7, release review S1): declared after
+# the job hook, so it wraps every route and every other middleware except
+# `set_security_headers`, which stays the outermost and puts its headers on the
+# 413 too. The lambda defers the name, which is defined further down.
+app.add_middleware(body_limit.BodyLimitMiddleware, media_enabled=lambda: _media_enabled())
 
 
 @app.middleware("http")
