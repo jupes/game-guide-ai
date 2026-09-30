@@ -987,8 +987,9 @@ EXPECTED_LEGACY_ROUTES = {
 #: `workbench_router`, and the first two table routes, on the table router,
 #: whose route class is a `WorkbenchRoute`; then 1kg.4.1 slice B: the GM's
 #: tool invocations, three more on `workbench_router`; then btb PR-2: the GM's
-#: named groups, six more on `workbench_router`. No exemption list and nothing
-#: pending.
+#: named groups, six more on `workbench_router`; then q156: the
+#: character-sheet link, three more in `document_lifecycle_api`. No
+#: exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
@@ -1012,6 +1013,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/archive"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unarchive"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/link/{participant_id}"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unlink"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/link"),
     # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
     # while the media capability is off (`service/assets_api.py`).
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),

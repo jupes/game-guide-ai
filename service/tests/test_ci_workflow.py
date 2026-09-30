@@ -58,6 +58,7 @@ DB_BACKED_TESTS = [
     "tests/test_document_edit_store_db.py",
     "tests/test_workbench_load_db.py",
     "tests/test_timeline_edit_entries_db.py",
+    "tests/test_character_link_api_db.py",
 ]
 
 

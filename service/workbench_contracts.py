@@ -499,6 +499,12 @@ class ErrorCode(str, Enum):
     #: the GM edits the brief. Seen on a stored invocation only, never as a
     #: response status, like ``attempt_expired``.
     NOT_IN_SOURCES = "not_in_sources"
+    #: A character-sheet link that would give a sheet a second seat or a seat a
+    #: second sheet (q156, AUD-15, AUD-13): never a re-point — unlink first. The
+    #: policy oracle's ``link_taken``. Reachable only by the campaign's owner;
+    #: names neither id. Not ``already_linked``, which is a conversation's
+    #: campaign link.
+    LINK_TAKEN = "link_taken"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -3934,6 +3940,25 @@ class GroupPatchRequest(_Contract):
     name: GroupNameRequest
 
 
+class CharacterSheetLink(_Contract):
+    """``GET /campaigns/{id}/documents/{id}/link`` (q156): the seat a character
+    sheet is linked to, or null. The link survives the seat's removal (AUD-16),
+    so ``participant_id`` may name a removed seat; ``seat_active`` says whether
+    it is live, which is when REVEAL-4 seeds from it (B-3). GM-only, never on a
+    table channel. Ids only: no alias, no document content."""
+
+    schema_version: SchemaVersion
+    document_id: OpaqueId
+    participant_id: OpaqueId | None
+    seat_active: StrictBool
+
+    @model_validator(mode="after")
+    def _active_needs_a_seat(self) -> Self:
+        if self.participant_id is None and self.seat_active:
+            raise ValueError("an unlinked sheet has no active seat")
+        return self
+
+
 #: Name → validator, in the order ``contracts/workbench/v1/schemas.json`` lists them.
 CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Timestamp": TypeAdapter(Timestamp, config=_HIDE_INPUT),
@@ -4008,4 +4033,5 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "GroupPage": TypeAdapter(GroupPage),
     "GroupCreateRequest": TypeAdapter(GroupCreateRequest),
     "GroupPatchRequest": TypeAdapter(GroupPatchRequest),
+    "CharacterSheetLink": TypeAdapter(CharacterSheetLink),
 }
