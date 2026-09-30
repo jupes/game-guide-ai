@@ -4,8 +4,9 @@
  * items 5, 17 and 22).
  *
  * LeftNav is mounted under the REAL AppNav, CurrentUser and campaign providers
- * with `fetch` replaced by a recorder that can hold an answer back. The
- * legacy-markup snapshot (T2-6) was recorded against LeftNav as it was BEFORE
+ * with `fetch` replaced by a recorder that can hold an answer back and, like a
+ * browser's, rejects with an AbortError once its signal aborts (pr178-mpost
+ * N-2). The legacy-markup snapshot (T2-6) was recorded against LeftNav as it was BEFORE
  * this PR touched it, and its snapshot file never changes afterwards.
  */
 
@@ -16,10 +17,12 @@ import userEvent from '@testing-library/user-event'
 import * as api from '../api'
 import { CampaignSchema } from '../gm/contracts'
 import { AppNavProvider, useAppNav, type AppNavState } from './AppNav'
-import { CurrentUserProvider } from './currentUser'
+import { CurrentUserProvider, useCurrentUser, type CurrentUserContextValue } from './currentUser'
 import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
 import { CampaignProvider, useCampaign, type CampaignContextValue } from './campaignContext'
+import { CampaignThreadsContext } from './campaignThreads'
+import type { IdentityChannelLike } from './identityBroadcast'
 import { LeftNav } from './LeftNav'
 
 // ── Harness ────────────────────────────────────────────────────────────────────
@@ -34,7 +37,7 @@ function campaignBody(id: string, over: Record<string, unknown> = {}) {
 }
 
 type Reply = { status: number; body?: unknown } | 'network'
-interface Call { url: string; method: string; body: string | null; reply: (r: Reply) => void }
+interface Call { url: string; method: string; body: string | null; signal: AbortSignal | null; reply: (r: Reply) => void }
 type Route = (call: Call) => Reply | 'defer'
 
 const defaultRoute: Route = ({ url }) => {
@@ -48,24 +51,30 @@ function stubServer(route: Route) {
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
     const call: Call = {
       url: String(input), method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? init.body : null,
+      signal: init?.signal ?? null,
       reply: (r) => (r === 'network'
         ? reject(new TypeError('Failed to fetch'))
         : resolve(new Response(JSON.stringify(r.body ?? {}), { status: r.status }))),
     }
     calls.push(call)
+    call.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')))
     const answer = route(call)
     if (answer !== 'defer') call.reply(answer)
   })) as typeof fetch
   return { fetchImpl, calls, lines: () => calls.map((c) => `${c.method} ${c.url}`) }
 }
 
-const live = {} as { c: CampaignContextValue; nav: AppNavState }
+const live = {} as { c: CampaignContextValue; nav: AppNavState; user: CurrentUserContextValue; lists: () => number }
 function Probe(): null {
   const c = useCampaign()
   const nav = useAppNav()
+  const user = useCurrentUser()
+  const threads = React.useContext(CampaignThreadsContext)
   React.useLayoutEffect(() => {
     live.c = c
     live.nav = nav
+    live.user = user
+    live.lists = () => threads?.store.getSnapshot().size ?? -1
   })
   return null
 }
@@ -75,6 +84,7 @@ async function mount({ campaign = 'cmp_A', route = defaultRoute, onNavigate }: M
   vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
   window.history.replaceState(null, '', '/workspace')
   const server = stubServer(route)
+  const channels: IdentityChannelLike[] = []
   const store = new MemoryConversationStore()
   store.create('gm', 'A legacy GM question about the heist')
   store.create('gm', 'Another legacy GM question')
@@ -83,7 +93,11 @@ async function mount({ campaign = 'cmp_A', route = defaultRoute, onNavigate }: M
   store.create('rules', 'How does cover work')
   const view = render(
     <AppNavProvider initialScreen="workspace" initialMode="gm">
-      <CurrentUserProvider identityChannelFactory={() => null}>
+      <CurrentUserProvider identityChannelFactory={() => {
+        const channel: IdentityChannelLike = { postMessage: () => {}, close: () => {}, onmessage: null }
+        channels.push(channel)
+        return channel
+      }}>
         <ConversationStoreProvider store={store}>
           <CampaignProvider
             fetchImpl={server.fetchImpl}
@@ -97,7 +111,15 @@ async function mount({ campaign = 'cmp_A', route = defaultRoute, onNavigate }: M
     </AppNavProvider>,
   )
   await waitFor(() => expect(live.c.enabled).toBe(true))
-  return { server, store, view }
+  /** Another tab signed in as `email`: this tab's background re-check sees it. */
+  const switchTo = async (email: string) => {
+    vi.mocked(api.getMe).mockResolvedValue({ kind: 'ok', user: { email, role: 'dm' } })
+    act(() => {
+      for (const c of channels) c.onmessage?.(new MessageEvent('message', { data: { v: 1, kind: 'identity-changed' } }))
+    })
+    await waitFor(() => expect(live.user.user.id).toBe(email))
+  }
+  return { server, store, view, switchTo }
 }
 
 /** What a user of assistive technology meets, in document order. */
@@ -325,5 +347,37 @@ describe('the campaign thread list', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /cmp_A-2/ })).toBeNull())
     expectNotStored('Smuggler Queen')
     expect(onNavigate).not.toHaveBeenCalled()
+  })
+})
+
+describe('an identity change during a thread read (section 7.5, pr178-mpost N-2)', () => {
+  it("ada's held list is aborted as a browser aborts it; bob never sees her rows or a failure, and his own read renders", async () => {
+    let lists = 0
+    const { server, switchTo } = await mount({
+      route: serve(({ url }) => {
+        if (url !== '/conversations?campaign_id=cmp_A') return undefined
+        lists += 1
+        return lists === 1 ? 'defer' : { status: 200, body: threadPage([threadBody('cmp_A-9', { title: "Bob's thread" })]) }
+      }),
+    })
+    expect(await screen.findByText('Loading conversations…')).toBeInTheDocument()
+    const held = server.calls.find((c) => c.url === '/conversations?campaign_id=cmp_A')
+    expect(live.lists()).toBe(1)
+    const seen: string[] = []
+    const observer = new MutationObserver(() => {
+      const text = document.body.textContent ?? ''
+      if (text.includes('Thread cmp_A-')) seen.push('an ada row')
+      if (text.includes("Couldn't load conversations")) seen.push('a failure')
+    })
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true })
+    await switchTo('bob@example.com')
+    expect(held?.signal?.aborted).toBe(true)
+    expect(live.lists()).toBe(0) // nothing of ada's is kept in memory either
+    held?.reply({ status: 200, body: threadPage([threadBody('cmp_A-1')]) })
+    expect(live.c.selection.kind).toBe('none')
+    await act(async () => { await live.c.selectCampaign(CampaignSchema.parse(campaignBody('cmp_A'))) })
+    expect(await screen.findByRole('button', { name: "Bob's thread" })).toBeInTheDocument()
+    observer.disconnect()
+    expect(seen).toEqual([])
   })
 })

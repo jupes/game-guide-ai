@@ -155,6 +155,19 @@ describe('the first turn of a campaign thread', () => {
     expectNothingStored('A follow-up about the ledger')
   })
 
+  it('once a turn is answered its thread is opened, so New conversation makes a second thread, not a reuse (I-12)', async () => {
+    const { server, post } = await mount()
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await sendTurn()
+    await waitFor(() => expect(live.nav.conversationId).toBe('cnv_new1'))
+    act(() => live.nav.setConversationId(null))
+    await sendTurn('A new line of questioning entirely')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+    expect(post.mock.calls.map((c) => c[2])).toEqual(['cnv_new1', 'cnv_new2'])
+    expect(server.posts().map((c) => c.url)).toEqual(['/conversations', '/conversations'])
+    await waitFor(() => expect(live.nav.conversationId).toBe('cnv_new2'))
+  })
+
   it('a legacy GM conversation left open when a campaign is chosen never receives the campaign turn (critic 5)', async () => {
     const { server, post } = await mount()
     await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
