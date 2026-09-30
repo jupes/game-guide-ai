@@ -70,23 +70,32 @@ jobs:
       # seeds the cache every PR restores; apt still verifies each cached
       # .deb's hash against the signed package lists it re-fetches on every
       # run, so a poisoned cache entry cannot install an unverified package.
+      #
+      # ImageOS/ImageVersion are process environment variables the GitHub-hosted
+      # runner sets. They are NOT in the `env` expression context, which
+      # holds only the env: keys this workflow declares, so `env.ImageVersion`
+      # is an empty string. Read them in the shell and hand the key a step output.
+      - name: Runner image (cache key inputs)
+        id: runner-image
+        run: |
+          test -n "$ImageOS"
+          test -n "$ImageVersion"
+          echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
       - name: Cache the ffmpeg .deb
         uses: actions/cache@v5
         with:
           path: ~/.cache/apt-archives
-          key: apt-ffmpeg-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-v1
+          key: apt-ffmpeg-${{ runner.os }}-${{ steps.runner-image.outputs.image }}-v1
           restore-keys: |
-            apt-ffmpeg-${{ runner.os }}-${{ env.ImageOS }}-
             apt-ffmpeg-${{ runner.os }}-
-      # ImageOS/ImageVersion are set by the GitHub-hosted runner itself (not
-      # something this repo configures) and feed the cache key above; echoed
-      # here so a key that stops matching is easy to diagnose from the log.
-      - name: Runner image (cache key inputs)
-        run: echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
       - name: Install ffmpeg (media processing)
         run: |
           mkdir -p "$HOME/.cache/apt-archives/partial"
-          sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/.cache/apt-archives" -o APT::Keep-Downloaded-Packages=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 ffmpeg
+          # Two lines, not `update && install`: under the runner's `bash -e`, a
+          # failure left of `&&` does not stop the script.
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/.cache/apt-archives" -o APT::Keep-Downloaded-Packages=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 ffmpeg
           # `apt-get` ran under sudo, so root now owns the cache dir; give it
           # back to the runner user or `actions/cache`'s post-job save step
           # cannot read it. The lock file and partial/ are apt's own

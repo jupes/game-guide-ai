@@ -413,6 +413,30 @@ def test_python_db_tests_gates_deploy():
     assert "needs.python-db-tests.result == 'success'" in _deploy_gates()
 
 
+def test_the_ffmpeg_cache_key_carries_the_runner_image():
+    """agent-forge-harness-k768: the .deb cache must re-fill when the runner
+    image changes. ImageOS/ImageVersion are runner process env vars, not
+    entries of the `${{ env }}` expression context, where they read as empty
+    (run 36784711052 saved the key `apt-ffmpeg-Linux---v1`)."""
+    job = _python_job()
+    assert "${{ env.Image" not in job, "`${{ env.ImageOS }}`/`${{ env.ImageVersion }}` are always empty"
+    key = re.search(r"^ {10}key:\s*(.+?)\s*$", job, re.M)
+    assert key, "the ffmpeg .deb cache step must declare a one-line `key:`"
+    assert "steps.runner-image.outputs.image" in key.group(1)
+    step = job.split("id: runner-image\n", 1)[1].split("\n      - ", 1)[0]
+    assert "$ImageVersion" in step and "GITHUB_OUTPUT" in step
+
+
+def test_the_ffmpeg_install_fails_its_step_on_any_apt_failure():
+    """Under the runner's `bash -e`, a command left of `&&` can fail without
+    stopping the script, and `|| true` hides a failed install outright."""
+    job = _python_job()
+    step = job.split("- name: Install ffmpeg (media processing)\n", 1)[1].split("\n      - ", 1)[0]
+    assert "|| true" not in step and "continue-on-error" not in step
+    assert not re.search(r"apt-get update[^\n]*&&", step), "run apt-get update on its own line"
+    assert "allow-unauthenticated" not in step.lower()
+
+
 def test_python_tests_job_has_headroom_above_its_normal_runtime():
     """agent-forge-harness-ky89: the job normally takes 10-12 min, but a slow
     apt mirror or runner used to cancel it with no test failing (a 15-minute

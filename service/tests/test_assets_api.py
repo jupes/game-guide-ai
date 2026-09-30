@@ -1009,5 +1009,6 @@ def test_ci_installs_ffmpeg_before_the_suite_runs() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     job = workflow.split("\n  python-tests:\n", 1)[1].split("\n  python-db-tests:\n", 1)[0]
     install = job.index("apt-get install -y --no-install-recommends")
-    assert "ffmpeg" in job[install:]
+    install_line = job[install:].split("\n", 1)[0]
+    assert re.search(r"\sffmpeg(?:\s|$)", install_line), install_line
     assert install < job.index("python -m pytest -q --cov")
