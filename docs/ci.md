@@ -7,19 +7,32 @@ quality gate but never deploy.
 
 ```text
 pull request / push to master
-   ├─ python-tests        pytest — service, ingestion, repo guards ─┐
-   ├─ ui-tests            typecheck · lint · vitest ───────────────┤
-   ├─ contract-parity     Pydantic vs Zod, differential fuzz       │
-   │                      (gates deploy; not a need of ui-e2e)     │
-   │                                                              ▼
-   │                    ui-e2e — production Compose + perf budgets
-   └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate
-          │                    (skips loudly until secrets are configured)
-          ▼
-       deploy             push/manual, master only; requires every gate to pass
+   ├─ python-tests        ruff · mypy · pytest (service, ingestion, repo guards) ─┐
+   ├─ python-db-tests     pytest against a real PostgreSQL service ──────────────┤
+   ├─ ui-tests            typecheck · lint · vitest ───────────────────────────┤
+   ├─ contract-parity     Pydantic vs Zod, differential fuzz                   │
+   ├─ ui-e2e              production Compose + perf budgets                    │
+   │                      (no `needs:` — runs in parallel with the above)      │
+   └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate      │
+          │                    (skips loudly until secrets are configured)     │
+          ▼                                                                    ▼
+       deploy             push/manual, master only; requires every job above to pass
                           (skipped until hosting exists — never a green
                            check for having deployed nothing)
 ```
+
+`python-tests` and `python-db-tests` used to be one job, run one after the other:
+the unit/coverage step then the PostgreSQL integration step. They are now two
+jobs that start together, because the second needs nothing the first produces
+(agent-forge-harness-k768). `python-tests` also caches the downloaded `ffmpeg`
+`.deb` with `actions/cache`, keyed on the runner's OS and image — some runners
+draw a slow package mirror, and a cache hit skips that download entirely;
+`apt-get` still re-fetches the signed package lists and verifies the cached
+`.deb` against them, so a poisoned cache entry cannot install an unverified
+package. `ui-e2e` carries no `needs:` either: it builds and starts its own
+Compose stack rather than consuming an artifact from any other job, so nothing
+stops it starting immediately. `deploy` is unaffected by either change — it
+still needs every test job's own result, `python-db-tests` included.
 
 ## Contract parity
 
@@ -137,6 +150,9 @@ Everything CI runs works locally, same commands:
 
 ```bash
 uv run --with '.[test]' python -m pytest -q                 # python-tests
+DATABASE_URL=postgresql://<user>:<pass>@localhost:5432/<db> \
+    uv run --with '.[test]' python -m pytest -q --no-cov \
+    tests/test_schema.py ...                                 # python-db-tests (needs a real Postgres)
 cd ui && bun run typecheck && bun run lint && bun run test  # ui-tests
 uv run python contracts/workbench/tools/differential_fuzz.py  # contract-parity (needs bun too)
 cd ui && bun run test:e2e                                   # production Compose E2E

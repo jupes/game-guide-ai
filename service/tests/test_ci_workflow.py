@@ -22,6 +22,7 @@ RUNNER = "ubuntu-24.04"
 FIRST_NODE24_MAJOR = {
     "actions/checkout": 5,
     "actions/upload-artifact": 6,
+    "actions/cache": 5,
     "astral-sh/setup-uv": 7,
     "oven-sh/setup-bun": 2,  # the floating v2 tag resolves to a node24 release (v2.2.0)
     "google-github-actions/auth": 3,
@@ -63,6 +64,14 @@ DB_BACKED_TESTS = [
 
 def _python_job() -> str:
     return WORKFLOW.read_text(encoding="utf-8").split("\n  python-tests:\n", 1)[1].split(
+        "\n  python-db-tests:\n", 1
+    )[0]
+
+
+def _db_job() -> str:
+    """The `python-db-tests` job: the PostgreSQL integration suite, split out
+    of `python-tests` into its own parallel job (agent-forge-harness-k768)."""
+    return WORKFLOW.read_text(encoding="utf-8").split("\n  python-db-tests:\n", 1)[1].split(
         "\n  ui-tests:\n", 1
     )[0]
 
@@ -80,7 +89,7 @@ def _integration_step_run() -> str:
     Read from the command, not searched for in the job's text, because the
     comments around the step can name a file the command no longer runs.
     """
-    step = _python_job().split("- name: Integration tests against real PostgreSQL\n", 1)[1]
+    step = _db_job().split("- name: Integration tests against real PostgreSQL\n", 1)[1]
     run = re.search(r"^ {8}run: \|\n((?: {10}.*\n?)+)", step, re.M)
     assert run, "the integration step must keep its multi-line `run: |` pytest command"
     return run.group(1)
@@ -211,10 +220,10 @@ def test_ci_deploys_only_from_master():
 # every run with nothing to show for it.
 
 
-def test_ci_provides_a_postgres_service_for_the_python_job():
-    job = _python_job()
+def test_ci_provides_a_postgres_service_for_the_db_job():
+    job = _db_job()
     assert re.search(r"^\s{4}services:$", job, re.M), (
-        "python-tests must declare a `services:` block — without a database the "
+        "python-db-tests must declare a `services:` block — without a database the "
         "integration tests skip, and a skip looks exactly like a pass"
     )
     assert re.search(r"image:\s*(?:postgres|pgvector/pgvector):", job), (
@@ -230,7 +239,7 @@ def test_ci_postgres_is_the_image_the_stack_runs():
     """The corpus schema tests apply vector-db/init/, whose first statement is
     `CREATE EXTENSION vector`. A stock postgres image has no pgvector, so the CI
     database has to be the one docker-compose.yml runs, major version included."""
-    job_image = re.search(r"^ {8}image:\s*(\S+)\s*$", _python_job(), re.M)
+    job_image = re.search(r"^ {8}image:\s*(\S+)\s*$", _db_job(), re.M)
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     stack_image = re.search(r"^ {2}vector-db:\n(?: {4}.*\n)*? {4}image:\s*(\S+)\s*$", compose, re.M)
     assert job_image and stack_image, "both the CI service and compose's vector-db must name an image"
@@ -241,7 +250,7 @@ def test_ci_postgres_is_the_image_the_stack_runs():
 
 
 def test_ci_runs_the_database_backed_tests_with_a_dsn():
-    job = _python_job()
+    job = _db_job()
     assert "DATABASE_URL:" in job, (
         "CI must set DATABASE_URL for the integration step; without it "
         f"{DB_BACKED_TESTS} skip themselves and verify nothing"
@@ -329,17 +338,17 @@ def test_the_dsn_is_scoped_to_the_integration_step_not_the_whole_job():
     """A job-wide DATABASE_URL would change the app's startup path in every
     unrelated test (the lifespan builds a real auth store when it can connect),
     so the variable belongs to the one step that wants it."""
-    job = _python_job()
+    job = _db_job()
     dsn_index = job.index("DATABASE_URL:")
     # The `env:` that owns it must sit inside a step, i.e. after the job's
     # `steps:` key — not in a job-level `env:` block above it.
     assert "\n    steps:" in job and job.index("\n    steps:") < dsn_index, (
-        "DATABASE_URL must be set on a step, not on the whole python-tests job"
+        "DATABASE_URL must be set on a step, not on the whole python-db-tests job"
     )
 
 
 def test_the_integration_step_does_not_swallow_its_own_failure():
-    job = _python_job()
+    job = _db_job()
     step = job.split("Integration tests against real PostgreSQL", 1)[1]
     assert "continue-on-error" not in step, (
         "the integration step must be able to fail the job — allowing it to "
@@ -389,6 +398,19 @@ def test_contract_parity_gates_deploy():
     assert needs, "the deploy job must keep a one-line `needs:` list"
     assert "contract-parity" in [name.strip() for name in needs.group(1).split(",")]
     assert "needs.contract-parity.result == 'success'" in _deploy_gates()
+
+
+def test_python_db_tests_gates_deploy():
+    """agent-forge-harness-k768: the PostgreSQL integration suite moved out of
+    `python-tests` into its own `python-db-tests` job so it runs in parallel
+    with the unit/coverage step instead of after it. Splitting it out must not
+    also split it out of what deploy requires -- a clause demoted into the
+    `||` group would still be "in" the condition and no longer required by it."""
+    deploy_job = WORKFLOW.read_text(encoding="utf-8").split("\n  deploy:\n", 1)[1]
+    needs = re.search(r"^ {4}needs: \[([^\]]*)\]", deploy_job, re.M)
+    assert needs, "the deploy job must keep a one-line `needs:` list"
+    assert "python-db-tests" in [name.strip() for name in needs.group(1).split(",")]
+    assert "needs.python-db-tests.result == 'success'" in _deploy_gates()
 
 
 def test_python_tests_job_has_headroom_above_its_normal_runtime():
