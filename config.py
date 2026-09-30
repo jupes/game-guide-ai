@@ -331,6 +331,21 @@ CHAT_RATE_LIMIT_PER_USER: int = _int("CHAT_RATE_LIMIT_PER_USER", 20)
 # exactly when testers come back after a break. Resets at UTC midnight.
 CHAT_DAILY_CAP: int = _int("CHAT_DAILY_CAP", 500)
 
+# --- Workbench write throttle (agent-forge-harness-531x) -------------------
+# Every Workbench mutation (campaigns, documents, versions, timeline, groups,
+# tool results) has no throttle today: one script can fill the Cloud SQL disk
+# (auto-increase never shrinks). This is the write-count half of the fix; the
+# storage-byte caps are a separate change. Keyed on the SESSION user id (per
+# account, never per IP) so switching campaigns, tabs or routes gains nothing:
+# one account's budget is shared across all of them. Per-instance, in memory,
+# like chat (x5bz.3) — the effective ceiling is this number x --max-instances.
+WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S: float = _float("WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S", 3600.0)  # 1 hour
+# 600 an hour is one commit every 6s for a full hour. Field commits (CANVAS-10)
+# happen on blur or Ctrl+S, not on a timer, so an honest GM stays well below it;
+# a script is stopped within about a minute. This bounds write RATE, not
+# storage — the byte cap below is what bounds storage.
+WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT: int = _int("WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", 600)
+
 # --- GM tools (agent-forge-harness-1kg.4.1) -----------------------------------
 
 # The GM tools this deployment runs, as comma-separated registry ids ("npc,loot").

@@ -275,6 +275,30 @@ describe('AssistantLane — a result kind this bead does not own (RAIL-24, X-8)'
   })
 })
 
+describe('AssistantLane — a card kind whose render is not built yet (1kg.4.3 PR-A; RAIL-24, X-8)', () => {
+  const loot = cardResult({
+    tool_id: 'loot',
+    prose: 'Invented for your campaign.',
+    card: { card_kind: 'loot', loot: { title: 'The offering box', items: [{ name: 'Tarnished silver censer' }] } },
+  })
+
+  it('stands in with the neutral placeholder, never a borrowed stat block', () => {
+    const { container } = renderLane({ invocation: toolInvocation({ tool_id: 'loot', status: 'done', result: loot }) })
+    expect(screen.getByText(LANE_COPY.unsupportedResult)).toBeInTheDocument()
+    expect(container.querySelector('.stat-block-card__abilities')).toBeNull()
+    expect(screen.queryByText('Tarnished silver censer')).toBeNull()
+    expect(container.querySelector('.assistant-text')?.textContent).toContain('Invented for your campaign.')
+  })
+
+  it('still composes a stat block card for the monster', () => {
+    const { container } = renderLane({
+      invocation: toolInvocation({ tool_id: 'monster', status: 'done', result: cardResult() }),
+    })
+    expect(screen.queryByText(LANE_COPY.unsupportedResult)).toBeNull()
+    expect(container.querySelector('.stat-block-card__abilities')).not.toBeNull()
+  })
+})
+
 describe('AssistantLane — suggestions arm the composer (RAIL-8, X-1)', () => {
   const withSuggestions = toolInvocation({
     status: 'done',

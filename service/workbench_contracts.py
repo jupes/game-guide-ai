@@ -80,6 +80,29 @@ CHAT_TEXT_MAX_CHARS = 100_000
 MAX_SOURCES = 50
 TIMELINE_PAGE_MAX_ITEMS = 100
 
+#: The card payloads' bounds (``1kg.4.3``), code points. ``ui/src/gm/contracts.ts``
+#: holds the same numbers and the fixtures pin every one on both sides. Every
+#: list's minimum is 1, so an empty card validates nowhere.
+CARD_TITLE_MAX_CHARS = 200
+LOOT_MAX_ITEMS = 20
+LOOT_VALUE_MAX_CHARS = 60
+LOOT_NOTE_MAX_CHARS = 500
+LOOT_QUANTITY_MAX = 1_000_000
+NAMES_MAX_ENTRIES = 20
+NAME_MAX_CHARS = 80
+NAME_NOTE_MAX_CHARS = 200
+HOOKS_MAX_ENTRIES = 5
+HOOK_TITLE_MAX_CHARS = 120
+HOOK_TEXT_MAX_CHARS = 1000
+RULES_ANSWER_MAX_CHARS = PROSE_MAX_CHARS
+#: Equal to ``document_generation.CORPUS_MAX_PASSAGES``: a citation's ``n`` names
+#: a passage the server handed the model (a test pins the two).
+RULES_MAX_CITATIONS = 8
+#: An inline citation marker in a rules answer. The pattern text is byte-identical
+#: in ``contracts.ts``; ``re.ASCII`` makes ``\d`` mean 0-9 here, as it does in
+#: JavaScript. One or two digits, so ``[1d6]`` and ``[DC 15]`` are not markers.
+RULES_MARKER = re.compile(r"\[(\d{1,2})\]", re.ASCII)
+
 #: Ceilings per field kind. ``1kg.5.3`` may set tighter caps per type, and
 #: ``1kg.5.5`` a cap on the whole document; both are checked before provider
 #: work, so a pasted book is not re-sent on every edit (RAIL-6).
@@ -304,10 +327,15 @@ class ResultKind(str, Enum):
 
 
 class CardKind(str, Enum):
-    """Card payloads are a closed union. ``1kg.4.3`` adds loot, names, rules and
-    hooks; until then those tools cannot produce a valid card, by design."""
+    """Card payloads are a closed union, one kind per card tool (``1kg.4.3``).
+    ``monster`` reuses the ``/chat`` stat block; the other four are this
+    contract's own shapes."""
 
     STAT_BLOCK = "stat_block"
+    LOOT = "loot"
+    NAMES = "names"
+    RULES = "rules"
+    HOOKS = "hooks"
 
 
 class DocumentTypeId(str, Enum):
@@ -467,6 +495,10 @@ class ErrorCode(str, Enum):
     #: up to case. ``group_cap_reached``: the campaign's 51st live group.
     GROUP_NAME_TAKEN = "group_name_taken"
     GROUP_CAP_REACHED = "group_cap_reached"
+    #: The rules tool's corpus did not ground the brief (``1kg.4.3`` I-7). Final:
+    #: the GM edits the brief. Seen on a stored invocation only, never as a
+    #: response status, like ``attempt_expired``.
+    NOT_IN_SOURCES = "not_in_sources"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────
@@ -495,7 +527,13 @@ TOOL_CREATES_DOC_TYPE: dict[ToolId, DocumentTypeId] = {
     ToolId.RECAP: DocumentTypeId.SESSION_NOTES,
 }
 
-TOOL_CARD_KIND: dict[ToolId, CardKind] = {ToolId.MONSTER: CardKind.STAT_BLOCK}
+TOOL_CARD_KIND: dict[ToolId, CardKind] = {
+    ToolId.MONSTER: CardKind.STAT_BLOCK,
+    ToolId.LOOT: CardKind.LOOT,
+    ToolId.NAMES: CardKind.NAMES,
+    ToolId.RULES: CardKind.RULES,
+    ToolId.HOOKS: CardKind.HOOKS,
+}
 
 #: Decision LIB-1 to LIB-6: membership is a registry fact, not a free field.
 DOC_TYPE_LIBRARY_CATEGORY: dict[DocumentTypeId, LibraryCategory] = {
@@ -882,9 +920,138 @@ class StatBlockCard(_Contract):
     stat_block: StatBlockContent
 
 
-#: A one-member union today. When ``1kg.4.3`` adds card kinds this becomes
-#: ``Annotated[A | B, Field(discriminator="card_kind")]``.
-CardContent = StatBlockCard
+# ── The other card kinds (1kg.4.3) ───────────────────────────────────────────
+#
+# Plain text only: a card renders as text nodes, never as Markdown (X-10,
+# SEC-33). A line is one line; a text may break lines. Both refuse the stored-text
+# code points and a value that the contract's trim empties, and a refusal names
+# the class, never the value (X-7).
+
+
+def _card_line(value: str) -> str:
+    _one_line(value)
+    return _card_text(value)
+
+
+def _card_text(value: str) -> str:
+    check_plain_text(value)
+    if not trim(value):
+        raise ValueError("must not be blank")
+    return value
+
+
+def _bounded(max_chars: int) -> StringConstraints:
+    return StringConstraints(strict=True, min_length=1, max_length=max_chars)
+
+
+_CardTitle = Annotated[str, _bounded(CARD_TITLE_MAX_CHARS), AfterValidator(_card_line)]
+_LootValue = Annotated[str, _bounded(LOOT_VALUE_MAX_CHARS), AfterValidator(_card_line)]
+_LootNote = Annotated[str, _bounded(LOOT_NOTE_MAX_CHARS), AfterValidator(_card_text)]
+_Name = Annotated[str, _bounded(NAME_MAX_CHARS), AfterValidator(_card_line)]
+_NameNote = Annotated[str, _bounded(NAME_NOTE_MAX_CHARS), AfterValidator(_card_line)]
+_HookTitle = Annotated[str, _bounded(HOOK_TITLE_MAX_CHARS), AfterValidator(_card_line)]
+_HookText = Annotated[str, _bounded(HOOK_TEXT_MAX_CHARS), AfterValidator(_card_text)]
+_RulesAnswer = Annotated[str, _bounded(RULES_ANSWER_MAX_CHARS), AfterValidator(_card_text)]
+
+
+class LootItem(_Contract):
+    name: _CardTitle
+    quantity: Annotated[WireInt, Field(ge=1, le=LOOT_QUANTITY_MAX)] | None = None
+    #: A price as the GM reads it, such as "25 gp".
+    value: _LootValue | None = None
+    note: _LootNote | None = None
+
+
+class LootContent(_Contract):
+    title: _CardTitle
+    items: Annotated[list[LootItem], Field(min_length=1, max_length=LOOT_MAX_ITEMS)]
+
+
+class LootCard(_Contract):
+    card_kind: Literal["loot"]
+    loot: LootContent
+
+
+class NameEntry(_Contract):
+    name: _Name
+    note: _NameNote | None = None
+
+
+class NamesContent(_Contract):
+    title: _CardTitle
+    entries: Annotated[list[NameEntry], Field(min_length=1, max_length=NAMES_MAX_ENTRIES)]
+
+
+class NamesCard(_Contract):
+    card_kind: Literal["names"]
+    names: NamesContent
+
+
+class HookEntry(_Contract):
+    title: _HookTitle
+    text: _HookText
+
+
+class HooksContent(_Contract):
+    title: _CardTitle
+    entries: Annotated[list[HookEntry], Field(min_length=1, max_length=HOOKS_MAX_ENTRIES)]
+
+
+class HooksCard(_Contract):
+    card_kind: Literal["hooks"]
+    hooks: HooksContent
+
+
+class CitedSource(_Contract):
+    """``service.models.Source``'s keys, read strictly (1kg.4.3). ``Source`` is an
+    older contract's lax model: it coerces ``"12"`` to a page and defaults a missing
+    key, where the client's ``SourceSchema`` refuses both. Reused under ``sources``
+    that laxness is inherited and tolerated; a new shape is this contract's own,
+    so it agrees with the client instead. The server fills it from a retrieved
+    ``Source``; a test pins the two key sets equal."""
+
+    book: StrictStr
+    chapter: StrictStr | None
+    section: StrictStr | None
+    entity: StrictStr | None
+    page: WireInt | None
+    snippet: StrictStr
+
+
+class RulesCitation(_Contract):
+    #: The number of a passage the server retrieved and handed to the model; the
+    #: model never supplies a source (I-5).
+    n: Annotated[WireInt, Field(ge=1, le=RULES_MAX_CITATIONS)]
+    source: CitedSource
+
+
+class RulesContent(_Contract):
+    title: _CardTitle
+    answer: _RulesAnswer
+    citations: Annotated[list[RulesCitation], Field(min_length=1, max_length=RULES_MAX_CITATIONS)]
+
+    @model_validator(mode="after")
+    def _citations_are_authoritative(self) -> Self:
+        """``n`` strictly increases, and every inline ``[k]`` in the answer is some
+        citation's ``n``, so a stored card never shows a marker that points nowhere."""
+        numbers = [citation.n for citation in self.citations]
+        if any(later <= earlier for earlier, later in zip(numbers, numbers[1:], strict=False)):
+            raise ValueError("citation numbers must strictly increase")
+        cited = set(numbers)
+        if any(int(marker) not in cited for marker in RULES_MARKER.findall(self.answer)):
+            raise ValueError("every citation marker in the answer must name a citation")
+        return self
+
+
+class RulesCard(_Contract):
+    card_kind: Literal["rules"]
+    rules: RulesContent
+
+
+#: One kind per card tool; the discriminator fails closed on an unknown kind (X-8).
+CardContent = Annotated[
+    StatBlockCard | LootCard | NamesCard | RulesCard | HooksCard, Field(discriminator="card_kind")
+]
 
 
 class _ResultBase(_Contract):

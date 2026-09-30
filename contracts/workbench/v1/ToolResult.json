@@ -70,6 +70,182 @@
         "suggestions": [],
         "generated_by": "a-newer-server"
       }
+    },
+    {
+      "name": "a loot card with its optional fields null (1kg.4.3)",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "loot",
+        "prose": "Invented for your campaign — none of it comes from the rulebooks.",
+        "suggestions": [{ "tool_id": "hooks", "label": "Hooks for this treasure", "icon": "flag" }],
+        "card": {
+          "card_kind": "loot",
+          "loot": {
+            "title": "The drowned chapel's offering box",
+            "items": [
+              { "name": "Tarnished silver censer", "quantity": 1, "value": "25 gp", "note": "Engraved with a tide sigil.\nIts chain is missing." },
+              { "name": "Gold pieces", "quantity": 140, "value": null, "note": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a minimal loot card: one item, its optional fields omitted, a quantity written 3.0",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "loot",
+        "prose": "",
+        "suggestions": [],
+        "card": { "card_kind": "loot", "loot": { "title": "A pouch", "items": [{ "name": "Copper pieces", "quantity": 3.0 }] } }
+      }
+    },
+    {
+      "name": "a loot card at every maximum",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "loot",
+        "prose": "",
+        "suggestions": [],
+        "card": {
+          "card_kind": "loot",
+          "loot": {
+            "title": "@repeat:t:200",
+            "items": { "@repeat_value": { "name": "@repeat:n:200", "quantity": 1000000, "value": "@repeat:v:60", "note": "@repeat:o:500" }, "@count": 20 }
+          }
+        }
+      }
+    },
+    {
+      "name": "a names card: a note null on one entry and omitted on another",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "names",
+        "prose": "Invented for your campaign — none of it comes from the rulebooks.",
+        "suggestions": [{ "tool_id": "npc", "label": "Write one up as an NPC", "icon": "person_add" }],
+        "card": {
+          "card_kind": "names",
+          "names": { "title": "Dockside names", "entries": [{ "name": "Wren Halloway", "note": null }, { "name": "Tobiah Crane" }] }
+        }
+      }
+    },
+    {
+      "name": "a names card at every maximum",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "names",
+        "prose": "",
+        "suggestions": [],
+        "card": {
+          "card_kind": "names",
+          "names": { "title": "@repeat:t:200", "entries": { "@repeat_value": { "name": "@repeat:n:80", "note": "@repeat:o:200" }, "@count": 20 } }
+        }
+      }
+    },
+    {
+      "name": "a minimal hooks card: one hook, its text across lines",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "hooks",
+        "prose": "Invented for your campaign — none of it comes from the rulebooks.",
+        "suggestions": [],
+        "card": {
+          "card_kind": "hooks",
+          "hooks": { "title": "Trouble at the tide gate", "entries": [{ "title": "The keeper is missing", "text": "The gate has not closed in three nights.\nThe keeper's lamp still burns." }] }
+        }
+      }
+    },
+    {
+      "name": "a hooks card at every maximum",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "hooks",
+        "prose": "",
+        "suggestions": [],
+        "card": {
+          "card_kind": "hooks",
+          "hooks": { "title": "@repeat:t:200", "entries": { "@repeat_value": { "title": "@repeat:h:120", "text": "@repeat:x:1000" }, "@count": 5 } }
+        }
+      }
+    },
+    {
+      "name": "a rules card cites a passage the server retrieved; its marker names that citation",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "rules",
+        "prose": "From the rulebooks. The passages it quotes are listed on the card.",
+        "suggestions": [],
+        "card": {
+          "card_kind": "rules",
+          "rules": {
+            "title": "Held in place",
+            "answer": "A held creature's speed becomes 0 [2].",
+            "citations": [
+              { "n": 2, "source": { "book": "synthetic-5e", "chapter": "Conditions", "section": "Held", "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0…" } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a rules card with eight citations and a marker for each; [1d6] and [DC 15] are not markers",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "rules",
+        "prose": "",
+        "suggestions": [],
+        "card": {
+          "card_kind": "rules",
+          "rules": {
+            "title": "Falling",
+            "answer": "Take [1d6] per 10 feet [1][2][3][4].\nA [DC 15] check [5] [6] [7] [8].",
+            "citations": [
+              { "n": 1, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "one" } },
+              { "n": 2, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "two" } },
+              { "n": 3, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "three" } },
+              { "n": 4, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "four" } },
+              { "n": 5, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "five" } },
+              { "n": 6, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "six" } },
+              { "n": 7, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "seven" } },
+              { "n": 8, "source": { "book": "synthetic-5e", "chapter": "Hazards", "section": "Falling", "entity": "Falling", "page": 183, "snippet": "eight" } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "a rules answer and title at their maximum, citing a passage without a marker",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "rules",
+        "prose": "",
+        "suggestions": [],
+        "card": {
+          "card_kind": "rules",
+          "rules": {
+            "title": "@repeat:t:200",
+            "answer": "@repeat:a:4000",
+            "citations": [{ "n": 5, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 1, "snippet": "" } }]
+          }
+        }
+      }
+    },
+    {
+      "name": "a bracketed non-ASCII digit is not a citation marker: the pattern reads 0-9 on both sides",
+      "value": {
+        "result_kind": "card",
+        "tool_id": "rules",
+        "prose": "",
+        "suggestions": [],
+        "card": {
+          "card_kind": "rules",
+          "rules": {
+            "title": "Held in place",
+            "answer": "Speed becomes 0 [1], as in [\u0663].",
+            "citations": [{ "n": 1, "source": { "book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": null, "snippet": "s" } }]
+          }
+        }
+      }
     }
   ],
   "invalid": [
@@ -106,8 +282,8 @@
       "value": { "result_kind": "card", "tool_id": "monster", "prose": "", "card": { "card_kind": "spell_scroll", "text": "..." }, "suggestions": [] }
     },
     {
-      "name": "a card for a tool whose card schema does not exist yet",
-      "why": "loot, names, rules and hooks gain their card kinds in 1kg.4.3; until then they cannot produce a valid card",
+      "name": "a stat block under loot",
+      "why": "a stat block under loot contradicts the registry: loot's card kind is loot",
       "value": {
         "result_kind": "card",
         "tool_id": "loot",
@@ -157,6 +333,43 @@
         "document": { "document_id": "doc_9k2f7a1c", "type": "npc", "title": "Ondrey", "library_category": "npcs" },
         "suggestions": []
       }
-    }
+    },
+    {"name": "a loot card with no items", "why": "an empty card is the AC's fabricated empty card: every list's minimum is 1", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": []}}}},
+    {"name": "a loot card with 21 items", "why": "LOOT_MAX_ITEMS is 20", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": {"@repeat_value": {"name": "Copper pieces"}, "@count": 21}}}}},
+    {"name": "a names card with no entries", "why": "every list's minimum is 1", "value": {"result_kind": "card", "tool_id": "names", "prose": "", "suggestions": [], "card": {"card_kind": "names", "names": {"title": "Dockside names", "entries": []}}}},
+    {"name": "a names card with 21 entries", "why": "NAMES_MAX_ENTRIES is 20", "value": {"result_kind": "card", "tool_id": "names", "prose": "", "suggestions": [], "card": {"card_kind": "names", "names": {"title": "Dockside names", "entries": {"@repeat_value": {"name": "Wren"}, "@count": 21}}}}},
+    {"name": "a hooks card with no entries", "why": "every list's minimum is 1", "value": {"result_kind": "card", "tool_id": "hooks", "prose": "", "suggestions": [], "card": {"card_kind": "hooks", "hooks": {"title": "Trouble", "entries": []}}}},
+    {"name": "a hooks card with 6 entries", "why": "HOOKS_MAX_ENTRIES is 5", "value": {"result_kind": "card", "tool_id": "hooks", "prose": "", "suggestions": [], "card": {"card_kind": "hooks", "hooks": {"title": "Trouble", "entries": {"@repeat_value": {"title": "The keeper is missing", "text": "The gate has not closed."}, "@count": 6}}}}},
+    {"name": "a rules card with no citations", "why": "a rules answer the server cannot ground is not_in_sources, never a card", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": []}}}},
+    {"name": "a rules card with 9 citations", "why": "RULES_MAX_CITATIONS is 8", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 1, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 2, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 3, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 4, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 5, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 6, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 7, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 8, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 9, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a blank card title", "why": "blank after the contract's trim", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "   ", "items": [{"name": "Copper pieces"}]}}}},
+    {"name": "a line break in a one-line field", "why": "an item's name is one line", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer\nand chain"}]}}}},
+    {"name": "a line break in a hook's title", "why": "a hook's title is one line; its text may break", "value": {"result_kind": "card", "tool_id": "hooks", "prose": "", "suggestions": [], "card": {"card_kind": "hooks", "hooks": {"title": "Trouble", "entries": [{"title": "The keeper\nis missing", "text": "x"}]}}}},
+    {"name": "a bidirectional override in a loot note", "why": "stored-text code points are refused in every card text", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer", "note": "tide\u202esigil"}]}}}},
+    {"name": "a bidirectional override in a rules answer", "why": "stored-text code points are refused in every card text", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "speed\u202e 0", "citations": [{"n": 1, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a blank hook text", "why": "blank after the contract's trim", "value": {"result_kind": "card", "tool_id": "hooks", "prose": "", "suggestions": [], "card": {"card_kind": "hooks", "hooks": {"title": "Trouble", "entries": [{"title": "The keeper is missing", "text": " \n "}]}}}},
+    {"name": "a quantity of 0", "why": "a quantity is at least 1; none is null", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer", "quantity": 0}]}}}},
+    {"name": "a quantity written as text", "why": "nothing is coerced between JSON types", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer", "quantity": "3"}]}}}},
+    {"name": "a quantity of true", "why": "a boolean is not an integer", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer", "quantity": true}]}}}},
+    {"name": "a quantity past its maximum", "why": "LOOT_QUANTITY_MAX is 1,000,000", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer", "quantity": 1000001}]}}}},
+    {"name": "a loot value of 61 characters", "why": "LOOT_VALUE_MAX_CHARS is 60", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer", "value": "@repeat:v:61"}]}}}},
+    {"name": "a loot note of 501 characters", "why": "LOOT_NOTE_MAX_CHARS is 500", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Censer", "note": "@repeat:o:501"}]}}}},
+    {"name": "a card title of 201 characters", "why": "CARD_TITLE_MAX_CHARS is 200", "value": {"result_kind": "card", "tool_id": "names", "prose": "", "suggestions": [], "card": {"card_kind": "names", "names": {"title": "@repeat:t:201", "entries": [{"name": "Wren"}]}}}},
+    {"name": "a name of 81 characters", "why": "NAME_MAX_CHARS is 80", "value": {"result_kind": "card", "tool_id": "names", "prose": "", "suggestions": [], "card": {"card_kind": "names", "names": {"title": "Dockside names", "entries": [{"name": "@repeat:n:81"}]}}}},
+    {"name": "a name's note of 201 characters", "why": "NAME_NOTE_MAX_CHARS is 200", "value": {"result_kind": "card", "tool_id": "names", "prose": "", "suggestions": [], "card": {"card_kind": "names", "names": {"title": "Dockside names", "entries": [{"name": "Wren", "note": "@repeat:o:201"}]}}}},
+    {"name": "a hook title of 121 characters", "why": "HOOK_TITLE_MAX_CHARS is 120", "value": {"result_kind": "card", "tool_id": "hooks", "prose": "", "suggestions": [], "card": {"card_kind": "hooks", "hooks": {"title": "Trouble", "entries": [{"title": "@repeat:h:121", "text": "x"}]}}}},
+    {"name": "a hook text of 1,001 characters", "why": "HOOK_TEXT_MAX_CHARS is 1,000", "value": {"result_kind": "card", "tool_id": "hooks", "prose": "", "suggestions": [], "card": {"card_kind": "hooks", "hooks": {"title": "Trouble", "entries": [{"title": "The keeper is missing", "text": "@repeat:x:1001"}]}}}},
+    {"name": "a rules answer of 4,001 characters", "why": "RULES_ANSWER_MAX_CHARS is PROSE_MAX_CHARS", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "@repeat:a:4001", "citations": [{"n": 1, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a citation numbered 0", "why": "n names a passage, counted from 1", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 0, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a citation numbered 9", "why": "n is at most RULES_MAX_CITATIONS", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 9, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a citation number repeated", "why": "n strictly increases", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 2, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 2, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "citation numbers decreasing", "why": "n strictly increases", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 3, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 1, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "an answer whose marker names no citation", "why": "every [k] in the answer is some citation's n, so no marker points nowhere", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "Speed becomes 0 [3].", "citations": [{"n": 1, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}, {"n": 2, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a citation without its source", "why": "the server resolves every n to the passage it retrieved", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 1}]}}}},
+    {"name": "a citation source whose page is text", "why": "a cited source is read strictly, as the client reads it: no coercion", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 1, "source": {"book": "synthetic-5e", "chapter": null, "section": null, "entity": null, "page": "12", "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a citation source missing a key", "why": "a cited source is read strictly, as the client reads it: every key present, null for none", "value": {"result_kind": "card", "tool_id": "rules", "prose": "", "suggestions": [], "card": {"card_kind": "rules", "rules": {"title": "Held", "answer": "A held creature's speed becomes 0.", "citations": [{"n": 1, "source": {"book": "synthetic-5e", "section": null, "entity": null, "page": 12, "snippet": "A held creature's speed becomes 0."}}]}}}},
+    {"name": "a names card under loot", "why": "the registry is the rule: loot's card kind is loot", "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "names", "names": {"title": "Dockside names", "entries": [{"name": "Wren"}]}}}},
+    {"name": "a loot card under monster", "why": "the registry is the rule: monster's card kind is stat_block", "value": {"result_kind": "card", "tool_id": "monster", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Copper pieces"}]}}}},
+    {"name": "an undeclared key inside loot", "why": "the server emits only declared keys; a client strips one from a newer server", "applies_to": ["server"], "value": {"result_kind": "card", "tool_id": "loot", "prose": "", "suggestions": [], "card": {"card_kind": "loot", "loot": {"title": "A pouch", "items": [{"name": "Copper pieces"}], "rarity": "legendary"}}}}
   ]
 }

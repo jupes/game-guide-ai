@@ -72,6 +72,7 @@ from service.workbench_contracts import (
     ToolId,
     ToolInvocationRequest,
 )
+from service.workbench_load import InMemoryWorkbenchLoad
 
 GM_A, GM_B = 1, 2
 T0 = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
@@ -169,7 +170,9 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     messages = InMemoryMessageStore()
     campaigns, conversations = InMemoryCampaignStore(db), InMemoryConversationStore(db)
     timeline = InMemoryTimelineStore(db, messages=messages)
-    stores = InvocationStores(InMemoryToolInvocationStore(db), campaigns, conversations, timeline)
+    stores = InvocationStores(
+        InMemoryToolInvocationStore(db), campaigns, conversations, timeline, InMemoryWorkbenchLoad(db),
+    )
     tools = DocumentToolStores(campaigns, conversations, timeline, InMemoryDocumentStore(db))
     llm = ScriptedLLM()
     factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: llm})
@@ -510,7 +513,7 @@ def test_p8b_a_settle_that_fails_after_the_document_was_written_rolls_the_docume
     world.executors[ToolId.NPC] = DocumentToolExecutor(ToolId.NPC, DocumentToolStores(
         world.tools.campaigns, world.tools.conversations, world.tools.timeline, _Counting(world.db)))
     world.stores = InvocationStores(world.stores.invocations, world.stores.campaigns, world.stores.conversations,
-                                    _Broken(world.db, messages=world.messages))
+                                    _Broken(world.db, messages=world.messages), world.stores.load)
     assert post(client, world.table()).status_code == 503
     assert created == [1]
     assert (world.count("documents"), world.count("document_versions")) == (0, 0)

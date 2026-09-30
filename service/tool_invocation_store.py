@@ -23,8 +23,8 @@ mismatched parent is **zero rows inserted**, never a foreign-key violation:
 bounded before its first lock — `lock_timeout` and `transaction_timeout`, in one
 `set_config` — and every explicit row hold is `FOR NO KEY UPDATE`, announced
 with `note_row_lock()` first. The per-GM advisory lock
-`AdvisoryLock.WORKBENCH_IN_FLIGHT` is taken first in the admitting transaction
-and nowhere else.
+`AdvisoryLock.WORKBENCH_IN_FLIGHT` is taken first in the admitting transaction,
+here or, for an AI edit, by `WorkbenchLoad.hold_in_flight_lock` (`1kg.5.5`).
 
 **What this module writes, and what it only reads.** It writes its own two
 tables and nothing else. `campaign.campaigns`, `chat.conversations` and
@@ -224,7 +224,8 @@ class ToolInvocationStore(Protocol):
 
     def hold_in_flight_lock(self, unit: UnitOfWork, owner_id: int) -> None:
         """Bound the transaction, then take `(WORKBENCH_IN_FLIGHT, owner)` —
-        the admitting transaction's first lock. Never taken anywhere else."""
+        the admitting transaction's first lock. An AI edit takes the same member
+        and key through `WorkbenchLoad.hold_in_flight_lock` (`1kg.5.5`)."""
         ...  # pragma: no cover - structural type
 
     def in_flight_ids(self, unit: UnitOfWork, owner_id: int, *, now: datetime) -> list[str]:
