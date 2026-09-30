@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
 import json
 import os
 import subprocess
 import sys
+import tracemalloc
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,11 +25,18 @@ from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import config
+import service.app as app_module
 from service.app import app, get_auth_store, get_message_store, get_service
 from service.auth_store import InMemoryAuthStore
-from service.body_limit import DEFAULT_MAX_BODY_BYTES, TOO_LARGE_DETAIL, BodyLimitMiddleware, ceiling_for
+from service.body_limit import (
+    ANONYMOUS_MAX_BODY_BYTES,
+    DEFAULT_MAX_BODY_BYTES,
+    TOO_LARGE_DETAIL,
+    BodyLimitMiddleware,
+    ceiling_for,
+)
 from service.history import InMemoryMessageStore
-from service.models import ChatResponse
+from service.models import MAX_EMAIL_LENGTH, MAX_INVITE_LENGTH, MAX_PASSWORD_LENGTH, ChatResponse
 from service.workbench_contracts import ASSET_MAX_BYTES, CHAT_TEXT_MAX_CHARS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +49,10 @@ REFUSAL = b'{"detail":"request body too large"}'
 ATTACHMENT_PATH = "/conversations/c1/attachments"
 MEDIA_PATH = "/campaigns/c1/assets/a1/bytes"
 LEGACY_JSON_ROUTES = ("/auth/login", "/auth/signup", "/chat", "/metrics/ui")
+ANONYMOUS_JSON_ROUTES = ("/auth/login", "/auth/signup", "/metrics/ui")
+JSON = {"content-type": "application/json"}
+#: The costliest character to send: twelve bytes of JSON once \u-escaped.
+ASTRAL = "\U0001d400"
 DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 
 _FILLER = b"0" * CHUNK
@@ -217,7 +230,7 @@ def test_only_the_upload_routes_get_a_higher_ceiling() -> None:
     assert ceiling_for("POST", "/campaigns/c1/documents", media_enabled=False) > DEFAULT_MAX_BODY_BYTES
     assert ceiling_for("PATCH", "/campaigns/c1/documents/d1", media_enabled=False) > DEFAULT_MAX_BODY_BYTES
     for method, path in [("GET", ATTACHMENT_PATH), ("POST", "/campaigns/c1/documents/d1/restore"),
-                         ("POST", "/chat"), ("POST", "/auth/login"), ("POST", ATTACHMENT_PATH + "/x"),
+                         ("POST", "/chat"), ("POST", ATTACHMENT_PATH + "/x"),
                          ("PUT", MEDIA_PATH + "/x")]:
         assert ceiling_for(method, path, media_enabled=True) == DEFAULT_MAX_BODY_BYTES, (method, path)
 
@@ -252,6 +265,154 @@ def test_a_normal_signup_and_login_still_sign_in(monkeypatch: pytest.MonkeyPatch
     assert signup.status_code == 200, signup.text
     login = TestClient(app).post("/auth/login", json={"email": "ada@example.com", "password": "password123"})
     assert login.status_code == 200 and login.json()["role"] == "player"
+
+
+# ── Review rework: memory held, not only bytes read (H1, H2, M1) ────────────
+
+
+def _escaped(value: object) -> bytes:
+    """JSON with every non-ASCII character \\u-escaped: the longest a client writes it."""
+    return json.dumps(value, ensure_ascii=True).encode()
+
+
+@pytest.mark.parametrize("declared", [True, False])
+@pytest.mark.parametrize("path", ANONYMOUS_JSON_ROUTES)
+def test_an_anonymous_json_route_takes_a_small_ceiling(path: str, declared: bool) -> None:
+    ceiling = ceiling_for("POST", path, media_enabled=True)
+    assert ceiling == ANONYMOUS_MAX_BODY_BYTES == 64 * 1024 < DEFAULT_MAX_BODY_BYTES
+    over = Channel(total=ceiling + 1)
+    answer = drive(app, "POST", path, over, declared=declared)
+    assert (answer.status, answer.body) == (413, REFUSAL)
+    assert over.pulled == (0 if declared else ceiling + 1)
+
+
+@pytest.mark.real_auth
+def test_the_largest_valid_sign_in_and_sign_up_bodies_are_under_the_small_ceiling(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "SESSION_SECRET", "test-secret-please-rotate-at-least-32-chars")
+    app.dependency_overrides[get_auth_store] = lambda: InMemoryAuthStore()
+    email = ASTRAL * (MAX_EMAIL_LENGTH - len("@x.io")) + "@x.io"
+    fields = {"email": email, "password": ASTRAL * MAX_PASSWORD_LENGTH}
+    login = _escaped(fields)
+    signup = _escaped({**fields, "invite": ASTRAL * MAX_INVITE_LENGTH})
+    assert len(login) < len(signup) < ANONYMOUS_MAX_BODY_BYTES
+    client = TestClient(app)
+    # Each route gives its own answer: no such account, no such invite.
+    assert client.post("/auth/login", content=login, headers=JSON).status_code == 401
+    assert client.post("/auth/signup", content=signup, headers=JSON).status_code == 400
+
+
+def test_the_largest_valid_ui_metrics_batch_is_under_the_small_ceiling() -> None:
+    labels = {"environment": "production", "release": ASTRAL * 64, "mode": "sage",
+              "route_template": "/metrics/ui", "browser_family": "chromium"}
+    point = {"name": "ui.interaction.chat_round_trip_ms", "kind": "numeric", "unit": "ms",
+             "value": 1.7976931348623157e308, "labels": labels}
+    body = _escaped({"points": [point] * 50})
+    assert len(body) < ANONYMOUS_MAX_BODY_BYTES
+    r = TestClient(app).post("/metrics/ui", content=body, headers=JSON)
+    assert r.status_code == 202, r.text[:300]
+
+
+def _empty_objects(size: int, *, closed: bool = True) -> bytes:
+    """`[{},{},...]` padded to exactly `size` bytes: about 27 bytes of Python
+    objects per byte once parsed. Unclosed, it is not JSON at all."""
+    body = (b"[" + b"{}," * ((size - 2) // 3))[:-1] + (b"]" if closed else b"")
+    return body + b" " * (size - len(body))
+
+
+@pytest.mark.parametrize("closed", [True, False], ids=["not-the-schema", "not-json"])
+def test_a_refused_body_is_let_go_once_answered(closed: bool) -> None:
+    """Review H1. The 422's error held its traceback, the traceback held the
+    frame that raised the error, and the frame held the parsed body: a cycle
+    only a full garbage collection frees. With the collector off, reference
+    counting alone must free every refused body."""
+    app.dependency_overrides[get_service] = lambda: _Answering()
+    app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
+    body = _empty_objects(DEFAULT_MAX_BODY_BYTES, closed=closed)
+
+    async def refuse(times: int) -> list[int]:
+        """Raw ASGI on one event loop, keeping only each status: TestClient, or
+        a loop per request, would hold bodies of its own with the collector off."""
+        statuses: list[int] = []
+        for _ in range(times):
+            channel = Channel(body)
+
+            async def send(message: Message, channel: Channel = channel) -> None:
+                if message["type"] == "http.response.start":
+                    statuses.append(message["status"])
+                elif not message.get("more_body", False):
+                    channel.done.set()
+
+            scope: Scope = {
+                "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+                "scheme": "http", "path": "/chat", "raw_path": b"/chat", "query_string": b"", "root_path": "",
+                "headers": [(b"host", b"testserver"), (b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode())],
+                "client": ("203.0.113.9", 50000), "server": ("testserver", 80),
+            }
+            await app(scope, channel.receive, send)
+        return statuses
+
+    assert asyncio.run(refuse(1)) == [422]
+    gc.collect()
+    started = not tracemalloc.is_tracing()
+    if started:
+        tracemalloc.start()
+    gc.disable()
+    try:
+        before, _ = tracemalloc.get_traced_memory()
+        assert asyncio.run(refuse(5)) == [422] * 5
+        held = tracemalloc.get_traced_memory()[0] - before
+    finally:
+        gc.enable()
+        if started:
+            tracemalloc.stop()
+    assert held < DEFAULT_MAX_BODY_BYTES, f"{held / MIB:.1f} MiB still held after five refused bodies"
+
+
+@pytest.mark.real_auth
+@pytest.mark.parametrize("declared", [True, False])
+def test_an_anonymous_attachment_is_refused_before_its_body_is_read(declared: bool) -> None:
+    """Review H2: a declared body model is parsed before any dependency runs, so
+    the session check came after up to 94 MB of parsed objects."""
+    app.dependency_overrides[get_auth_store] = lambda: InMemoryAuthStore()
+    app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
+    ceiling = ceiling_for("POST", ATTACHMENT_PATH, media_enabled=False)
+    channel = Channel(_attachment_body(ceiling))
+    answer = drive(app, "POST", ATTACHMENT_PATH, channel, declared=declared)
+    assert answer.status == 401
+    assert channel.pulled == 0
+
+
+MARKER = "private-marker-3f9c"
+
+
+@pytest.mark.parametrize(("content_type", "body"), [
+    ("text/plain", json.dumps({"filename": "a.txt", "content_type": "text/plain", "data": "aGk="})),
+    ("application/json", json.dumps({"filename": [MARKER], "content_type": "text/plain", "data": "aGk="})),
+    ("application/json", '{"filename": "' + MARKER),
+], ids=["not-json-content-type", "not-the-schema", "not-json"])
+def test_a_signed_in_attachment_body_is_still_refused_as_before_and_not_echoed(content_type: str, body: str) -> None:
+    app.dependency_overrides[get_message_store] = lambda: InMemoryMessageStore()
+    r = TestClient(app).post(ATTACHMENT_PATH, content=body, headers={"content-type": content_type})
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["loc"][0] == "body"
+    assert MARKER not in r.text
+
+
+@pytest.mark.parametrize("media_on", [False, True])
+def test_the_installed_app_asks_the_media_switch_for_the_upload_ceiling(
+        monkeypatch: pytest.MonkeyPatch, media_on: bool) -> None:
+    """Review M1: the app's own wiring, in both directions. Dark, the media path
+    is any unknown path; lit, it takes the upload ceiling (the router, still
+    dark here, then answers it without reading)."""
+    monkeypatch.setattr(app_module, "_media_enabled", lambda: media_on)
+    channel = Channel(total=DEFAULT_MAX_BODY_BYTES + 1)
+    answer = drive(app, "PUT", MEDIA_PATH, channel, content_type=b"audio/mpeg")
+    if media_on:
+        assert answer.status != 413 and answer.body != REFUSAL
+    else:
+        assert (answer.status, answer.body, channel.pulled) == (413, REFUSAL, 0)
 
 
 # ── S2: the API docs ────────────────────────────────────────────────────────

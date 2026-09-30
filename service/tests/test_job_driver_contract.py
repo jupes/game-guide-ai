@@ -186,8 +186,10 @@ _PRE_BEAD: dict[tuple[str, str], _Row] = {
     ("POST", "/metrics/ui"): ("APIRoute", "record_ui_metrics", "dict", 202, True, ("get_metrics_sink",)),
     ("GET", "/conversations/{conversation_id}/messages"): (
         "APIRoute", "conversation_messages", "MessagesResponse", None, True, ("get_message_store", "require_session")),
+    # The body is read by a dependency, after the session check (agent-forge-harness-ust7, review H2).
     ("POST", "/conversations/{conversation_id}/attachments"): (
-        "APIRoute", "upload_attachment", "AttachmentResponse", None, True, ("get_message_store", "require_session")),
+        "APIRoute", "upload_attachment", "AttachmentResponse", None, True,
+        ("_attachment_upload", "get_message_store", "require_session")),
     ("GET", "/conversations/{conversation_id}/attachments"): (
         "APIRoute", "conversation_attachments", "AttachmentsResponse", None, True,
         ("get_message_store", "require_session")),

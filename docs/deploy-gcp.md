@@ -471,8 +471,7 @@ gcloud run services proxy game-guide-ai --project="$PROJECT" --region="$REGION"
 
 # Terminal 2
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/auth/me   # 401 = auth build
-curl -s -o /dev/null -w '%{http_code}
-' http://127.0.0.1:8080/openapi.json   # 404 = API docs hidden
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/openapi.json   # 404 = API docs hidden
 ```
 
 `401` (not `404`) on `/auth/me` means the auth build is serving. `404` on

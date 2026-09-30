@@ -13,7 +13,10 @@ throttle ran. This middleware wraps every route, so no route can forget it:
   it was about to answer is replaced by the same 413.
 
 The ceiling is `DEFAULT_MAX_BODY_BYTES` (`config.REQUEST_BODY_MAX_BYTES`) for
-every request except the uploads in `UPLOAD_CEILINGS`. Each of those routes
+every request except the routes in `ANONYMOUS_CEILINGS` and the uploads in
+`UPLOAD_CEILINGS`. The anonymous routes that parse a JSON body take a small
+ceiling of their own: FastAPI parses a body before any check runs, and a body of
+empty objects costs about 27 times its size once parsed. Each upload route
 keeps its own exact cap and its own refusal. The ceiling here sits one default
 body above that cap, so the route still gives its own answer to anything short
 of an attack. `ui/nginx.conf` declares the same default at server level
@@ -77,8 +80,20 @@ UPLOAD_CEILINGS: Final = (
 )
 
 
+#: A sign-in, a sign-up or a UI metrics batch, which anyone may send. The
+#: largest valid body of each, every non-ASCII character \u-escaped, is under
+#: 60 KB (service/tests/test_body_limit.py). The default may not go below this
+#: either (config.REQUEST_BODY_MAX_BYTES_FLOOR).
+ANONYMOUS_MAX_BODY_BYTES: Final = config.REQUEST_BODY_MAX_BYTES_FLOOR
+
+ANONYMOUS_CEILINGS: Final = tuple(
+    Ceiling("POST", re.compile(path), ANONYMOUS_MAX_BODY_BYTES)
+    for path in ("/auth/login", "/auth/signup", "/metrics/ui")
+)
+
+
 def ceiling_for(method: str, path: str, *, media_enabled: bool) -> int:
-    for rule in UPLOAD_CEILINGS:
+    for rule in (*ANONYMOUS_CEILINGS, *UPLOAD_CEILINGS):
         if rule.method == method and rule.path.fullmatch(path) and (media_enabled or not rule.media):
             return rule.max_bytes
     return DEFAULT_MAX_BODY_BYTES
