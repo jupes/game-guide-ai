@@ -27,12 +27,16 @@ well as its owner, and this module never names `1kg.2.4`'s columns. That store
 validates through `validated_entry` and its twin writes `TwinEntryRow`s, so both
 writers keep one validation path and one row shape.
 
-**The one update** (`1kg.4.1`, I-17 and the lead's C-19). A `tool` entry carries
-its invocation, and an invocation moves on after the turn is stored — done,
-failed, retried, cancelled — so `replace_tool_invocation` rewrites that one
-entry's payload in the transaction that moves the invocation. It is refused for
-any other kind, and for a payload naming another invocation or another tool, so
-a replace can never turn one turn into a different one.
+**The one update** (`1kg.4.1`, I-17 and the lead's C-19; `1kg.5.5`, §7.14). A
+`tool` entry carries its invocation and an `edit` entry carries its AI edit, and
+either moves on after the turn is stored — done, failed, retried, cancelled — so
+`replace_tool_invocation` and `replace_edit_invocation` rewrite that one entry's
+payload in the transaction that moves it. Both run the ONE statement,
+`_REPLACE_INVOCATION`, whose kind and identity key (`tool_id` for a tool,
+`document_id` for an edit) come from the class of the validated entry, never
+from a caller's argument (C-28.3). Each is refused for any other kind, and for
+a payload naming another invocation, tool or document, so a replace can never
+turn one turn into a different one.
 
 **Why a raw row type rather than `service.models.StoredMessage`.** A legacy row
 must be able to reach the adapter *unreadable*. `chat.messages.mode` carries no
@@ -61,7 +65,7 @@ from .campaign_identity import ID_BODY_MAX, ID_BODY_MIN, ID_BYTES
 from .campaign_store import Staging, shared_rows
 from .db import InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
 from .history import MessageStore
-from .workbench_contracts import AnyEntry, TimelineEntry, ToolEntry, redacted_errors
+from .workbench_contracts import AnyEntry, EditEntry, TimelineEntry, ToolEntry, redacted_errors
 
 #: How many of a conversation's rows the in-memory twin looks at before it
 #: applies the cursor predicate — the fake's stand-in for a table PostgreSQL
@@ -191,11 +195,27 @@ def _appendable(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tu
 
 
 def _checked_tool(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[ToolEntry, str]:
-    """`_checked`, and a `tool` entry: the only kind that is ever replaced."""
+    """`_checked`, and a `tool` entry: what `replace_tool_invocation` replaces."""
     validated, payload = _checked(entry, created_at)
     if not isinstance(validated, ToolEntry):
-        raise EntryMismatch("only a tool entry is ever replaced")
+        raise EntryMismatch("only a tool entry is replaced as a tool invocation")
     return validated, payload
+
+
+def _checked_edit(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[EditEntry, str]:
+    """`_checked`, and an `edit` entry: what `replace_edit_invocation` replaces."""
+    validated, payload = _checked(entry, created_at)
+    if not isinstance(validated, EditEntry):
+        raise EntryMismatch("only an edit entry is replaced as an AI edit")
+    return validated, payload
+
+
+def _identity(validated: ToolEntry | EditEntry) -> tuple[str, str, str]:
+    """The stored row's kind, and the payload key that must not change with the
+    value it must keep — read off the validated entry's class alone (C-28.3)."""
+    if isinstance(validated, ToolEntry):
+        return "tool", "tool_id", validated.invocation.tool_id.value
+    return "edit", "document_id", validated.invocation.document_id
 
 
 @dataclass(frozen=True)
@@ -332,6 +352,26 @@ class ToolTurnStore(Protocol):
         ...  # pragma: no cover - structural type
 
 
+class EditTurnStore(Protocol):
+    """What an AI document edit (`1kg.5.5`) needs of the timeline, beside
+    `TimelineStore`: both backends below implement it."""
+
+    def replace_edit_invocation(
+        self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        """Rewrite a stored `edit` entry's payload with `entry`; answer its id.
+
+        `entry` is validated as `append` validates it and must be an `edit`
+        entry — else `EntryInvalid` / `EntryMismatch`, before any statement. The
+        statement then requires the stored row to be an `edit` entry of this
+        conversation with the same id and `created_at`, whose stored invocation
+        has the same `invocation_id` and `document_id`, in a conversation that is
+        `owner_id`'s; any miss is `EntryNotStored`, from the guard.
+        """
+        ...  # pragma: no cover - structural type
+
+
 _LEGACY_COLUMNS = "id, mode, role, content, suggestions, created_at"
 #: Newest first, and total: `created_at` alone is not unique.
 _LEGACY_ORDER = "ORDER BY created_at DESC, id DESC LIMIT %s"
@@ -358,13 +398,16 @@ _INSERT_ENTRY = (
 )
 #: The one update. No table alias, and none of `1kg.2.4`'s column names: the
 #: static tests in `tests/test_timeline_db.py` read the statement's first three
-#: words and scan it for those names. The payload's own invocation id and tool
-#: must stay what they were (C-19).
-_REPLACE_TOOL = (
+#: words and scan it for those names. The row's kind and the payload's own
+#: invocation id and identity key (`tool_id` for a tool, `document_id` for an
+#: edit) must stay what they were (C-19); `_identity` supplies the kind, the
+#: key's name and its value from the validated entry's class, and the key's name
+#: is cast (C-28.3).
+_REPLACE_INVOCATION = (
     "UPDATE chat.timeline_entries SET payload = %s::jsonb, schema_version = %s::integer "
-    "WHERE entry_id = %s AND conversation_id = %s AND entry_kind = 'tool' AND created_at = %s "
+    "WHERE entry_id = %s AND conversation_id = %s AND entry_kind = %s AND created_at = %s "
     "AND payload -> 'invocation' ->> 'invocation_id' = %s "
-    "AND payload -> 'invocation' ->> 'tool_id' = %s "
+    "AND payload -> 'invocation' ->> %s::text = %s "
     "AND EXISTS (SELECT 1 FROM chat.conversations c "
     "WHERE c.conversation_id = chat.timeline_entries.conversation_id AND c.user_id = %s) "
     "RETURNING entry_id"
@@ -462,12 +505,27 @@ class PostgresTimelineStore:
         self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
         created_at: datetime, *, owner_id: int,
     ) -> str:
-        conn = pg(unit).conn
         validated, payload = _checked_tool(entry, created_at)
-        row = conn.execute(_REPLACE_TOOL, (
+        return self._replace(unit, conversation_id, validated, payload, created_at, owner_id=owner_id)
+
+    def replace_edit_invocation(
+        self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        validated, payload = _checked_edit(entry, created_at)
+        return self._replace(unit, conversation_id, validated, payload, created_at, owner_id=owner_id)
+
+    @staticmethod
+    def _replace(
+        unit: UnitOfWork, conversation_id: str, validated: ToolEntry | EditEntry, payload: str,
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        conn = pg(unit).conn
+        kind, key, value = _identity(validated)
+        row = conn.execute(_REPLACE_INVOCATION, (
             payload, validated.schema_version,
-            validated.entry_id, conversation_id, created_at,
-            validated.invocation.invocation_id, validated.invocation.tool_id.value,
+            validated.entry_id, conversation_id, kind, created_at,
+            validated.invocation.invocation_id, key, value,
             owner_id,
         )).fetchone()
         if row is None:
@@ -611,15 +669,29 @@ class InMemoryTimelineStore:
         self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
         created_at: datetime, *, owner_id: int,
     ) -> str:
-        tx = fake(unit)
         validated, payload = _checked_tool(entry, created_at)
+        return self._replace(unit, conversation_id, validated, payload, created_at, owner_id=owner_id)
+
+    def replace_edit_invocation(
+        self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        validated, payload = _checked_edit(entry, created_at)
+        return self._replace(unit, conversation_id, validated, payload, created_at, owner_id=owner_id)
+
+    def _replace(
+        self, unit: UnitOfWork, conversation_id: str, validated: ToolEntry | EditEntry, payload: str,
+        created_at: datetime, *, owner_id: int,
+    ) -> str:
+        tx = fake(unit)
+        kind, key, value = _identity(validated)
         found = self._rows.visible(tx).get(validated.entry_id)
         stored = None if found is None else json.loads(found.payload_json).get("invocation")
         if (
-            found is None or found.conversation_id != conversation_id or found.entry_kind != "tool"
+            found is None or found.conversation_id != conversation_id or found.entry_kind != kind
             or found.created_at != created_at or not isinstance(stored, dict)
             or stored.get("invocation_id") != validated.invocation.invocation_id
-            or stored.get("tool_id") != validated.invocation.tool_id.value
+            or stored.get(key) != value
             or self._messages.owner_of(conversation_id) != owner_id
         ):
             raise EntryNotStored("the entry was not stored")
