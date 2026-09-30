@@ -210,6 +210,40 @@ ATTACHMENT_MAX_CHARS: int = _int("RAG_ATTACHMENT_MAX_CHARS", 6000)
 # helper) — image OCR is out of scope (no OCR lib in the runtime).
 ATTACHMENT_TYPES: frozenset[str] = frozenset({"txt", "md", "pdf"})
 
+# --- Request bodies and API docs (service; agent-forge-harness-ust7) -------
+
+#: The request-body ceiling's default and bounds. 1 MiB holds the largest
+#: ordinary body, a /chat prompt at CHAT_TEXT_MAX_CHARS (100,000 code points,
+#: at most about 600 KB of JSON), with room to spare. Below 64 KiB a legitimate
+#: body would be refused; above 32 MiB, Cloud Run's own request limit, the
+#: setting would bound nothing. `ui/nginx.conf` declares the same default.
+DEFAULT_REQUEST_BODY_MAX_BYTES = 1024 * 1024
+REQUEST_BODY_MAX_BYTES_FLOOR = 64 * 1024
+REQUEST_BODY_MAX_BYTES_CEILING = 32 * 1024 * 1024
+
+
+def _body_bytes(name: str, default: int) -> int:
+    """A request-body ceiling, rejected at import unless inside the bounds: 0
+    would refuse every body, and a huge value would remove the bound it sets."""
+    value = _int(name, default)
+    if not REQUEST_BODY_MAX_BYTES_FLOOR <= value <= REQUEST_BODY_MAX_BYTES_CEILING:
+        raise ValueError(
+            f"{name} must be from {REQUEST_BODY_MAX_BYTES_FLOOR} to {REQUEST_BODY_MAX_BYTES_CEILING} bytes,"
+            f" got {value!r}"
+        )
+    return value
+
+
+# Every request body except an upload's is refused with 413 above this many
+# bytes, before any route reads it (service/body_limit.py, release review S1).
+REQUEST_BODY_MAX_BYTES: int = _body_bytes("RAG_REQUEST_BODY_MAX_BYTES", DEFAULT_REQUEST_BODY_MAX_BYTES)
+
+# /docs, /redoc and /openapi.json (release review S2): they list every route and
+# its schema, and /docs loads a script from a CDN on the app's own origin. Off
+# unless this is set, and never on Cloud Run, which sets K_SERVICE on every
+# instance: a setting for a local run only.
+API_DOCS_ENABLED: bool = _bool("RAG_API_DOCS_ENABLED", False) and not os.environ.get("K_SERVICE")
+
 # Gated cross-encoder rerank in the live service (bo4 model, prose categories
 # only via ingestion.rerank.should_rerank). OFF by default: it needs the
 # `[rerank]` extra (torch — several hundred MB) and adds ~234ms per reranked

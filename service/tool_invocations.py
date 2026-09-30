@@ -41,6 +41,13 @@ Workbench provider allowlist before any client is built (C-8). No message of
 this module names a model, a provider, a brief, a result or an invocation id,
 and no log line carries anything but an operation id, a tool id, a code, an
 attempt number and an exception's class (I-24).
+
+**What an executor may lean on** (1kg.4.4): `OutputRefused` is how `run` says
+the provider answered and the answer cannot become a result — stored as the
+`provider_failed` a refused result gets, never as an outage (I-3).
+`ExecutionContext.read` runs one lock-free read in a transaction of its own,
+closed before it returns, so `run` never holds a connection across a provider
+call; `ExecutionContext.now` is the route's clock (I-4).
 """
 
 from __future__ import annotations
@@ -189,6 +196,31 @@ class OutOfTime(Exception):
     less than `PROVIDER_CALL_MIN_S`. Stored as `provider_timeout` (C-7)."""
 
 
+class OutputRefused(Exception):
+    """The provider answered, and the answer cannot become a result (1kg.4.4
+    I-3; the 1kg.5.4 Critic's C-7). Stored as `provider_failed`, retryable — the
+    answer `judge_result`'s refusal gets. Raised by an executor's `run` only; it
+    carries no message of its own."""
+
+
+class ContextReader(Protocol):
+    """Runs one read in a transaction of its own (1kg.4.4 I-4)."""
+
+    def __call__[T](self, read: Callable[[UnitOfWork], T], /) -> T: ...  # pragma: no cover - structural type
+
+
+def context_reader(db: TransactionalDatabase) -> ContextReader:
+    """What `ExecutionContext.read` uses: one transaction per read, closed
+    before the answer is handed back. Lock-free reads only; nothing is held
+    across the provider call that follows."""
+
+    def read_once[T](read: Callable[[UnitOfWork], T], /) -> T:
+        with db.transaction() as unit:
+            return read(unit)
+
+    return read_once
+
+
 @dataclass(frozen=True)
 class InvocationTarget:
     """What an executor's precheck and run see. For a retry it is the STORED
@@ -291,7 +323,7 @@ class ExecutionContext:
 
     def __init__(
         self, admission: Admission, *, clock: Clock, factory: ProviderClientFactory,
-        probe: Callable[[], None],
+        probe: Callable[[], None], reader: ContextReader | None = None,
     ) -> None:
         self.target = admission.target
         self.attempt = admission.attempt
@@ -302,6 +334,7 @@ class ExecutionContext:
         self._clock = clock
         self._factory = factory
         self._probe = probe
+        self._reader = reader
 
     def __repr__(self) -> str:
         return f"ExecutionContext(tool={self.target.tool_id.value}, attempt={self.attempt})"
@@ -325,6 +358,18 @@ class ExecutionContext:
 
     def remaining_s(self) -> float:
         return (self.deadline - self._clock()).total_seconds()
+
+    def read[T](self, read: Callable[[UnitOfWork], T]) -> T:
+        """`read(unit)` in one short transaction of its own, closed before this
+        returns (RQ-8). A context built without a reader is a server defect:
+        `RuntimeError`, stored as `backend_unavailable`."""
+        if self._reader is None:
+            raise RuntimeError("this context has no reader")
+        return self._reader(read)
+
+    def now(self) -> datetime:
+        """The route's clock: the service's one clock."""
+        return self._clock()
 
 
 def cancellation_probe(
@@ -497,9 +542,13 @@ def failure_for(exc: BaseException) -> ErrorInfo:
     or a call refused for want of time — is `provider_timeout`; any other
     provider error is `provider_failed`, final only for a 422 category. A
     database or embedding outage, and anything unexpected, is
-    `backend_unavailable`. All retryable except the final provider failures."""
+    `backend_unavailable`. An answer the executor refused (`OutputRefused`) is
+    the `provider_failed` a refused result gets. All retryable except the final
+    provider failures."""
     if isinstance(exc, OutOfTime):
         return ErrorInfo(code=ErrorCode.PROVIDER_TIMEOUT, message=PROVIDER_TIMEOUT_MESSAGE, retryable=True)
+    if isinstance(exc, OutputRefused):
+        return ErrorInfo(code=ErrorCode.PROVIDER_FAILED, message=PROVIDER_FAILED_MESSAGE, retryable=True)
     if isinstance(exc, openai.OpenAIError):
         category = provider_category(exc)
         if category == "timeout":

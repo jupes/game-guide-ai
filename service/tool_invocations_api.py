@@ -42,7 +42,7 @@ from pydantic import TypeAdapter, ValidationError
 import config
 
 from . import campaign_identity as ident
-from . import usage_capture
+from . import document_tools, usage_capture
 from .campaign_store import PostgresCampaignStore
 from .campaigns_api import invalid, logged_outage, parse_body
 from .conversation_store import PostgresConversationStore
@@ -68,6 +68,7 @@ from .tool_invocations import (
     cancel,
     cancellation_probe,
     complete,
+    context_reader,
     execute,
     parse_settings,
     read,
@@ -101,9 +102,12 @@ def get_invocation_stores() -> InvocationStores:
 
 
 def get_tool_executors() -> Mapping[ToolId, ToolExecutor]:
-    """The registered executors: none in this bead. `1kg.4.3`, `1kg.4.4` and
-    `1kg.8.3` register theirs here; until then every tool is disabled."""
-    return MappingProxyType({})
+    """The registered executors. 1kg.4.4 registers npc and encounter (recap
+    follows); 1kg.4.3 and 1kg.8.3 add theirs beside it, one spread per module.
+    Registered is not enabled: a tool runs only when `WORKBENCH_ENABLED_TOOLS`
+    names it (I-7 of 1kg.4.1). Built per request: the stores hold no state and
+    nothing connects until a read."""
+    return MappingProxyType({**document_tools.document_executors(document_tools.DocumentToolStores.postgres())})
 
 
 def get_tool_settings() -> ToolSettings:
@@ -224,6 +228,7 @@ def build_router(
         executor = executors[admitted.target.tool_id]
         ctx = ExecutionContext(
             admitted, clock=clock, factory=factory, probe=cancellation_probe(db, stores, admitted, clock),
+            reader=context_reader(db),
         )
         # After T1 committed and outside the try, as `/chat` does: it cannot
         # raise, and `end_operation` flushes the ledger rows on every path.

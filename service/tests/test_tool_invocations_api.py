@@ -1356,7 +1356,7 @@ def test_h3_a_row_this_build_cannot_read_is_a_503_and_is_never_overwritten(world
 def test_i2_the_real_executors_and_settings_disable_every_tool(world: World, client: TestClient) -> None:
     for dependency in (tool_invocations_api.get_tool_executors, tool_invocations_api.get_tool_settings):
         app.dependency_overrides.pop(dependency)
-    assert tool_invocations_api.get_tool_executors() == {}
+    assert set(tool_invocations_api.get_tool_executors()) == {ToolId.NPC, ToolId.ENCOUNTER}
     table = world.table()
     for tool in ToolId:
         response = post(client, table, tool=tool.value, brief="" if tool is ToolId.RECAP else "a brief")
