@@ -1037,7 +1037,9 @@ def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:
 
     install_spa(target, tmp_path)
     everything = sorted((m, p) for p, r in api_routes(target) for m in (r.methods or set()) - {"HEAD"})
-    assert everything == [("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/workspace")]
+    assert everything == [
+        ("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/tavern"), ("GET", "/workspace"),
+    ]
     assert _census(target) == ({("GET", "/healthz")}, set())
 
 
@@ -1058,7 +1060,7 @@ def test_an_api_route_named_like_the_spa_mount_is_still_seen(tmp_path: Path) -> 
     target.include_router(router)
     install_spa(target, tmp_path)
     names = sorted(route.name for _, route in api_routes(target))
-    assert names == ["spa:/", "spa:/profile", "spa:/workspace", SPA_MOUNT_NAME]
+    assert names == ["spa:/", "spa:/profile", "spa:/tavern", "spa:/workspace", SPA_MOUNT_NAME]
     assert _census(target) == (set(), {("GET", "/campaigns/{campaign_id}/ui")})
     assert _prefixes_of(target) == {"campaigns"}
     assert _live_api_prefixes(target) == {"/campaigns", "/docs", "/openapi.json", "/redoc"}
