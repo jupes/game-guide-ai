@@ -60,6 +60,22 @@ def _seconds(name: str, default: float) -> float:
     return value
 
 
+#: The most output any provider call may ask for (agent-forge-harness-nz78). The
+#: cost review put a 16k-token answer at 110-270 s, about 60 tokens a second
+#: at the slow end, so 3,000 finish in some 50 s, inside one attempt's 60 s.
+MAX_OUTPUT_TOKENS_CEILING = 3_000
+
+
+def _output_tokens(name: str, default: int) -> int:
+    """An output-token cap, rejected at import unless 1 to the ceiling: 0 or less
+    breaks every call, and more lets an answer outlast its attempt's deadline,
+    which bills it, fails it and leaves the turn uncounted."""
+    value = _int(name, default)
+    if not 1 <= value <= MAX_OUTPUT_TOKENS_CEILING:
+        raise ValueError(f"{name} must be from 1 to {MAX_OUTPUT_TOKENS_CEILING} tokens, got {value!r}")
+    return value
+
+
 SameSite = Literal["lax", "strict", "none"]
 _SAMESITE_VALUES: tuple[SameSite, ...] = ("lax", "strict", "none")
 
@@ -162,6 +178,14 @@ LLM_REQUEST_TIMEOUT_S: float = _seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
 # Connect bound for the same clients; 5 s is the OpenAI SDK's own default.
 LLM_CONNECT_TIMEOUT_S: float = _seconds("RAG_LLM_CONNECT_TIMEOUT_S", 5.0)
 
+# Output cap (agent-forge-harness-nz78) that every factory-built client sends as
+# max_tokens: the answer, the suggestions and the structuring calls alike.
+# Without one the model's own maximum applied, and a long answer outlasted its
+# attempt's deadline, was billed, retried and failed. Document generation keeps
+# its own per-call 3,000 (C-1). A structuring payload cut short at the cap is not
+# valid JSON, which the graph already degrades to no widget.
+LLM_MAX_OUTPUT_TOKENS: int = _output_tokens("RAG_LLM_MAX_OUTPUT_TOKENS", 2_000)
+
 # --- Chat history (service) -------------------------------------------------
 
 # How many stored messages GET /conversations/{id}/messages returns per
@@ -185,6 +209,40 @@ ATTACHMENT_MAX_CHARS: int = _int("RAG_ATTACHMENT_MAX_CHARS", 6000)
 # Supported attachment extensions. Policy, not a tuning knob (config has no _set
 # helper) — image OCR is out of scope (no OCR lib in the runtime).
 ATTACHMENT_TYPES: frozenset[str] = frozenset({"txt", "md", "pdf"})
+
+# --- Request bodies and API docs (service; agent-forge-harness-ust7) -------
+
+#: The request-body ceiling's default and bounds. 1 MiB holds the largest
+#: ordinary body, a /chat prompt at CHAT_TEXT_MAX_CHARS (100,000 code points,
+#: at most about 600 KB of JSON), with room to spare. Below 64 KiB a legitimate
+#: body would be refused; above 32 MiB, Cloud Run's own request limit, the
+#: setting would bound nothing. `ui/nginx.conf` declares the same default.
+DEFAULT_REQUEST_BODY_MAX_BYTES = 1024 * 1024
+REQUEST_BODY_MAX_BYTES_FLOOR = 64 * 1024
+REQUEST_BODY_MAX_BYTES_CEILING = 32 * 1024 * 1024
+
+
+def _body_bytes(name: str, default: int) -> int:
+    """A request-body ceiling, rejected at import unless inside the bounds: 0
+    would refuse every body, and a huge value would remove the bound it sets."""
+    value = _int(name, default)
+    if not REQUEST_BODY_MAX_BYTES_FLOOR <= value <= REQUEST_BODY_MAX_BYTES_CEILING:
+        raise ValueError(
+            f"{name} must be from {REQUEST_BODY_MAX_BYTES_FLOOR} to {REQUEST_BODY_MAX_BYTES_CEILING} bytes,"
+            f" got {value!r}"
+        )
+    return value
+
+
+# Every request body except an upload's is refused with 413 above this many
+# bytes, before any route reads it (service/body_limit.py, release review S1).
+REQUEST_BODY_MAX_BYTES: int = _body_bytes("RAG_REQUEST_BODY_MAX_BYTES", DEFAULT_REQUEST_BODY_MAX_BYTES)
+
+# /docs, /redoc and /openapi.json (release review S2): they list every route and
+# its schema, and /docs loads a script from a CDN on the app's own origin. Off
+# unless this is set, and never on Cloud Run, which sets K_SERVICE on every
+# instance: a setting for a local run only.
+API_DOCS_ENABLED: bool = _bool("RAG_API_DOCS_ENABLED", False) and not os.environ.get("K_SERVICE")
 
 # Gated cross-encoder rerank in the live service (bo4 model, prose categories
 # only via ingestion.rerank.should_rerank). OFF by default: it needs the

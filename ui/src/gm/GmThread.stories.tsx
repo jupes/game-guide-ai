@@ -22,6 +22,7 @@ import {
   OPAQUE_ENTRY,
   QUIET_SESSION,
   SOURCED_ANSWER,
+  SPELL_ANSWER,
   chatEntry,
   toolEntry,
   toolRequest,
@@ -95,6 +96,21 @@ export const LiveStages: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByText('Consulting the tomes…')).toBeVisible()
     await expect(canvas.getByText('The service is busy right now — try again in a moment.')).toBeVisible()
+  },
+}
+
+/** A spell entry hydrated here (a mode chip keeps the conversation) keeps its
+ * usage suggestions, apart from the card (agent-forge-harness-0ru). */
+export const SpellWithSuggestions: Story = {
+  args: {
+    turns: turnsFromTimeline([
+      chatEntry({ entry_id: 'ent_1', mode: 'spell', prompt: 'What does Fireball do?', answer: SPELL_ANSWER }),
+    ]),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('Practical')).toBeVisible()
+    await expect(canvas.getByText('Instantly roast a feast.')).toBeVisible()
   },
 }
 

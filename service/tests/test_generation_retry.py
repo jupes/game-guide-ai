@@ -147,3 +147,55 @@ def test_a_plain_exception_is_not_retried():
             [HumanMessage(content="q")], alias="gpt-4o-mini", client=client, sleep=_RecordingSleep(),
         )
     assert client.calls == 1
+
+
+# A timed-out attempt whose request may have reached the provider may have been
+# billed, so it is not retried (agent-forge-harness-nz78): before, a long answer
+# was billed up to three times and still failed. A timeout that ended the attempt
+# before its request left (a pooled or new connection never came) is retried,
+# as are the other transient errors. The SDK raises APITimeoutError from httpx's
+# own timeout; a streamed body escapes as httpx's timeout itself.
+
+def _sdk_timeout(cause: type[httpx.TimeoutException] | None) -> openai.APITimeoutError:
+    error = openai.APITimeoutError(request=_REQUEST)
+    if cause is not None:
+        error.__cause__ = cause("timed out", request=_REQUEST)
+    return error
+
+
+@pytest.mark.parametrize("error", [
+    pytest.param(lambda: _sdk_timeout(httpx.ReadTimeout), id="read"),
+    pytest.param(lambda: _sdk_timeout(httpx.WriteTimeout), id="write"),
+    pytest.param(lambda: httpx.ReadTimeout("stalled mid-stream", request=_REQUEST), id="streamed-read"),
+    pytest.param(lambda: _sdk_timeout(None), id="cause-unknown"),
+])
+def test_a_timeout_after_the_request_may_have_been_sent_is_not_retried(error):
+    client = _AlwaysFailingClient(error)
+    observer, sleep = _RecordingObserver(), _RecordingSleep()
+    with pytest.raises(openai.APITimeoutError):
+        generate_result(
+            [HumanMessage(content="q")], alias="gpt-4o-mini", client=client,
+            observer=observer, sleep=sleep,
+        )
+    assert client.calls == 1
+    assert sleep.calls == []
+    assert [type(r["error"]) for r in observer.records] == [openai.APITimeoutError]
+
+
+@pytest.mark.parametrize("error", [
+    pytest.param(lambda: _sdk_timeout(httpx.ConnectTimeout), id="connect-timeout"),
+    pytest.param(lambda: _sdk_timeout(httpx.PoolTimeout), id="pool-timeout"),
+    pytest.param(lambda: httpx.ConnectTimeout("no connection", request=_REQUEST), id="bare-connect-timeout"),
+    pytest.param(_connection_error, id="connection-error"),
+    pytest.param(_rate_limit_error, id="rate-limit"),
+    pytest.param(_server_error, id="server-error"),
+])
+def test_an_unsent_timeout_and_the_other_transient_errors_are_still_retried(error):
+    client = _FlakyClient([error(), error()], AIMessage(content="ok"))
+    sleep = _RecordingSleep()
+    result = generate_result(
+        [HumanMessage(content="q")], alias="gpt-4o-mini", client=client, sleep=sleep,
+    )
+    assert result.text == "ok"
+    assert client.calls == 3
+    assert len(sleep.calls) == 2

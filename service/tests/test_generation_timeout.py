@@ -199,21 +199,24 @@ def test_a_silent_provider_times_out_and_releases_the_thread(stalled: Callable[.
 
 
 @pytest.mark.parametrize("drip_s", [None, DRIP_S], ids=["silent", "trickling"])
-def test_a_stream_that_stalls_midway_is_retried_and_recorded_as_a_timeout(
+def test_a_stream_that_stalls_midway_is_not_retried_and_is_recorded_as_a_timeout(
     stalled: Callable[..., StalledProvider], drip_s: float | None,
 ) -> None:
-    provider = stalled(_FIRST_CHUNK, drip_s)  # trickling: each attempt ends at its deadline
+    # Not retried (agent-forge-harness-nz78): its request reached the provider,
+    # which may bill it. Before, all ATTEMPTS were made and billed.
+    provider = stalled(_FIRST_CHUNK, drip_s)  # trickling: the attempt ends at its deadline
     seen = _Recorded()
     client = _Streamed(ProviderClientFactory().client_for(DEFAULT_ALIAS))
     raised = on_own_thread(lambda: generate_module.generate_result(
         [HumanMessage(content="hi")], alias=DEFAULT_ALIAS, client=client, config={"callbacks": [seen]},
         observer=seen,
     ))
-    assert seen.tokens == ["Hel"] * ATTEMPTS  # every attempt stalled after its first chunk
+    assert seen.tokens == ["Hel"]  # the one attempt stalled after its first chunk
     assert isinstance(raised, openai.APITimeoutError)
     assert isinstance(raised.__cause__, httpx.ReadTimeout)
-    assert seen.errors == [openai.APITimeoutError] * ATTEMPTS
-    assert provider.hung_up_on(ATTEMPTS)
+    assert seen.errors == [openai.APITimeoutError]
+    assert provider.hung_up_on(1)
+    assert provider.accepted == 1
 
 
 def test_a_trickling_provider_ends_at_the_attempt_deadline(stalled: Callable[..., StalledProvider]) -> None:
@@ -422,8 +425,9 @@ def test_chat_answers_the_existing_timeout_502_when_the_provider_stalls(
     assert isinstance(response, httpx.Response)
     detail = {"category": "timeout", "retryable": True, "message": _ERROR_DETAIL["timeout"]}
     assert (response.status_code, response.json()) == (502, {"detail": detail})
-    assert provider.hung_up_on(ATTEMPTS)
-    assert provider.accepted == ATTEMPTS
+    # One attempt: a timed-out request may be billed, so it is not retried (nz78).
+    assert provider.hung_up_on(1)
+    assert provider.accepted == 1
 
 
 # ── The turn's budget (agent-forge-harness-0u02) ──────────────────────────────
@@ -470,7 +474,8 @@ class _TimedService(RagService):
 
 
 class _TimesOut:
-    """A client whose every call times out, counted."""
+    """A client whose every call times out while connecting, counted: the one
+    timeout still retried (agent-forge-harness-nz78), as no request was sent."""
 
     def __init__(self) -> None:
         self.calls = 0
@@ -478,7 +483,8 @@ class _TimesOut:
     # justification: LLMClient.invoke's own signature.
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
         self.calls += 1
-        raise openai.APITimeoutError(request=httpx.Request("POST", "https://provider.invalid"))
+        request = httpx.Request("POST", "https://provider.invalid")
+        raise openai.APITimeoutError(request=request) from httpx.ConnectTimeout("connect", request=request)
 
 
 def _chat(svc: RagService, mode: str) -> httpx.Response:
@@ -520,9 +526,10 @@ def test_a_turn_whose_answer_trickles_ends_at_its_budget_with_the_existing_timeo
     response = _chat(svc, "spell")
     detail = {"category": "timeout", "retryable": True, "message": _ERROR_DETAIL["timeout"]}
     assert (response.status_code, response.json()) == (502, {"detail": detail})
-    # One whole attempt, then one cut short at the turn's deadline, not three whole ones.
-    assert provider.hung_up_on(2)
-    assert provider.accepted == 2
+    # One whole attempt, not three: a timed-out request may be billed, so it is
+    # not retried (agent-forge-harness-nz78); the turn's budget still bounds it.
+    assert provider.hung_up_on(1)
+    assert provider.accepted == 1
     assert svc.elapsed < TURN_S + TURN_SLACK_S
 
 

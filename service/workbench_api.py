@@ -457,8 +457,26 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
     carry a lone surrogate, so repeating one was a 500. That failure alone
     answers `redacted_errors` instead, which names the field and never the
     value (bead 5mj); every default that could be sent is sent byte for byte.
+
+    Once answered, the error and every error it chains drop their tracebacks
+    (agent-forge-harness-ust7, review H1). FastAPI's frame holds the error it
+    raised, and the error's traceback holds that frame, so the parsed body in
+    it stayed alive until a full garbage collection, which rarely comes: about
+    27 MB for each 1 MiB body of empty objects.
     """
     assert isinstance(exc, RequestValidationError)
+    try:
+        return await _answer_validation_error(request, exc)
+    finally:
+        link: BaseException | None = exc
+        seen: set[int] = set()
+        while link is not None and id(link) not in seen:
+            seen.add(id(link))
+            link.__traceback__ = None
+            link = link.__cause__ or link.__context__
+
+
+async def _answer_validation_error(request: Request, exc: RequestValidationError) -> Response:
     if not is_workbench_route(request):
         try:
             return await request_validation_exception_handler(request, exc)

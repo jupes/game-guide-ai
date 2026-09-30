@@ -218,3 +218,41 @@ def test_a_timeout_setting_that_would_unbound_or_break_generation_is_refused(mon
     monkeypatch.setenv("RAG_LLM_REQUEST_TIMEOUT_S", raw)
     with pytest.raises(ValueError, match="RAG_LLM_REQUEST_TIMEOUT_S"):
         config._seconds("RAG_LLM_REQUEST_TIMEOUT_S", 60.0)
+
+
+# ---------------------------------------------------------------------------
+# The output cap (agent-forge-harness-nz78). Without one the model's own
+# maximum applied, and a long answer outlasted its attempt's deadline: billed,
+# timed out and failed. Every alias the catalog knows sends the configured cap
+# on every call, the answer, the suggestions and the structuring calls alike
+# (each purpose asks the one client its alias resolves to).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("alias", sorted(CATALOG))
+def test_every_alias_client_caps_the_output_of_every_call_it_sends(monkeypatch, alias):
+    from langchain_core.messages import HumanMessage
+
+    profile = CATALOG[alias]
+    monkeypatch.setenv(profile.secret_env, "sk-test-not-a-real-key")
+    monkeypatch.setattr(config, "LLM_MAX_OUTPUT_TOKENS", 1234)
+    client = ProviderClientFactory()._build(profile)
+    assert client.max_tokens == 1234
+    # What goes on the wire, not only the field: the SDK renames it.
+    assert client._get_request_payload([HumanMessage(content="hi")])["max_completion_tokens"] == 1234
+
+
+def test_the_default_output_cap_is_bounded():
+    assert 1 <= config.LLM_MAX_OUTPUT_TOKENS <= config.MAX_OUTPUT_TOKENS_CEILING
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", str(config.MAX_OUTPUT_TOKENS_CEILING + 1)])
+def test_an_output_cap_that_would_break_or_unbound_generation_is_refused(monkeypatch, raw):
+    monkeypatch.setenv("RAG_LLM_MAX_OUTPUT_TOKENS", raw)
+    with pytest.raises(ValueError, match="RAG_LLM_MAX_OUTPUT_TOKENS"):
+        config._output_tokens("RAG_LLM_MAX_OUTPUT_TOKENS", 2_000)
+
+
+@pytest.mark.parametrize("raw", ["1", "2000", str(config.MAX_OUTPUT_TOKENS_CEILING)])
+def test_an_output_cap_inside_its_bounds_is_taken(monkeypatch, raw):
+    monkeypatch.setenv("RAG_LLM_MAX_OUTPUT_TOKENS", raw)
+    assert config._output_tokens("RAG_LLM_MAX_OUTPUT_TOKENS", 2_000) == int(raw)
