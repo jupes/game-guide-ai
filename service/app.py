@@ -118,6 +118,7 @@ from .security_headers import (
     CROSS_ORIGIN_OPENER_POLICY,
     PERMISSIONS_POLICY,
     REFERRER_POLICY,
+    STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
 )
 from .session import SessionData, decode_session, encode_session
@@ -784,7 +785,8 @@ app.add_middleware(job_driver.JobHookMiddleware, driver=lambda: _state.get("jobs
 @app.middleware("http")
 async def set_security_headers(request: Request, call_next):
     """Send the security headers this app owns on every response it produces
-    (va8, and agent-forge-harness-y58 for the four added after it).
+    (va8, agent-forge-harness-y58 for the four added after it, and
+    agent-forge-harness-5ir1 for Strict-Transport-Security).
 
     A separate middleware rather than two lines inside `capture_chat_metrics`:
     that one returns early for every path that is not `/chat`, so folding the
@@ -814,6 +816,7 @@ async def set_security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", REFERRER_POLICY)
     response.headers.setdefault("Cross-Origin-Opener-Policy", CROSS_ORIGIN_OPENER_POLICY)
     response.headers.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
+    response.headers.setdefault("Strict-Transport-Security", STRICT_TRANSPORT_SECURITY)
     return response
 
 
