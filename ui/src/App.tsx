@@ -3,6 +3,7 @@ import { useAppNav } from './shell/AppNav'
 import { Landing } from './shell/Landing'
 import { WorkspaceShell } from './shell/WorkspaceShell'
 import { ProfilePage } from './shell/ProfilePage'
+import { TavernScreen } from './shell/TavernScreen'
 import { Login } from './shell/Login'
 import { Signup } from './shell/Signup'
 import { useCurrentUser } from './shell/currentUser'
@@ -100,5 +101,6 @@ export default function App(): React.JSX.Element {
 
   if (screen === 'landing') return <Landing />
   if (screen === 'profile') return <ProfilePage />
+  if (screen === 'tavern') return <TavernScreen />
   return <WorkspaceShell />
 }
