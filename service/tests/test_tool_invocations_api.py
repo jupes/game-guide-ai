@@ -1439,7 +1439,49 @@ def test_a7b_what_an_executor_raises_is_logged_by_its_class_only(
     assert logged.endswith(f"error={type(exc).__name__})")
 
 
+@pytest.mark.parametrize("where", ["run", "finish"], ids=["run-refusal", "finish-refusal"])
+def test_a7c_a_refused_results_own_field_is_never_logged(
+        world: World, client: TestClient, caplog: pytest.LogCaptureFixture, where: str) -> None:
+    """M-1 (carry from #205, bead 8frw): `judge_result`'s refusal logs error
+    locations only (`redacted_errors`'s `loc`), never `exc` itself — a
+    produced result can quote the brief or a provider's answer in its own
+    field value, and pydantic's `ValidationError` text echoes that value via
+    `input_value=...` (I-24, SEC-20/21). A canary sitting in an enum field
+    pins this for both call sites: `run`'s own answer is judged in `execute`,
+    and a `finish` answer is judged again in `_finished`."""
+    caplog.set_level(logging.DEBUG)
+    bad = _canary_document()
+    with pytest.raises(ValidationError) as excinfo:
+        tool_invocations._RESULT.validate_python(bad)
+    assert CANARY in str(excinfo.value), "the positive control: the text a leak would log"
+    table = world.table()
+    if where == "run":
+        world.executors[ToolId.NPC].behaviour = lambda ctx: bad
+    else:
+        world.executors[ToolId.NPC].finish = lambda unit, ctx, result: bad  # type: ignore[method-assign]
+    response = post(client, table)
+    assert response.status_code == (200 if where == "run" else 503)
+    if where == "run":
+        answer = response.json()
+        assert (answer["status"], answer["error"]["code"], answer["error"]["retryable"]) == (
+            "failed", "provider_failed", True)
+    assert CANARY not in response.text
+    [logged] = [record.getMessage() for record in caplog.records
+                if record.getMessage().startswith("tool result refused")]
+    for record in caplog.records:
+        assert CANARY not in record.getMessage()
+        assert all(CANARY not in str(arg) for arg in (record.args or ()))
+    assert CANARY not in caplog.text
+    assert logged.endswith("at=[['document', 'document', 'type']])")
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _canary_document() -> dict[str, Any]:
+    """A produced result whose enum field (`document.type`) is invalid: the
+    same shape `judge_result` refuses, with the canary as the bad value."""
+    return npc_result(doc_type=CANARY)
 
 
 def _canary_validation_error() -> ValidationError:
