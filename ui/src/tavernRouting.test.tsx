@@ -675,3 +675,131 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })
 })
+
+describe('tavern visits and account changes (74j, H-3)', () => {
+  it('T-4b revisiting /tavern never flashes the empty state while the list reloads (kills M-34)', async () => {
+    let getCount = 0
+    let held: Call | null = null
+    const route: Route = (c) => {
+      if (c.method === 'GET' && c.url === '/campaigns') {
+        getCount += 1
+        if (getCount === 2) { held = c; return 'defer' }
+      }
+      return defaultRoute(c)
+    }
+    bootProbed('/tavern', { route })
+    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await userEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
+    const n = getCount
+
+    const a = watch('Name of cmp_A')
+    const e = watch('Create your first campaign')
+    openTavern()
+    await waitFor(() => expect(getCount).toBe(n + 1))
+
+    act(() => { held?.reply({ status: 200, body: page([campaignBody('cmp_A'), campaignBody('cmp_B')]) }) })
+    await screen.findByRole('button', { name: 'Name of cmp_B' })
+    const aResult = a()
+    const eResult = e()
+    expect(aResult.batches).toBeGreaterThanOrEqual(1)
+    expect(aResult.present).toBe(aResult.batches)
+    expect(eResult.added).toBe(0)
+    expect(eResult.present).toBe(0)
+  })
+
+  it('T-4c a 401 on the campaigns read drops to Login without a loop; signing back in makes no second read (kills M-43)', async () => {
+    const route: Route = (c) => (c.method === 'GET' && c.url === '/campaigns' ? { status: 401 } : defaultRoute(c))
+    const server = boot('/tavern', { route })
+    await screen.findByRole('button', { name: /sign in/i })
+    await flush()
+    expect(server.calls.filter((c) => c.url === '/campaigns')).toHaveLength(1)
+    vi.spyOn(api, 'login').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+    await userEvent.type(screen.getByLabelText('Email'), 'ada@example.com')
+    await userEvent.type(screen.getByLabelText('Password'), 'pw')
+    await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    await flush()
+    expect(server.calls.filter((c) => c.url === '/campaigns')).toHaveLength(1)
+  })
+
+  it("T-5b signing in as a player over a parked tavern history entry never re-requests it (kills M-7)", async () => {
+    const server = bootProbed('/')
+    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    openTavern()
+    await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
+    await userEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
+    const L1 = window.history.length
+    const mark = server.calls.length
+
+    act(() => { live.user.signIn({ email: 'bob@example.com', role: 'player' }) })
+    await screen.findByRole('button', { name: 'Enter the Tavern' })
+    const L2 = window.history.length
+
+    const popped: string[] = []
+    const onPopState = (): void => { popped.push(window.location.pathname) }
+    window.addEventListener('popstate', onPopState)
+    act(() => { window.history.go(L2 === L1 + 1 ? -2 : -1) })
+    await waitFor(() => expect(popped).toContain('/tavern'))
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    window.removeEventListener('popstate', onPopState)
+
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    expect(window.history.length).toBe(L2)
+    expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
+  })
+
+  it("T-13a an account switch never shows the previous account's campaign, even for one frame (kills M-21)", async () => {
+    let owner = 'ada'
+    const route: Route = (c) => (c.method === 'GET' && c.url === '/campaigns'
+      ? { status: 200, body: page([campaignBody(owner === 'ada' ? 'cmp_A' : 'cmp_B')]) }
+      : defaultRoute(c))
+    const server = bootProbed('/tavern', { route })
+    await screen.findByRole('button', { name: 'Name of cmp_A' })
+
+    const mark = server.calls.length
+    const w = watch('Name of cmp_A')
+    owner = 'bob'
+    act(() => { live.user.signIn({ email: 'bob@example.com', role: 'dm' }) })
+    await screen.findByText('Enter the Tavern')
+
+    const result = w()
+    expect(result.batches).toBeGreaterThanOrEqual(1)
+    expect(result.present).toBe(0)
+    expect(result.added).toBe(0)
+    expect(server.calls.slice(mark).some((c) => c.url.includes('cmp_A') || (c.body ?? '').includes('cmp_A'))).toBe(false)
+  })
+
+  it('T-13b a role change at /tavern (same account) resets mode and leaves without a history entry (kills M-41 and M-42)', async () => {
+    const server = bootProbed('/')
+    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
+    openTavern()
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    const len = window.history.length
+    const mark = server.calls.length
+
+    act(() => { live.user.signIn({ email: 'ada@example.com', role: 'player' }) })
+    await screen.findByText('Enter the Tavern')
+
+    expect(live.nav.mode).toBe('sage')
+    expect(window.history.length).toBe(len)
+    expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
+  })
+
+  it('T-29 a cold /tavern load never flashes the empty state while the first read is in flight (kills M-40)', async () => {
+    let held: Call | null = null
+    const route: Route = (c) => {
+      if (c.method === 'GET' && c.url === '/campaigns') { held = c; return 'defer' }
+      return defaultRoute(c)
+    }
+    const w = watch('Create your first campaign')
+    boot('/tavern', { route })
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    act(() => { held?.reply({ status: 200, body: page([campaignBody('cmp_A')]) }) })
+    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    const result = w()
+    expect(result.batches).toBeGreaterThanOrEqual(1)
+    expect(result.added).toBe(0)
+    expect(result.present).toBe(0)
+  })
+})
