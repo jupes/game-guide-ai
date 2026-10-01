@@ -47,6 +47,15 @@ dependencies = [
     # The capability ships OFF (WORKBENCH_MEDIA_ENABLED, Q-5); ffmpeg, the audio
     # half, is a system binary that 1kg.9.5 installs in the images.
     "pillow>=12.3,<13",
+    # Sign in with Google (lvs7): the OIDC callback verifies Google's ID token and
+    # exchanges the authorization code at request time, so both are core, like
+    # argon2 and itsdangerous. google-auth is Google's own library, already
+    # locked at 2.59.0 through the [gcs] extra; it pulls only cryptography and
+    # pyasn1-modules, and the service uses its X.509 certificate path, which
+    # needs no PyJWT. httpx was a transitive of openai that service code now
+    # imports directly on a request path (service/google_oidc.py).
+    "google-auth>=2.59,<3",
+    "httpx>=0.28,<1",
 ]
 
 [project.optional-dependencies]

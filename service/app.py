@@ -47,6 +47,7 @@ from . import (
     document_lifecycle_api,
     documents_api,
     gcp_logging,
+    google_signin_api,
     groups_api,
     job_driver,
     media_objects,
@@ -701,6 +702,33 @@ def _set_session_cookie(response: Response, token: str) -> None:
         samesite=config.SESSION_COOKIE_SAMESITE,
         path="/",
     )
+
+
+def _optional_session_user(request: Request, store: AuthStore) -> User | None:
+    """`require_session` without the 401: the account this request's session
+    cookie belongs to, re-read from the store as `require_session` does, or None
+    for no cookie, a bad or expired one, or an account that no longer exists.
+
+    For Sign in with Google (lvs7), whose start and callback routes serve
+    signed-out visitors and signed-in ones alike. Stashes the account on
+    `request.state.auth_user`, as `require_session` does, because the SEC-40
+    re-authentication reads it from there. A store outage is `_auth_lookup`'s 503.
+    """
+    token = request.cookies.get(config.SESSION_COOKIE_NAME)
+    if not token:
+        return None
+    session = decode_session(token, _session_secret(), config.SESSION_TTL_DAYS * 86400)
+    if session is None:
+        return None
+    user = _auth_lookup(f"session user lookup (user_id={session.user_id})",
+                        lambda: store.get_user_by_id(session.user_id))
+    if user is not None:
+        request.state.auth_user = user
+    return user
+
+
+def _encode_user_session(user: User, secret: str) -> str:
+    return encode_session(SessionData(user_id=user.id, role=user.role), secret)
 
 
 #: Set on every 429 the auth limiter raises, and on no other response. It exists
@@ -1960,6 +1988,20 @@ app.include_router(groups_api.build_router(WORKBENCH_GM, get_timeline_database, 
 
 
 app.include_router(job_driver.build_router(_job_driver))
+# Sign in with Google (lvs7). OFF unless configured: every route 404s until then.
+app.include_router(
+    google_signin_api.build_router(
+        google_signin_api.GoogleDeps(
+            get_auth_store=get_auth_store,
+            session_secret=_session_secret,
+            set_session_cookie=_set_session_cookie,
+            encode_session=_encode_user_session,
+            optional_user=_optional_session_user,
+            reauthenticate=reauthenticate,
+            backend_errors=_AUTH_BACKEND_ERRORS,
+        )
+    )
+)
 # Mount the pre-built UI last, as an ALLOWLIST fallback, not a catch-all
 # (agent-forge-harness-y40) -- see service/spa_fallback.py for what each path
 # answers and why the order matters. Only active when `cd ui && bun run build`

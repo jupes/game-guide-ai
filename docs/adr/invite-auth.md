@@ -14,6 +14,8 @@ Status: accepted · 2026-07-25 · **to be superseded** — see the note below
 > accounts or payment. The decisions are recorded in the billing plan, section
 > "Owner decisions 2026-09-21", and in the Workbench interactions record, A-23
 > to A-25.
+>
+> Extended by `google-sign-in.md`.
 
 ## Context
 

@@ -338,3 +338,148 @@ def test_deploy_dry_run_prints_commands_without_executing() -> None:
     out = result.stdout
     assert "gcloud run deploy" in out, "dry-run must print the gcloud run deploy command"
     assert "access=" in out, "the plan must state which IAM mode it resolved to"
+
+
+# ── Sign in with Google (lvs7) ───────────────────────────────────────────────
+
+GOOGLE_ID = "123456789012-testclient.apps.googleusercontent.com"
+GOOGLE_REDIRECT = "https://game-guide-ai-example.us-central1.run.app/auth/google/callback"
+
+
+def _dry_run(**env: str) -> subprocess.CompletedProcess[str]:
+    """`deploy.sh --dry-run` with a clean Google environment plus `env`."""
+    bash = _bash_or_skip()
+    base = {k: v for k, v in os.environ.items() if not k.startswith("GOOGLE_OAUTH")}
+    return subprocess.run(
+        [bash, str(DEPLOY_SH), "--dry-run"],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT, env={**base, **env},
+    )
+
+
+def _flag(plan: str, name: str) -> str:
+    found = re.search(rf"{re.escape(name)} (\S+)", plan)
+    assert found, f"the plan prints no {name}"
+    return found.group(1)
+
+
+def test_google_is_off_by_default_and_the_plan_carries_nothing_for_it() -> None:
+    result = _dry_run()
+    assert result.returncode == 0, result.stderr
+    assert "google=off" in result.stdout
+    assert "GOOGLE_OAUTH" not in _flag(result.stdout, "--set-secrets")
+    assert "GOOGLE_OAUTH" not in _flag(result.stdout, "--set-env-vars")
+
+
+def test_google_on_carries_the_secret_by_reference_and_the_id_and_uri_as_env() -> None:
+    """The secret is a --set-secrets reference, never a value and never an env var;
+    both flags REPLACE the service's whole set on every deploy, so they live HERE."""
+    result = _dry_run(GOOGLE_OAUTH_CLIENT_ID=GOOGLE_ID, GOOGLE_OAUTH_REDIRECT_URI=GOOGLE_REDIRECT)
+    assert result.returncode == 0, result.stderr
+    secrets = _flag(result.stdout, "--set-secrets")
+    env = _flag(result.stdout, "--set-env-vars")
+    assert "google=on" in result.stdout
+    assert secrets.endswith(",GOOGLE_OAUTH_CLIENT_SECRET=google-oauth-client-secret:latest")
+    assert "SESSION_SECRET=session-secret:latest" in secrets, "the existing references are kept"
+    assert env.endswith(f",GOOGLE_OAUTH_CLIENT_ID={GOOGLE_ID},GOOGLE_OAUTH_REDIRECT_URI={GOOGLE_REDIRECT}")
+    assert "AUTH_TRUSTED_PROXY_HOPS=1" in env
+    assert "GOOGLE_OAUTH_CLIENT_SECRET" not in env
+
+
+def test_the_secret_name_is_configurable_and_still_a_name() -> None:
+    result = _dry_run(
+        GOOGLE_OAUTH_CLIENT_ID=GOOGLE_ID, GOOGLE_OAUTH_REDIRECT_URI=GOOGLE_REDIRECT,
+        GOOGLE_OAUTH_CLIENT_SECRET_SECRET="my-google-secret",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GOOGLE_OAUTH_CLIENT_SECRET=my-google-secret:latest" in _flag(result.stdout, "--set-secrets")
+
+
+@pytest.mark.parametrize(
+    ("env", "named"),
+    [
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": "not-a-google-id", "GOOGLE_OAUTH_REDIRECT_URI": GOOGLE_REDIRECT},
+            "GOOGLE_OAUTH_CLIENT_ID", id="bad-client-id",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": "a,b.apps.googleusercontent.com", "GOOGLE_OAUTH_REDIRECT_URI": GOOGLE_REDIRECT},
+            "GOOGLE_OAUTH_CLIENT_ID", id="comma-in-client-id",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": GOOGLE_ID, "GOOGLE_OAUTH_REDIRECT_URI": ""},
+            "GOOGLE_OAUTH_REDIRECT_URI", id="id-without-uri",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": "", "GOOGLE_OAUTH_REDIRECT_URI": GOOGLE_REDIRECT},
+            "GOOGLE_OAUTH_CLIENT_ID", id="uri-without-id",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": GOOGLE_ID, "GOOGLE_OAUTH_REDIRECT_URI": "http://x.run.app/auth/google/callback"},
+            "GOOGLE_OAUTH_REDIRECT_URI", id="http-uri",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": GOOGLE_ID, "GOOGLE_OAUTH_REDIRECT_URI": "https://x.run.app/auth/google/other"},
+            "GOOGLE_OAUTH_REDIRECT_URI", id="wrong-path",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": GOOGLE_ID, "GOOGLE_OAUTH_REDIRECT_URI": "https://x.run.app,y/auth/google/callback"},
+            "GOOGLE_OAUTH_REDIRECT_URI", id="comma-in-uri",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": GOOGLE_ID, "GOOGLE_OAUTH_REDIRECT_URI": GOOGLE_REDIRECT + " "},
+            "GOOGLE_OAUTH_REDIRECT_URI", id="space-in-uri",
+        ),
+        pytest.param(
+            {"GOOGLE_OAUTH_CLIENT_ID": GOOGLE_ID, "GOOGLE_OAUTH_REDIRECT_URI": "https://x.run.app=/auth/google/callback"},
+            "GOOGLE_OAUTH_REDIRECT_URI", id="equals-in-uri",
+        ),
+    ],
+)
+def test_a_malformed_google_value_fails_the_deploy_naming_the_variable(env: dict[str, str], named: str) -> None:
+    result = _dry_run(**env)
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert named in result.stderr
+    assert "gcloud run deploy" not in result.stdout, "nothing is planned, let alone run"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["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cret", "1starts-with-digit", "has space", "has,comma", "a=b", "x" * 256],
+)
+def test_a_secret_name_that_could_be_a_secret_is_refused_and_never_printed(name: str) -> None:
+    """The repository is public, so Actions logs are public and `run` prints whole
+    commands: a client secret pasted into the NAME variable would be printed."""
+    result = _dry_run(
+        GOOGLE_OAUTH_CLIENT_ID=GOOGLE_ID, GOOGLE_OAUTH_REDIRECT_URI=GOOGLE_REDIRECT,
+        GOOGLE_OAUTH_CLIENT_SECRET_SECRET=name,
+    )
+    assert result.returncode == 2
+    assert "GOOGLE_OAUTH_CLIENT_SECRET_SECRET" in result.stderr
+    assert name not in result.stdout and name not in result.stderr
+
+
+def test_the_client_secret_itself_in_the_deploy_environment_is_refused_and_never_printed() -> None:
+    leaked = "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-value"
+    result = _dry_run(
+        GOOGLE_OAUTH_CLIENT_ID=GOOGLE_ID, GOOGLE_OAUTH_REDIRECT_URI=GOOGLE_REDIRECT,
+        GOOGLE_OAUTH_CLIENT_SECRET=leaked,
+    )
+    assert result.returncode == 2
+    assert "GOOGLE_OAUTH_CLIENT_SECRET" in result.stderr
+    assert leaked not in result.stdout and leaked not in result.stderr
+    # Even with the feature off: the value has no business being in this environment.
+    assert _dry_run(GOOGLE_OAUTH_CLIENT_SECRET=leaked).returncode == 2
+
+
+def test_the_google_suffixes_are_conditional_and_the_old_contract_lines_are_intact() -> None:
+    """Guards the TEXT too: an unconditional suffix would be invisible to an
+    off-run test only if it were empty, and a literal secret reference in the flag
+    line would turn every deploy of an unconfigured service red."""
+    text = _read(DEPLOY_SH)
+    lines = text.splitlines()
+    secrets_line = next(line for line in lines if "--set-secrets" in line and "SESSION_SECRET=" in line)
+    env_line = next(line for line in lines if "--set-env-vars" in line and "AUTH_TRUSTED_PROXY_HOPS" in line)
+    assert "${GOOGLE_SECRET_REF}" in secrets_line and "GOOGLE_OAUTH_CLIENT_SECRET" not in secrets_line
+    assert "${GOOGLE_ENV}" in env_line and "GOOGLE_OAUTH" not in env_line
+    assert not re.search(r"--set-env-vars[^\n]*GOOGLE_OAUTH_CLIENT_SECRET=", text)
+    assert not re.search(r"--set-env-vars[^\n]*(OPENAI_API_KEY|SESSION_SECRET)=", text)

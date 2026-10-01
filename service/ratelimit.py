@@ -136,6 +136,15 @@ source_limiter = _build(
     config.AUTH_RATE_LIMIT_PER_SOURCE, config.AUTH_RATE_LIMIT_WINDOW_S,
     "AUTH_RATE_LIMIT_PER_SOURCE", "AUTH_RATE_LIMIT_WINDOW_S",
 )
+# Sign in with Google's own source budget (lvs7, Critic C-3). Same numbers as
+# `source_limiter` and no new variable, but a SEPARATE table: the start route and
+# the callback can be driven cross-site with no user action (an <img src> is
+# enough), so if they spent the login budget, a page could lock one IP out of
+# password sign-in, a whole school or office NAT included.
+google_source_limiter = _build(
+    config.AUTH_RATE_LIMIT_PER_SOURCE, config.AUTH_RATE_LIMIT_WINDOW_S,
+    "AUTH_RATE_LIMIT_PER_SOURCE", "AUTH_RATE_LIMIT_WINDOW_S",
+)
 
 # The chat budget (x5bz.3) is a cost control, not an abuse control: the caller is
 # already authenticated and invited, so one limiter keyed on identity is the
@@ -162,6 +171,7 @@ if config.AUTH_TRUSTED_PROXY_HOPS < 0:
 def reset_all() -> None:
     account_limiter.reset()
     source_limiter.reset()
+    google_source_limiter.reset()
     chat_user_limiter.reset()
     workbench_write_limiter.reset()
 
@@ -238,6 +248,15 @@ def check_auth_attempt(request, account: str) -> None:
     """Throttle one auth attempt, or raise RateLimited. Call BEFORE hashing."""
     source_limiter.check(client_source(request))
     account_limiter.check(account.strip().lower())
+
+
+def check_auth_source(request) -> None:
+    """Spend one token of this source's Sign in with Google budget, or raise
+    RateLimited. Source only, on its own table (`google_source_limiter`): there
+    is no account to key on before the caller has proved a Google identity, and a
+    constant account key would turn the per-account budget into one global bucket
+    for every Google start."""
+    google_source_limiter.check(client_source(request))
 
 
 def check_chat_request(user_id: int) -> None:
