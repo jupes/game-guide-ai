@@ -9,7 +9,9 @@
  * change would either silently diverge from what the server already
  * committed to, or (with the /chat 409 guard, b8o.2 slice 2-3) simply fail.
  * Disabled with no active conversation — nothing to bind a preference to yet
- * (mirrors ChatPane's own attachment-button gating on conversationId).
+ * (mirrors ChatPane's own attachment-button gating on conversationId) — and
+ * for one the local store does not hold, such as a campaign's GM thread
+ * (1kg.2.5 critic 16): a pick there binds nothing; its turns send the default.
  */
 
 import * as React from 'react'
@@ -99,7 +101,7 @@ export function ModelPicker({
       <select
         className="model-picker__select"
         value={value}
-        disabled={conversationId === null}
+        disabled={conversationId === null || conversation === undefined}
         onChange={(e) => handleChange(e.target.value)}
         aria-label="Model"
       >

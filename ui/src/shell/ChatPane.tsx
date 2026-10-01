@@ -38,8 +38,11 @@ import { parseDiceNotation } from './diceNotation'
 import { EMPTY_LABELS } from './modes'
 import {
   getAttachments as defaultGetAttachments,
+  postChat,
   uploadAttachment as defaultUploadAttachment,
 } from '../api'
+import { useCampaign } from './campaignContext'
+import { useCampaignThreads } from './campaignThreads'
 import type {
   Attachment,
   AttachmentsResult,
@@ -95,6 +98,23 @@ function chatPromptCounterMessage(length: number): string {
   return `${length} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`
 }
 
+// ── Campaign GM threads (agent-forge-harness-1kg.2.5, PR-2) ──────────────────
+// In the GM channel with a campaign in any state, a turn is the campaign's
+// (brief section 7.7, critic 5). A campaign that is not usable yet sends
+// nothing -- no /chat, no thread -- and says what to do next; the prompt stays
+// on screen as the failed exchange (STATE-1), announced by the pane's one
+// announcer like any failed turn. Copy constants `cub` may replace.
+const CAMPAIGN_NOT_READY = {
+  restoring: 'The campaign is still loading. Nothing was sent — try again in a moment.',
+  failed: "Couldn't load the campaign. Nothing was sent — use Retry, or Continue without a campaign.",
+  unavailable: "That campaign isn't available. Nothing was sent — choose Continue without a campaign to use GM chat.",
+} as const
+const THREAD_NOT_STARTED = "Couldn't start a GM thread. Nothing was sent — try again."
+
+/** `useChat`'s own default turn, for the campaign wrapper to post through. */
+const postTurn: PostFn = (prompt, mode, conversationId, modelPreference) =>
+  postChat(prompt, mode, conversationId, undefined, modelPreference)
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 /** 1kg.3.4: the GM channel's history is the typed timeline, not `/messages`. */
@@ -128,7 +148,30 @@ export function ChatPane(props: ChatPaneProps): React.JSX.Element {
   const [held, setHeld] = React.useState<Side | null>(null)
   const side: Side = held ?? (mode === 'gm' ? 'gm' : 'chat')
   const holdWhilePending = React.useCallback((pending: boolean) => setHeld(pending ? side : null), [side])
-  return <ChatPaneBody key={side} {...props} side={side} onPendingChange={holdWhilePending} />
+  // 1kg.2.5 PR-2 (review pr212 H-2): on the GM side with a campaign in any
+  // state, the pane belongs to that campaign's scope alone. A switch, a clear
+  // or a pick remounts it, so nothing of the scope it left -- a failed first
+  // turn, or one still in flight -- is drawn under the next (brief section 14,
+  // I-13). Read off the held side, so leaving GM still never drops a turn.
+  // Review pr212 M-1: `unavailable` names no campaign (SEC-3) and is no switch
+  // of its own -- a restore refused, or a thread create refused mid-send -- so
+  // the pane stays the one it was drawn over: a refused turn keeps its prompt
+  // and its announced failure until the next pick or a clear.
+  const { selection, scope } = useCampaign()
+  const owner = selection.kind === 'none' || selection.kind === 'unavailable'
+    ? null
+    : scope?.key ?? ('campaignId' in selection ? selection.campaignId : selection.kind)
+  const [kept, setKept] = React.useState(owner)
+  if (owner !== null && owner !== kept) setKept(owner)
+  const campaign = side !== 'gm' || selection.kind === 'none' ? null : owner ?? kept ?? selection.kind
+  return (
+    <ChatPaneBody
+      key={campaign === null ? side : `${side}:${campaign}`}
+      {...props}
+      side={side}
+      onPendingChange={holdWhilePending}
+    />
+  )
 }
 
 interface ChatPaneBodyProps extends ChatPaneProps {
@@ -189,8 +232,32 @@ function ChatPaneBody({
     },
     [],
   )
+  // A campaign thread is created on its first send, with no title, and reused
+  // by the next send until a turn in it is opened (I-12); the id the turn went
+  // to is the one useChat adopts. A campaign thread's prompt never reaches the
+  // local store (RAIL-26: `handleSend` below).
+  const { selection, scope, isCurrentScope } = useCampaign()
+  const { ensureThread } = useCampaignThreads()
+  const campaignPost = React.useMemo<PostFn | undefined>(() => {
+    if (mode !== 'gm' || selection.kind === 'none') return undefined
+    const base = post ?? postTurn
+    const state = selection.kind
+    const key = scope?.key ?? null
+    return async (prompt, turnMode, id, preference) => {
+      if (state !== 'selected') return { kind: 'error', message: CAMPAIGN_NOT_READY[state] }
+      const thread = id ?? (await ensureThread())
+      if (thread === null) return { kind: 'error', message: THREAD_NOT_STARTED }
+      const result = await base(prompt, turnMode, thread, preference)
+      if (result.kind !== 'ok') return result
+      // Review pr212 H-2: an answer that lands after its scope was left names
+      // no conversation, so useChat never adopts the old campaign's thread
+      // into the stored id; the remount above has already dropped the turn.
+      const current = key !== null && isCurrentScope(key)
+      return { ...result, response: { ...result.response, conversation_id: current ? thread : null } }
+    }
+  }, [mode, selection.kind, scope, isCurrentScope, post, ensureThread])
   const { exchanges, send, pending, inFlight, historyError, loadingHistory } = useChat({
-    post,
+    post: campaignPost ?? post,
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
@@ -376,9 +443,10 @@ function ChatPaneBody({
     // The same gate as Send's `disabled`, so Enter never clears a draft that
     // `send` would refuse (1kg.3.5, I-14).
     if (!trimmed || sendBlocked || overLength) return
-    if (conversationId !== null) {
+    if (conversationId !== null && campaignPost === undefined) {
       // bta: record what this first turn binds the conversation to — the same
-      // value `send` posts below, both read from this render.
+      // value `send` posts below, both read from this render. Never for a
+      // campaign's turn (RAIL-26): its prompt stays out of web storage.
       conversationStore.recordFirstPrompt(conversationId, trimmed, modelPreference)
     }
     // agent-forge-harness-ekf / agent-forge-harness-4oz: nothing else ever
@@ -389,7 +457,7 @@ function ChatPaneBody({
     setArrival(PENDING_ANNOUNCEMENT)
     send(trimmed)
     setDraft('')
-  }, [conversationId, conversationStore, draft, modelPreference, overLength, sendBlocked, send])
+  }, [campaignPost, conversationId, conversationStore, draft, modelPreference, overLength, sendBlocked, send])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
