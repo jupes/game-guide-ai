@@ -543,10 +543,11 @@ def test_h2_n5c_the_loot_validation_chain_is_suppressed(world: World) -> None:
 def test_h2_route_level_canary_never_reaches_logs_or_responses(
     world: World, client: TestClient, caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The GM's brief, and the rules corpus text and label the server
-    retrieves, must never surface in a log record or a response body — across
-    a parse failure, both `not_in_sources` paths, a provider error and a
-    success."""
+    """The GM's brief, the model's own produced text, and the rules corpus
+    text and label the server retrieves, must never surface in a log record
+    — across a parse failure, both `not_in_sources` paths, a provider error,
+    and two successes (so the produced/passage logging paths are exercised,
+    not just the refusal ones)."""
     caplog.set_level(logging.DEBUG)
     canary = fx.CANARY
     table = world.table()
@@ -554,11 +555,14 @@ def test_h2_route_level_canary_never_reaches_logs_or_responses(
     def tainted_brief(tool: ToolId) -> str:
         return f"{_BRIEFS[tool]} {canary}"
 
-    world.llm.script = [good(ToolId.MONSTER)]
+    # (a) success: the canary rides in the model's own produced field text.
+    tainted_monster = fx.envelope(ToolId.MONSTER, stat_block={**fx.MONSTER_FIELDS, "name": f"Grix {canary}"})
+    world.llm.script = [tainted_monster]
     ok = post(client, table, "inv_h2_ok", tool=ToolId.MONSTER, brief=tainted_brief(ToolId.MONSTER)).json()
     assert ok["status"] == "done"
 
-    world.llm.script = ["not json"]
+    # (d) a parse failure: the canary is in the unparseable text itself.
+    world.llm.script = ["not json " + canary]
     bad = post(client, table, "inv_h2_bad", tool=ToolId.LOOT, brief=tainted_brief(ToolId.LOOT)).json()
     assert bad["status"] == "failed"
 
@@ -578,17 +582,85 @@ def test_h2_route_level_canary_never_reaches_logs_or_responses(
     gate_miss = post(client, table, "inv_h2_gate", tool=ToolId.RULES, brief=tainted_brief(ToolId.RULES)).json()
     assert (gate_miss["status"], gate_miss["error"]["code"]) == ("failed", "not_in_sources")
 
-    world.rag = FakeRag(FakeRetriever(_result()))
-    world.llm.script = [json.dumps({"rules": {"title": "T", "answer": "An answer."}, "cited": [99]})]
+    # (b) a cited-list miss: unlike the gate, this reaches generation, so the
+    # retrieved passage text/label AND the model's own answer text are both
+    # tainted, and both must still never reach a log.
+    cited_chunk = _chunk(2)
+    cited_miss_result = RetrievalResult(
+        chunks=[cited_chunk], full_texts={cited_chunk.chunk_id: f"a synthetic passage about {canary}"},
+        top1_distance=0.1, answerable=True, book_by_id={cited_chunk.chunk_id: f"synthetic-5e {canary}"},
+    )
+    world.rag = FakeRag(FakeRetriever(cited_miss_result))
+    world.llm.script = [json.dumps({"rules": {"title": "T", "answer": f"An answer {canary}."}, "cited": [99]})]
     cited_miss = post(client, table, "inv_h2_cited", tool=ToolId.RULES, brief=tainted_brief(ToolId.RULES)).json()
     assert (cited_miss["status"], cited_miss["error"]["code"]) == ("failed", "not_in_sources")
+
+    # (c) a rules SUCCESS: cited [1] so the tainted passage/label actually
+    # reaches generation and a card is produced from it — the only path that
+    # exercises both the passages-log site (card_executors) and the
+    # produced-outcome log site (card_generation) with corpus text.
+    success_chunk = _chunk(3)
+    rules_success_result = RetrievalResult(
+        chunks=[success_chunk], full_texts={success_chunk.chunk_id: f"A held creature's speed becomes 0. {canary}"},
+        top1_distance=0.1, answerable=True, book_by_id={success_chunk.chunk_id: f"synthetic-5e {canary}"},
+    )
+    world.rag = FakeRag(FakeRetriever(rules_success_result))
+    world.llm.script = [json.dumps({"rules": {"title": "T", "answer": f"The speed becomes 0. {canary} [1]"},
+                                     "cited": [1]})]
+    rules_ok = post(client, table, "inv_h2_rules_ok", tool=ToolId.RULES, brief=tainted_brief(ToolId.RULES)).json()
+    assert rules_ok["status"] == "done"
 
     for record in caplog.records:
         assert canary not in record.getMessage(), record.getMessage()
         assert canary not in repr(record.args)
-    for inv in ("inv_h2_ok", "inv_h2_bad", "inv_h2_provider", "inv_h2_gate", "inv_h2_cited"):
+    # The two successes legitimately echo the produced text in their own
+    # response body (that is the point of a card); only the refusal paths
+    # must never show the canary in their response.
+    for inv in ("inv_h2_bad", "inv_h2_provider", "inv_h2_gate", "inv_h2_cited"):
         status = client.get(f"/campaigns/{table.campaign}/tool-invocations/{_wire_id(inv)}")
         assert canary not in status.text, (inv, status.text)
+    for inv in ("inv_h2_ok", "inv_h2_rules_ok"):
+        status = client.get(f"/campaigns/{table.campaign}/tool-invocations/{_wire_id(inv)}")
+        assert status.json()["status"] == "done", (inv, status.text)
+
+
+def test_h2_generation_exceptions_never_carry_the_canary() -> None:
+    """`generate_card`'s own raised exceptions — `InvalidCardOutput` on the
+    parse-failure path and `NotInSources` on the citation-miss path — must
+    never carry the canary in `str`, `repr`, the `__context__`/`__cause__`
+    chain, or a rendered traceback. The route-level test above only ever
+    sees the executor's translated `OutputRefused`/`failed` envelope; this
+    calls the generation layer directly so the raw exception is inspected."""
+    canary = fx.CANARY
+
+    def raised(tool: ToolId, script: list[Any], passages: tuple[cg.CorpusPassage, ...] = ()) -> BaseException:
+        llm = ScriptedLLM()
+        llm.script = script
+        request = cg.CardRequest(tool, f"brief {canary}", passages)
+        try:
+            cg.generate_card(request, client=llm, alias=DEFAULT_ALIAS, config=None, max_attempts=1)
+        except (cg.InvalidCardOutput, cg.NotInSources) as exc:
+            return exc
+        raise AssertionError("expected generate_card to raise")
+
+    def assert_clean(exc: BaseException) -> None:
+        assert canary not in str(exc)
+        assert canary not in repr(exc)
+        assert canary not in repr(exc.__context__)
+        assert canary not in repr(exc.__cause__)
+        rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        assert canary not in rendered
+
+    assert_clean(raised(ToolId.MONSTER, ["not json " + canary]))
+    tainted_passage = cg.CorpusPassage(
+        text=f"A held creature's speed becomes 0. {canary}",
+        source=Source(book=f"synthetic-5e {canary}", chapter="Conditions", section="S1", page=1, snippet="s"),
+    )
+    assert_clean(raised(
+        ToolId.RULES,
+        [json.dumps({"rules": {"title": "T", "answer": f"An answer {canary}."}, "cited": [99]})],
+        passages=(tainted_passage,),
+    ))
 
 
 # ── M-1: EMBED_WORST_S is pinned to the retriever's own backoff constant ────
