@@ -222,6 +222,7 @@ class EditTarget:
     type_version: int
     #: ``stored_json(writable(record))`` — the whole document, so a field or
     #: selection edit can still see its read-only context.
+    # justification: stored document data is bare JSON of each field's kind.
     data: Mapping[str, Any] = field(repr=False)
     scope: DocumentScope | FieldScope | SelectionScope = field(repr=False)
     instruction: TextInstruction | ActionInstruction = field(repr=False)
@@ -232,6 +233,7 @@ class EditProposal:
     """What changed, confined to the scope and re-validated (SEC-33). ``fields``
     is a read-only mapping, so a later caller cannot widen it by mutation (I-28)."""
 
+    # justification: the validated diff, bare JSON of each field's kind.
     fields: Mapping[str, Any] = field(repr=False)
     changed: tuple[str, ...]
     usage: GenerationUsage | None = None
@@ -312,6 +314,7 @@ def check_scope(target: EditTarget) -> EditRefusal | None:
 
 
 def _inert_deep(value: Any) -> Any:
+    # justification: a payload value is bare JSON, walked recursively by shape.
     """``_inert`` at every depth: an entry list's names and texts included."""
     if isinstance(value, str):
         return _inert(value)
@@ -323,6 +326,7 @@ def _inert_deep(value: Any) -> Any:
 
 
 def _context(target: EditTarget, *, reduced: bool) -> dict[str, Any]:
+    # justification: the returned context is bare JSON of each field's kind.
     """The read-only context beside a field or selection edit: every other
     AI-editable key present, or — over the bound — just ``name`` and
     ``qualifier`` (I-9)."""
@@ -340,6 +344,7 @@ def _instruction_payload(instruction: TextInstruction | ActionInstruction) -> tu
 
 
 def _payload(target: EditTarget, *, reduced: bool) -> dict[str, Any]:
+    # justification: the returned payload is bare JSON, sent verbatim to the model.
     text, action = _instruction_payload(target.instruction)
     scope = target.scope
     if isinstance(scope, DocumentScope):
@@ -431,6 +436,7 @@ def _document_label(doc_type: DocumentTypeId) -> str:
 
 
 def _edit_field_line(entry: Any) -> str:
+    # justification: the registry's FieldSpec, which this module only reads.
     low, high = entry.bounds or (INTEGER_FIELD_MIN, INTEGER_FIELD_MAX)
     limits = _KIND_LIMITS[entry.kind]
     limits = limits.format(low=low, high=high) if entry.kind is FieldKind.INTEGER else limits
@@ -483,6 +489,12 @@ def build_edit_messages(
         if nonce and nonce not in body:
             break
     else:
+        # Three colliding nonces reuse TOO_LARGE rather than a dedicated code (unlike
+        # 1kg.5.4's GenerationRefusal.INVALID_CONTEXT for the same exhaustion): this
+        # module has no analogous refusal, the case is unreachable outside an
+        # adversarial ``new_nonce``, and EDIT_REFUSAL_MESSAGES' TOO_LARGE sentence
+        # ("The document is too large...") still reads sensibly here. Documented
+        # per the lead's L-2 ruling rather than adding a new EditRefusal member.
         raise EditRefused(EditRefusal.TOO_LARGE)
     opening, closing = data_tags(nonce)
     human = HumanMessage(content="\n".join([opening, body, closing, EDIT_CLOSING_LINE]))
@@ -524,6 +536,7 @@ def _splice(selected: str, replacement: str) -> str:
 
 
 def _marker_count(value: Any) -> int:
+    # justification: a diffed field value is bare JSON, walked recursively by shape.
     count = 0
     for item, _ in _walk(value):
         if isinstance(item, str):
@@ -533,6 +546,7 @@ def _marker_count(value: Any) -> int:
 
 
 def _check_remote_references(diff: Mapping[str, Any], base: Mapping[str, Any]) -> None:
+    # justification: the diff and base are bare JSON of each field's kind.
     """I-13: refused only when an edit *adds* a remote reference — a marker
     the GM's own value already held, kept at the same count, passes."""
     for key, new_value in diff.items():
@@ -543,6 +557,7 @@ def _check_remote_references(diff: Mapping[str, Any], base: Mapping[str, Any]) -
 def _diff(
     doc_type: DocumentTypeId, base: Mapping[str, Any], checked_patch: Mapping[str, Any], *, normalize_base: bool
 ) -> dict[str, Any]:
+    # justification: base, the checked patch and the returned diff are bare JSON.
     """I-11 steps 2-3, as Critic C-12 tightens them: the committed change,
     never the model's raw echo.
 
@@ -570,6 +585,7 @@ def _diff(
 
 
 def _base_is_empty(base: Mapping[str, Any], declared: Mapping[str, FieldKind], key: str) -> bool:
+    # justification: the base document is bare JSON of each field's kind.
     """Critic C-12: a key is "absent" for the no-op rule when it is truly
     absent from the base, stored ``null``, or already empty by
     :func:`is_empty_value` — not only when the key is missing outright."""
@@ -579,6 +595,7 @@ def _base_is_empty(base: Mapping[str, Any], declared: Mapping[str, FieldKind], k
 
 
 def _checked_patch(doc_type: DocumentTypeId, type_version: int, patch: Mapping[str, Any]) -> dict[str, Any]:
+    # justification: the patch and the checked fields it returns are bare JSON.
     try:
         return check_fields(doc_type, type_version, dict(patch), whole=False)
     except ValueError:
@@ -586,6 +603,7 @@ def _checked_patch(doc_type: DocumentTypeId, type_version: int, patch: Mapping[s
 
 
 def _parse_selection(target: EditTarget, scope: SelectionScope, parsed: Any) -> dict[str, Any]:
+    # justification: `parsed` is json.loads's untrusted output, narrowed below.
     if not isinstance(parsed, dict) or set(parsed) != {"replacement"} or not isinstance(parsed["replacement"], str):
         raise InvalidEdit(InvalidEditOutput.BAD_ENVELOPE)
     replacement = parsed["replacement"]
@@ -597,6 +615,7 @@ def _parse_selection(target: EditTarget, scope: SelectionScope, parsed: Any) -> 
 
 
 def _parse_fields(target: EditTarget, parsed: Any) -> dict[str, Any]:
+    # justification: `parsed` is json.loads's untrusted output, narrowed below.
     if not isinstance(parsed, dict) or set(parsed) != {"fields"} or not isinstance(parsed["fields"], dict):
         raise InvalidEdit(InvalidEditOutput.BAD_ENVELOPE)
     raw = parsed["fields"]
@@ -645,6 +664,7 @@ def parse_edit(target: EditTarget, text: str, *, finish_reason: str | None) -> E
 
 
 def _outcome(config: dict[str, Any], outcome: str) -> None:
+    # justification: the forwarded run config built by _forwarded_config.
     usage_capture.record_structuring_outcome(config, purpose=PURPOSE, outcome=outcome)
 
 
@@ -653,6 +673,7 @@ def edit_document(
     *,
     client: LLMClient,
     alias: str,
+    # justification: a LangChain run config is a free-form mapping.
     config: Any | None,
     max_attempts: int,
     between_attempts: Callable[[], None] | None = None,

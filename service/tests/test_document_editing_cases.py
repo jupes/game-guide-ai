@@ -139,7 +139,7 @@ def as_target(case: EvalCase) -> de.EditTarget:
 def test_q1_every_line_is_a_well_formed_case() -> None:
     """Kills malformed data: ids unique, every field typed and consistent."""
     loaded = cases()
-    assert len(loaded) >= 18
+    assert len(loaded) >= 24, "§8 requires at least 24 cases"
     assert len({c.id for c in loaded}) == len(loaded)
     with pytest.raises(ValueError):
         EvalCase.model_validate({**loaded[0].model_dump(), "category": "injection"})

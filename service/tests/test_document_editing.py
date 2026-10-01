@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import json
-import logging
+import re
 import traceback
 import typing
 from collections.abc import Iterator
@@ -27,6 +27,7 @@ from service import document_editing as de
 from service import document_generation as dg
 from service import generate, model_catalog, usage_capture
 from service.tests import document_editing_fixtures as fx
+from service.tests.canary import Audience, CanarySet, CanaryWorld, LeakCapture, Surface
 from service.workbench_contracts import (
     DocumentTypeId,
     EditAction,
@@ -254,6 +255,35 @@ def test_p3_document_scope_over_the_bound_refuses_with_no_shrinking() -> None:
     _refused(Refusal.TOO_LARGE, lambda: de.build_edit_messages(t))
 
 
+def test_p3_the_payload_bound_is_pinned_exactly_at_24_000_and_24_001() -> None:
+    """Kills `>` flipped to `>=` in `check_scope` and `_sized_body`'s `<=` flipped to `<`: the bound
+    is inclusive of exactly 24,000 code points, and reduction fires only one code point over it."""
+
+    def sized(notes_len: int) -> de.EditTarget:
+        row = fx.data_for(fx.NPC, notes="n" * notes_len)
+        return fx.target(fx.NPC, fx.field_scope("wants"), data=row)
+
+    # `_serialized` grows by exactly one code point per added "n"; solve for the padding
+    # that puts the full (unreduced) body at exactly the bound.
+    baseline = len(de._serialized(sized(0), reduced=False))
+    pad = de.EDIT_CONTEXT_MAX_CHARS - baseline
+    assert pad >= 0
+
+    at_bound = sized(pad)
+    assert len(de._serialized(at_bound, reduced=False)) == de.EDIT_CONTEXT_MAX_CHARS
+    assert de.edit_payload_size(at_bound) == de.EDIT_CONTEXT_MAX_CHARS, "exactly at the bound must NOT reduce"
+    assert de.check_scope(at_bound) is None
+    body = _text(de.build_edit_messages(at_bound)[1])
+    assert "n" * 100 in body, "exactly at the bound, the full context is sent, unreduced"
+
+    over_bound = sized(pad + 1)
+    assert len(de._serialized(over_bound, reduced=False)) == de.EDIT_CONTEXT_MAX_CHARS + 1
+    assert de.edit_payload_size(over_bound) < de.EDIT_CONTEXT_MAX_CHARS, "one over the bound must reduce"
+    assert de.check_scope(over_bound) is None, "reduced to name+qualifier, it fits again"
+    body2 = _text(de.build_edit_messages(over_bound)[1])
+    assert "n" * 100 not in body2, "one over the bound, the huge context field must not be sent"
+
+
 def test_p3_selection_scope_payload_bound_fires_on_a_huge_field_around_a_small_selection() -> None:
     """The echo bound (C-3) covers only the selected span; the `before` and
     `after` slices of a very long field are not context that shrinks, so the
@@ -406,6 +436,20 @@ def test_p5_field_envelope_rejects_extra_top_level_keys() -> None:
         _invalid(Invalid.BAD_ENVELOPE, lambda out=out: de.parse_edit(t, json.dumps(out), finish_reason=None))
 
 
+def test_p5_selection_envelope_rejects_extra_top_level_keys() -> None:
+    """Critic C-26 at selection scope: an extra top-level key beside `replacement` must be refused,
+    never silently dropped (the P-20 sweep's `fields`/`replacement` envelopes never carry a second
+    top-level key, so it alone cannot exercise this)."""
+    t = fx.selection_target(fx.NPC, "wants")
+    extras: list[dict[str, Any]] = [
+        {"prose": "x"}, {"suggestions": []}, {"cited": []}, {"type": "npc"},
+        {"write_revision": 1}, {"base_write_revision": 999_999},
+    ]
+    for extra in extras:
+        out = {"replacement": "changed", **extra}
+        _invalid(Invalid.BAD_ENVELOPE, lambda out=out: de.parse_edit(t, json.dumps(out), finish_reason=None))
+
+
 def test_p5_duplicate_keys_and_non_finite_numbers_are_not_json() -> None:
     t = fx.target(fx.NPC, fx.field_scope("wants"))
     _invalid(Invalid.NOT_JSON, lambda: de.parse_edit(t, '{"fields": {"wants": "a", "wants": "b"}}', finish_reason=None))
@@ -420,6 +464,22 @@ def test_p5_depth_over_the_bound_is_bad_envelope() -> None:
     deep: Any = "x"
     for _ in range(dg.MAX_OUTPUT_DEPTH + 2):
         deep = [deep]
+    _invalid(Invalid.BAD_ENVELOPE, lambda: _fields(t, {"traits": deep}))
+
+
+def test_p5_depth_exactly_one_over_the_bound_is_bad_envelope() -> None:
+    """Kills `depth > MAX_OUTPUT_DEPTH + 1` (an off-by-one relaxation): the test above nests deep
+    enough that a one-off mutant would still be caught by accident, so this pins the true minimum.
+    The `{"fields": {"traits": [...]}}` envelope already contributes 3 levels of depth (the root
+    object, `fields`'s value, `traits`'s value) before `deep`'s own nesting starts, so wrapping
+    `deep` `MAX_OUTPUT_DEPTH - 2` times reaches exactly `MAX_OUTPUT_DEPTH + 1` — the smallest depth
+    that must be refused."""
+    t = fx.target(fx.STATBLOCK, fx.field_scope("traits"))
+    deep: Any = "x"
+    for _ in range(dg.MAX_OUTPUT_DEPTH - 2):
+        deep = [deep]
+    parsed_depth = max(depth for _, depth in dg._walk({"fields": {"traits": deep}}))
+    assert parsed_depth == dg.MAX_OUTPUT_DEPTH + 1
     _invalid(Invalid.BAD_ENVELOPE, lambda: _fields(t, {"traits": deep}))
 
 
@@ -498,6 +558,28 @@ def test_p7_leading_spaces_and_a_trailing_newline_in_the_selection_survive() -> 
     assert new_value == "before[  new text\n]after"
     assert new_value[:start] == value[:start]
     assert new_value[len(new_value) - (len(value) - end) :] == value[end:]
+
+
+def test_p7_the_middle_is_the_trimmed_replacement_exactly() -> None:
+    """Critic I-12: kills `trimmed_replacement = replacement` — the padding around the model's own
+    replacement must not survive in the spliced middle, only the selection's own lead/trail can."""
+    value = "before[clear her]after"
+    start, end = value.index("[") + 1, value.index("]")
+    selected = value[start:end]
+    assert selected == "clear her"
+    t = fx.target(fx.NPC, fx.selection_scope("wants", start, end, selected), data=fx.data_for(fx.NPC, wants=value))
+    out = _replacement(t, "  new  ")
+    assert isinstance(out, de.EditProposal)
+    assert out.fields["wants"] == "before[new]after"
+
+
+def test_splice_lead_and_trail_use_the_contracts_trim_set_not_pythons_default() -> None:
+    """Critic C-17's residual case: the contract's `trim` set differs from Python's default
+    `str.strip()` at both ends — it strips a leading U+FEFF (byte-order mark) that `str.lstrip()`
+    would not, and it does NOT strip a trailing U+0085 (NEL) that `str.rstrip()` would. Kills
+    `_ltrim`/`_rtrim` computed from the language's own strip instead of the contract's `trim`."""
+    selected = "﻿core\u0085"
+    assert de._splice(selected, "new") == "﻿new"
 
 
 def test_p7_whitespace_only_replacement_is_empty_replacement() -> None:
@@ -596,6 +678,31 @@ def test_p8_an_unchanged_entry_list_echo_is_no_change() -> None:
     row = fx.data_for(fx.STATBLOCK)
     t = fx.target(fx.STATBLOCK, fx.field_scope("traits"), data=row)
     out = _fields(t, {"traits": row["traits"]})
+    assert isinstance(out, de.NoChange)
+
+
+def test_p8_a_selection_replacement_equal_to_the_selection_is_no_change() -> None:
+    """Finding H-2 / Critic C-12: the field's own outer whitespace (outside the selected span) must
+    not make an unchanged selection look like a change. Kills `normalize_base=True` on the selection
+    path (document_editing.py) — that would normalise the base's leading/trailing whitespace before
+    comparing it against the spliced value, which is never normalised, and manufacture a spurious
+    diff — and "selection skips NoChange" (`diff = dict(checked)` when empty)."""
+    value = "  Wants the crown back.\n"
+    row = fx.data_for(fx.NPC, wants=value)
+    start, end = value.index("crown"), value.index("crown") + len("crown")
+    t = fx.target(fx.NPC, fx.selection_scope("wants", start, end, value[start:end]), data=row)
+    out = _replacement(t, "crown")
+    assert isinstance(out, de.NoChange)
+
+
+def test_p8_a_padded_selection_replacement_that_round_trips_is_no_change() -> None:
+    """The same case as above, with the model's replacement padded: I-12's trim still makes it an
+    exact round-trip, so it too must be a no-op."""
+    value = "  Wants the crown back.\n"
+    row = fx.data_for(fx.NPC, wants=value)
+    start, end = value.index("crown"), value.index("crown") + len("crown")
+    t = fx.target(fx.NPC, fx.selection_scope("wants", start, end, value[start:end]), data=row)
+    out = _replacement(t, "  crown ")
     assert isinstance(out, de.NoChange)
 
 
@@ -804,29 +911,51 @@ def test_p15_a_hook_that_raises_after_a_transient_error_gives_one_billable_attem
 # ── P-16: the canary sweep ─────────────────────────────────────────────────────
 
 
-def test_p16_a_canary_never_reaches_a_log_record_or_an_exception(
-    capture: Capture, caplog: pytest.LogCaptureFixture
+def test_p16_a_canary_never_reaches_a_log_record_or_a_repr(
+    capture: Capture, leak_capture: LeakCapture, canary_world: CanaryWorld
 ) -> None:
-    caplog.set_level(logging.DEBUG)
-    row = fx.data_for(fx.NPC, notes=f"secret {fx.CANARY} here")
-    t = fx.target(fx.NPC, fx.document_scope(), fx.text_instruction(f"do {fx.CANARY}"), data=row)
+    """Critic C-6.3: uses the canary harness's own ``leak_capture`` sink instead of a hand-rolled
+    ``caplog`` check. The canary sits in the instruction, the selected text (an in-scope value) and
+    the model's raw, invalid output; ``assert_clean`` proves none of it reached a log record,
+    stdout, stderr or a warning — the only sinks this pure module could leak into. A second,
+    successful call proves the canary lands in the field it belongs in, but never in a repr."""
+    canary = canary_world.mint("p16-secret", campaign="A", surface=Surface.FIELD, document="npc-1", field_key="wants")
+    row = fx.data_for(fx.NPC, wants=canary.value)
+    value = row["wants"]
+    scope = fx.selection_scope("wants", 0, len(value), value)
+    target = fx.target(fx.NPC, scope, fx.text_instruction(f"do {canary.value}"), data=row)
 
     for refusal_code in Refusal:
-        assert fx.CANARY not in str(de.EditRefused(refusal_code))
+        assert canary.value not in str(de.EditRefused(refusal_code))
     for invalid_code in Invalid:
-        assert fx.CANARY not in str(de.InvalidEdit(invalid_code))
+        assert canary.value not in str(de.InvalidEdit(invalid_code))
+    assert canary.value not in repr(target)
 
-    client = FakeClient("not json with " + fx.CANARY)
-    try:
-        _edit(t, client, capture.config)
-    except de.InvalidEdit as exc:
-        assert fx.CANARY not in str(exc) and fx.CANARY not in repr(exc)
-        assert fx.CANARY not in "".join(traceback.format_exception(exc))
-    for record in caplog.records:
-        assert fx.CANARY not in record.getMessage()
+    bad_client = leak_capture.llm("p16-invalid", audience=Audience.GM, replies=[f"not json with {canary.value}"])
+    with pytest.raises(de.InvalidEdit) as caught:
+        _edit(target, bad_client, capture.config)
+    assert canary.value not in str(caught.value)
+    assert canary.value not in repr(caught.value)
+    assert canary.value not in "".join(traceback.format_exception(caught.value))
+
+    good_client = leak_capture.llm(
+        "p16-valid", audience=Audience.GM, replies=[json.dumps({"replacement": canary.value + " changed"})]
+    )
+    out = _edit(target, good_client, capture.config)
+    assert isinstance(out, de.EditProposal)
+    assert canary.value not in repr(out)
+    assert canary.value in out.fields["wants"]
+
+    # usage_capture's own attempt/outcome records are a distinct sink `leak_capture`
+    # does not scan (they never reach a log); checked directly here instead.
     for attempt in capture.attempts + capture.outcomes:
-        assert fx.CANARY not in json.dumps(attempt, default=str)
-    assert fx.CANARY not in repr(t)
+        assert canary.value not in json.dumps(attempt, default=str)
+
+    # A GM sink may hold the GM's own canaries by default (no `visible` needed —
+    # that argument is for PLAYER sinks); `must_see` is the positive control that
+    # proves the scan itself is live.
+    seen = CanarySet([canary])
+    leak_capture.assert_clean(must_see={"p16-invalid": seen, "p16-valid": seen})
 
 
 # ── P-17: D-9, no model or tier named ─────────────────────────────────────────
@@ -891,6 +1020,14 @@ def _resolved_module(node: ast.ImportFrom) -> str:
     return "service" if not node.module else f"service.{node.module}"
 
 
+#: Kills a literal-shape scan (Finding L-3): any SQL statement verb followed, within a short
+#: distance, by its own clause keyword — not just the six exact phrases the original list pinned.
+_SQL_STATEMENT_SHAPE = re.compile(
+    r"\b(SELECT|INSERT|UPDATE|DELETE)\b[\s\S]{0,120}?\b(FROM|INTO|SET)\b", re.IGNORECASE
+)
+_SQL_LOCK_SHAPE = re.compile(r"\bFOR\s+(NO\s+KEY\s+)?UPDATE\b", re.IGNORECASE)
+
+
 def test_p19_the_import_allow_list_and_no_sql_string() -> None:
     import service.document_editing as module
 
@@ -906,8 +1043,11 @@ def test_p19_the_import_allow_list_and_no_sql_string() -> None:
                  "service.tool_invocations", "openai", "langchain_openai", "langfuse")
     for name in forbidden:
         assert name not in text
-    sql_shapes = ("SELECT * FROM", "INSERT INTO", "UPDATE CAMPAIGN", "DELETE FROM", "FOR UPDATE", "FOR NO KEY UPDATE")
-    assert not any(shape in text.upper() for shape in sql_shapes)
+    assert _SQL_STATEMENT_SHAPE.search(text) is None
+    assert _SQL_LOCK_SHAPE.search(text) is None
+    # Positive control: the scan itself can fire, on a shape the old six-phrase list would miss.
+    assert _SQL_STATEMENT_SHAPE.search("SELECT id FROM campaign_documents") is not None
+    assert _SQL_LOCK_SHAPE.search("FOR NO KEY UPDATE") is not None
 
 
 def test_p19_every_reused_helper_is_the_same_object_as_document_generations() -> None:
@@ -925,10 +1065,38 @@ def test_p19_every_reused_helper_is_the_same_object_as_document_generations() ->
 
 # ── P-20: the T-10 injection corpus ────────────────────────────────────────────
 
+#: Critic C-26: families whose obeyed field-scope output adds a key the structural checks
+#: (undeclared / asset / out-of-scope / envelope shape) must catch, regardless of placement —
+#: the check runs on the raw parsed keys, before any diff against the stored value is computed.
+_STRUCTURAL_FIELD_OUTCOME: dict[str, Invalid] = {
+    "field_hijack": Invalid.ASSET_REFERENCE,
+    "scope_escape": Invalid.OUT_OF_SCOPE,
+    "revision_forge": Invalid.BAD_ENVELOPE,
+    "suggestion_injection": Invalid.BAD_ENVELOPE,
+}
+
+
+def _obeyed_field_envelope(family: str, payload: str) -> str:
+    """The literal `{"fields": {...}}` envelope an obeying model would answer with for `family`,
+    enacting what its injected text specifically asks for as far as the shape allows."""
+    fields: dict[str, Any] = {"wants": payload}
+    if family == "field_hijack":
+        fields.update(tags=["owned"], portrait=None)
+    elif family == "scope_escape":
+        fields.update(name="PWNED", tags=["owned"])
+    envelope: dict[str, Any] = {"fields": fields}
+    if family == "revision_forge":
+        envelope["base_write_revision"] = 999_999
+    elif family == "suggestion_injection":
+        envelope["suggestions"] = [{"a": 1}]
+    return json.dumps(envelope)
+
 
 @pytest.mark.parametrize("family", sorted(fx.EDIT_INJECTION_FAMILIES))
 @pytest.mark.parametrize("placement", ["instruction", "in_scope_value", "context_value", "selected_text"])
 def test_p20_an_obeying_model_never_lands_outside_its_scope(family: str, placement: str) -> None:
+    """Critic C-26: one pinned outcome per (family, placement) rather than an either/or pass, so a
+    dropped scope, asset or envelope check cannot hide behind a neighbour's refusal."""
     payload = fx.EDIT_INJECTION_FAMILIES[family]
     row = fx.data_for(fx.NPC)
 
@@ -947,21 +1115,40 @@ def test_p20_an_obeying_model_never_lands_outside_its_scope(family: str, placeme
 
     messages = de.build_edit_messages(target)
     nonce = _the_nonce(_text(messages[1]))
+    resolved = payload.replace("{nonce}", nonce)
 
+    # `expected` is an Invalid code, the sentinel "no_change", or None (an ordinary
+    # `{"wants": resolved}` proposal).
     if isinstance(target.scope, SelectionScope):
-        model_output = json.dumps({"replacement": payload.replace("{nonce}", nonce)})
+        # The selection envelope structurally carries only `replacement`: none of the families
+        # that hijack another top-level key or field have a channel to act through here.
+        model_output = json.dumps({"replacement": resolved})
+        expected: Invalid | str | None = Invalid.REMOTE_REFERENCE if family == "exfiltration_link" else None
     else:
-        model_output = json.dumps({"fields": {"wants": payload.replace("{nonce}", nonce), "tags": ["owned"]}})
+        model_output = _obeyed_field_envelope(family, resolved)
+        structural = _STRUCTURAL_FIELD_OUTCOME.get(family)
+        if structural is not None:
+            expected = structural
+        elif placement == "in_scope_value" and resolved == payload:
+            # The stored value already IS the payload (that is what this placement tests), so an
+            # obeying model's identical echo changes nothing. (`delimiter_spoof` substitutes the
+            # real nonce for `{nonce}`, so its echo differs from the stored literal and IS a change.)
+            expected = "no_change"
+        elif family == "exfiltration_link":
+            expected = Invalid.REMOTE_REFERENCE
+        else:
+            expected = None
 
-    try:
-        out = de.parse_edit(target, model_output, finish_reason=None)
-    except de.InvalidEdit as exc:
-        assert exc.code in Invalid
+    if isinstance(expected, Invalid):
+        _invalid(expected, lambda: de.parse_edit(target, model_output, finish_reason=None))
         return
-    if isinstance(out, de.NoChange):
+    out = de.parse_edit(target, model_output, finish_reason=None)
+    if expected == "no_change":
+        assert isinstance(out, de.NoChange), (family, placement)
         return
-    assert set(out.fields) <= de.scope_keys(target.doc_type, target.scope)
-    de._check_remote_references(dict(out.fields), target.data)
+    assert isinstance(out, de.EditProposal), (family, placement)
+    assert set(out.fields) == {"wants"}
+    assert out.fields["wants"] == resolved
 
 
 def test_p20_revision_forge_and_suggestion_injection_are_bad_envelope() -> None:
@@ -974,6 +1161,12 @@ def test_p20_revision_forge_and_suggestion_injection_are_bad_envelope() -> None:
     _invalid(Invalid.BAD_ENVELOPE, lambda: de.parse_edit(t, revision_forge, finish_reason=None))
     suggestion_injection = json.dumps({"fields": {"wants": "changed"}, "suggestions": [{"a": 1}]})
     _invalid(Invalid.BAD_ENVELOPE, lambda: de.parse_edit(t, suggestion_injection, finish_reason=None))
+
+    # The same top-level-key forgery, at document scope: the extra key is refused even when
+    # every key inside "fields" is otherwise in scope.
+    doc_target = fx.target(fx.NPC, fx.document_scope())
+    doc_revision_forge = json.dumps({"fields": {"voice": "changed"}, "base_write_revision": 999_999})
+    _invalid(Invalid.BAD_ENVELOPE, lambda: de.parse_edit(doc_target, doc_revision_forge, finish_reason=None))
 
 
 def test_p20_scope_escape_is_refused_by_the_key_it_widens_to() -> None:
@@ -994,15 +1187,19 @@ def test_p20_span_escape_cannot_reach_past_its_own_selection() -> None:
     that claims it will "ignore the selection boundaries" can still only
     replace the span, because the wire never lets a selection edit send
     anything but a replacement. Pinned as a normal successful splice, not a
-    refusal, since the escape attempt has no channel to act through."""
+    refusal, since the escape attempt has no channel to act through. A
+    mid-field span (start > 0) makes `startswith(value[:0])` non-vacuous and
+    pins the exact splice, not just its edges."""
     row = fx.data_for(fx.NPC)
     value = row["wants"]
-    t = fx.target(fx.NPC, fx.selection_scope("wants", 0, 10, value[:10]), data=row)
-    out = _replacement(t, fx.EDIT_INJECTION_FAMILIES["span_escape"])
+    start, end = 10, 20
+    assert value[start] != " " and value[end - 1] != " ", "the span itself must carry no edge whitespace"
+    t = fx.target(fx.NPC, fx.selection_scope("wants", start, end, value[start:end]), data=row)
+    replacement = fx.EDIT_INJECTION_FAMILIES["span_escape"]
+    out = _replacement(t, replacement)
     assert isinstance(out, de.EditProposal)
     assert set(out.fields) == {"wants"}
-    new_value = out.fields["wants"]
-    assert new_value.startswith(value[:0]) and new_value.endswith(value[10:])
+    assert out.fields["wants"] == value[:start] + de.trim(replacement) + value[end:]
 
 
 def test_p20_a_new_remote_reference_is_refused_exactly() -> None:

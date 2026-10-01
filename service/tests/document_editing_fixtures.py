@@ -45,6 +45,7 @@ PROSE_FIELD: dict[DocumentTypeId, str] = {
     ENCOUNTER: "setup",
 }
 
+# justification: fixture rows are bare JSON of each field's kind.
 BASE_DATA: dict[DocumentTypeId, dict[str, Any]] = {
     NPC: {
         "name": "Maren Holt",
@@ -132,6 +133,7 @@ BASE_DATA: dict[DocumentTypeId, dict[str, Any]] = {
 
 
 def data_for(doc_type: DocumentTypeId, **overrides: Any) -> dict[str, Any]:
+    # justification: overrides and the returned row are bare JSON of each field's kind.
     return {**BASE_DATA[doc_type], **overrides}
 
 
@@ -160,6 +162,7 @@ def target(
     scope: DocumentScope | FieldScope | SelectionScope,
     instruction: TextInstruction | ActionInstruction | None = None,
     *,
+    # justification: a fixture row is bare JSON of each field's kind.
     data: dict[str, Any] | None = None,
 ) -> EditTarget:
     return EditTarget(
@@ -176,6 +179,7 @@ def selection_target(
     field: str,
     *,
     instruction: TextInstruction | ActionInstruction | None = None,
+    # justification: a fixture row is bare JSON of each field's kind.
     data: dict[str, Any] | None = None,
 ) -> EditTarget:
     """A selection target whose span exactly matches a slice of the stored value."""
@@ -186,6 +190,7 @@ def selection_target(
 
 
 def fields_envelope(fields: dict[str, Any]) -> str:
+    # justification: an envelope's fields are bare JSON of each field's kind.
     return json.dumps({"fields": fields})
 
 
