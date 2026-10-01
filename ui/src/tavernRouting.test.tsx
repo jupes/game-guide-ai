@@ -183,18 +183,39 @@ function storageHolds(text: string): boolean {
 
 /** Critic 34 and 49: start it BEFORE the render, press or sign-in it judges.
  * Counts mutation batches, batches that added a node holding `text`, and
- * batches after which `text` is on screen. */
+ * batches after which `text` is on screen.
+ *
+ * `addedNodes` holds LIVE references, and a cascading effect (`loadCampaigns()`
+ * runs the instant its component mounts) can insert a WHOLE subtree and then,
+ * still inside the same batch, remove one of that subtree's own descendants --
+ * reading the ancestor's `textContent` back only ever sees the settled result,
+ * never the removed child's text. A `removedNodes` match is therefore read
+ * instead: the detached node itself is never mutated again, so its text is
+ * frozen at whatever it was when it left. The one case that is NOT a flash is
+ * text that was already on screen before this watcher started (T-13a: the row
+ * is visible, then an account switch removes it) -- `alreadyThere` excludes
+ * exactly that, by baselining presence once, at the moment watching begins. */
 function watch(text: string): () => { batches: number; added: number; present: number } {
   let batches = 0; let added = 0; let present = 0
+  const holds = (n: Node | null): boolean => n?.textContent?.includes(text) === true
+  const alreadyThere = (document.body.textContent ?? '').includes(text)
   const scan = (records: MutationRecord[]) => {
     if (records.length === 0) return
     batches += 1
-    if (records.some((r) => (r.type === 'characterData' ? [r.target] : Array.from(r.addedNodes))
-      .some((n) => n.textContent?.includes(text) === true))) added += 1
+    let flashed = false
+    for (const r of records) {
+      if (r.type === 'characterData') {
+        if (holds(r.target) || r.oldValue?.includes(text) === true) flashed = true
+        continue
+      }
+      if (Array.from(r.addedNodes).some(holds)) flashed = true
+      if (!alreadyThere && Array.from(r.removedNodes).some(holds)) flashed = true
+    }
+    if (flashed) added += 1
     if ((document.body.textContent ?? '').includes(text)) present += 1
   }
   const observer = new MutationObserver(scan)
-  observer.observe(document.body, { subtree: true, childList: true, characterData: true })
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true, characterDataOldValue: true })
   return () => { scan(observer.takeRecords()); observer.disconnect(); return { batches, added, present } }
 }
 
