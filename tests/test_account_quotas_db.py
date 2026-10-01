@@ -349,6 +349,54 @@ def test_bytes_in_one_campaign_block_writes_in_another_of_the_same_owner(world: 
         _create_with_quota(world, b, world.owner, growth, data=data)  # B has none left
 
 
+def test_archiving_a_document_does_not_shrink_the_byte_total_pr232_r1_h1(world: World) -> None:
+    """PR #232 review pr232-531xb-r1, finding H1: an archive-then-write loop
+    must not be a way around the byte cap. Fill account A to the byte cap with
+    one document, archive it (archiving never takes the account lock and never
+    shrinks `stored_bytes`), then prove a 1-byte-or-more quota'd create is
+    still refused in the SAME campaign and in a SIBLING campaign of the same
+    owner, and that nothing new was written."""
+    a = _campaign(world, world.owner, name="A")
+    b = _campaign(world, world.owner, name="B")
+    data = _content()
+    growth = 2 * measured_bytes(data)
+    doc_id = _create_with_quota(world, a, world.owner, growth, data=data)  # exactly at the cap
+    assert _stored_bytes(world, world.owner) == growth
+
+    with world.db.transaction() as unit:
+        changed = world.documents.set_archived(unit, a, doc_id, archived=True, now=T0)
+    assert changed is True
+    assert _stored_bytes(world, world.owner) == growth, "archiving must not shrink the counted total"
+
+    with pytest.raises(StorageQuotaReached):
+        _create_with_quota(world, a, world.owner, growth + 1, data=_content(voice="one more byte, same campaign"))
+    with pytest.raises(StorageQuotaReached):
+        _create_with_quota(world, b, world.owner, growth + 1, data=_content(voice="one more byte, sibling campaign"))
+    assert _stored_bytes(world, world.owner) == growth, "both refused creates must write nothing"
+
+
+def test_archiving_the_campaign_does_not_shrink_the_byte_total_pr232_r1_h1(world: World) -> None:
+    """The other half of H1: archiving the CAMPAIGN itself (not just the
+    document) must not exclude its documents from the account's byte total
+    either — `stored_bytes` joins through `campaigns.owner_id` with no
+    archived filter on either side."""
+    a = _campaign(world, world.owner, name="A")
+    b = _campaign(world, world.owner, name="B")
+    data = _content()
+    growth = 2 * measured_bytes(data)
+    _create_with_quota(world, a, world.owner, growth, data=data)  # exactly at the cap, in A
+    assert _stored_bytes(world, world.owner) == growth
+
+    with world.db.transaction() as unit:
+        changed = world.campaigns.set_archived(unit, a, owner_id=world.owner, archived=True)
+    assert changed is True
+    assert _stored_bytes(world, world.owner) == growth, "archiving the campaign must not shrink the counted total"
+
+    with pytest.raises(StorageQuotaReached):
+        _create_with_quota(world, b, world.owner, growth + 1, data=_content(voice="one more byte, sibling campaign"))
+    assert _stored_bytes(world, world.owner) == growth, "the refused create must write nothing"
+
+
 # ── Twin-only: the account-lock guard ────────────────────────────────────────
 
 

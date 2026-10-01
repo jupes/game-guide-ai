@@ -515,6 +515,31 @@ def test_a_restore_past_the_byte_cap_answers_409_and_writes_nothing(
     assert admitted.status_code == 200, admitted.text
 
 
+def test_archiving_through_the_lifecycle_route_does_not_lift_the_byte_cap_pr232_r1_h1(
+    client: TestClient, world: _World, life: _Life, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #232 review pr232-531xb-r1, finding H1, at the HTTP layer: archiving
+    a document through the real lifecycle route must not make the account's
+    byte total look smaller than it is, so a create at the cap is still 409
+    after the archive."""
+    campaign = world.campaign()
+    document = world.document(campaign, "handout", {"name": "A letter", "body": "x" * 500})
+    with world.db.transaction() as unit:
+        before = world.stores.documents.stored_bytes(unit, GM_A)
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", before)  # exactly at the cap
+
+    archived = _archive(client, campaign, document)
+    assert archived.status_code == 204, archived.text
+    with world.db.transaction() as unit:
+        after_archive = world.stores.documents.stored_bytes(unit, GM_A)
+    assert after_archive == before, "archiving must not shrink the counted total"
+
+    refused = _create(client, campaign, "handout", {"name": "Another letter", "body": "y"})
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == ErrorCode.ACCOUNT_LIMIT_REACHED.value
+    assert _library(client, campaign, "documents").json()["items"] == [], "the refused create must write nothing"
+
+
 # ── A-5: read ────────────────────────────────────────────────────────────────
 
 
