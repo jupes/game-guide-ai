@@ -38,6 +38,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 
 from . import (
     asset_jobs,
+    asset_serving_api,
     assets_api,
     body_limit,
     campaigns_api,
@@ -1907,6 +1908,9 @@ app.include_router(seats_api.build_router(require_session, get_timeline_database
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
 app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
 app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
+app.include_router(
+    asset_serving_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled, _job_driver)
+)
 app.include_router(table_session_api.build_router(WORKBENCH_GM, get_table_sessions, _job_driver, start_gate))
 app.include_router(table_api.build_router(require_session, get_auth_store, _clear_session_cookie, get_table_sessions))
 app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_message_store))

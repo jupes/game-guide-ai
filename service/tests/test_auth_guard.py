@@ -137,6 +137,11 @@ PROTECTED_ROUTES: list[Route] = [
       "kind": "audio", "media_type": "audio/mpeg", "size_bytes": 10}),
     ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa/bytes", None),
+    # 1kg.8.1.3, live for this module only, like the two above.
+    ("GET", "/campaigns/{campaign_id}/assets/{asset_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa", None),
+    ("DELETE", "/campaigns/{campaign_id}/assets/{asset_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa", None),
     # 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the GM's table session.
     ("GET", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session", None),
     ("POST", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session",

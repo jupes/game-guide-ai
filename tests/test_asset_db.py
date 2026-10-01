@@ -517,12 +517,19 @@ def test_anything_not_the_callers_is_one_identical_answer_to_every_read_and_muta
     mine = _in_state(world, campaign, "processing")
     foreign = _in_state(world, foreign_campaign, "processing", owner=world.other_owner)
     tombstone = _in_state(world, campaign, "deleted")
+    # `ready` too: a `processing` row is refused by the state check alone, so
+    # only a `ready` one shows that `resolve_ready` checks the owner and campaign.
+    mine_ready = _in_state(world, campaign, "ready")
+    foreign_ready = _in_state(world, foreign_campaign, "ready", owner=world.other_owner)
     cases = [
         ("another owner's", foreign_campaign, foreign.id, world.owner),
         ("my asset, asked as another owner", campaign, mine.id, world.other_owner),
         ("my asset, under another campaign", other_campaign, mine.id, world.owner),
         ("never minted", campaign, NEVER_MINTED, world.owner),
         ("deleted", campaign, tombstone.id, world.owner),
+        ("another owner's ready one", foreign_campaign, foreign_ready.id, world.owner),
+        ("my ready one, asked as another owner", campaign, mine_ready.id, world.other_owner),
+        ("my ready one, under another campaign", other_campaign, mine_ready.id, world.owner),
     ]
     for label, campaign_id, asset_id, owner in cases:
         with world.db.transaction() as unit:
@@ -534,6 +541,11 @@ def test_anything_not_the_callers_is_one_identical_answer_to_every_read_and_muta
                 _act(world, campaign_id, asset_id, change, owner=owner)
             assert str(refused.value) == MISSING, (label, change)
             assert not isinstance(refused.value, IllegalTransition)
+    with world.db.transaction() as unit:
+        for campaign_id, asset_id, owner in ((campaign, mine_ready.id, world.owner),
+                                             (foreign_campaign, foreign_ready.id, world.other_owner)):
+            assert world.assets.resolve_ready(unit, campaign_id, asset_id, owner_id=owner) is not None, (
+                "asked by its owner under its own campaign, each resolves")
 
 
 def test_anything_not_the_callers_campaign_has_no_usage(world: World) -> None:

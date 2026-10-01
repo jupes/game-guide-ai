@@ -52,6 +52,7 @@ DB_BACKED_TESTS = [
     "tests/test_reveal_db.py",
     "tests/test_eligibility_db.py",
     "tests/test_assets_api_db.py",
+    "tests/test_asset_serving_db.py",
     "tests/test_document_generation_db.py",
     "tests/test_groups_api_db.py",
     "tests/test_document_tools_db.py",

@@ -1024,6 +1024,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
     # while the media capability is off (`service/assets_api.py`).
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
+    # 1kg.8.1.3's media reads and deletes: two more, dark the same way
+    # (`service/asset_serving_api.py`).
+    ("GET", "/campaigns/{campaign_id}/assets/{asset_id}"), ("DELETE", "/campaigns/{campaign_id}/assets/{asset_id}"),
     ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
     ("POST", "/table/screen"), ("POST", "/table/leave"),
@@ -1377,6 +1380,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "documents_api.py").resolve(),
         (REPO_ROOT / "service" / "document_lifecycle_api.py").resolve(),
         (REPO_ROOT / "service" / "assets_api.py").resolve(),
+        (REPO_ROOT / "service" / "asset_serving_api.py").resolve(),
         (REPO_ROOT / "service" / "table_session_api.py").resolve(),
         (REPO_ROOT / "service" / "table_api.py").resolve(),
         (REPO_ROOT / "service" / "tool_invocations_api.py").resolve(),
