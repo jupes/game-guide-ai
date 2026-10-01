@@ -259,7 +259,7 @@ class GeneratedCard:
 
 
 def _serialized(request: CardRequest) -> str:
-    payload: dict[str, Any] = {"brief": trim(request.brief)}
+    payload: dict[str, Any] = {"brief": trim(request.brief)}  # justification: bare JSON, values are str|list here
     if request.tool is ToolId.RULES:
         payload["corpus"] = [
             {"n": number, "label": _inert(_source_label(passage.source)), "text": _inert(passage.text)}
@@ -434,6 +434,7 @@ def build_messages(request: CardRequest, *, new_nonce: Callable[[], str] | None 
 
 
 def _envelope(tool: ToolId, parsed: object) -> dict[str, Any] | None:
+    # justification: the model's raw, unvalidated JSON object, before any field is trusted
     keys = _ENVELOPE_KEYS[tool]
     if not isinstance(parsed, dict) or set(parsed) != keys:
         return None
@@ -450,6 +451,7 @@ def _envelope(tool: ToolId, parsed: object) -> dict[str, Any] | None:
 
 
 def _declared_dict(payload: Any, keys: frozenset[str], *, bad: CardInvalid) -> dict[str, Any]:
+    # justification: the model's raw JSON value at this key, of any shape, before it is checked
     if not isinstance(payload, dict):
         raise InvalidCardOutput(bad)
     if any(key not in keys for key in payload):
@@ -458,6 +460,7 @@ def _declared_dict(payload: Any, keys: frozenset[str], *, bad: CardInvalid) -> d
 
 
 def _flatten_line(value: Any) -> Any:
+    # justification: a bare JSON field value of any type; non-strings pass through unchanged
     if not isinstance(value, str):
         return value
     for mark in _LINE_BREAKS:
@@ -466,10 +469,12 @@ def _flatten_line(value: Any) -> Any:
 
 
 def _flatten_text(value: Any) -> Any:
+    # justification: a bare JSON field value of any type; non-strings pass through unchanged
     return trim(value) if isinstance(value, str) else value
 
 
 def _optional(value: Any) -> Any:
+    # justification: a bare JSON field value of any type; only "" is special-cased below
     """Drop an optional field that normalized to the empty string; anything
     else (including a wrongly typed, falsy value such as ``0``) passes
     through unchanged, so the content model's own validation refuses it
@@ -487,6 +492,7 @@ def _scan_remote(value: object) -> None:
 
 
 def _monster_missing_substance(data: Mapping[str, Any]) -> bool:
+    # justification: the validated statblock's declared fields, whose value types vary by key
     for key in MONSTER_MUST_FILL:
         if key == "abilities":
             abilities = data.get("abilities")
@@ -504,6 +510,7 @@ def _monster_missing_substance(data: Mapping[str, Any]) -> bool:
 
 
 def statblock_to_card(data: Mapping[str, Any]) -> Mapping[str, Any]:
+    # justification: a validated statblock's fields, passed through by key, whose value types vary
     """The one mapping from the statblock document's keys to the ``/chat`` card
     shape. Every key of ``COMMON_FIELDS ∪ DOC_TYPE_FIELDS[STATBLOCK]`` is
     either server-owned (never present in ``data``; ``validate_generated_fields``
@@ -530,6 +537,7 @@ def _parse_monster(request: CardRequest, raw: object) -> GeneratedCard:
 
 
 def _parse_loot_item(raw: Any) -> dict[str, Any] | None:
+    # justification: one list entry from the model's raw JSON, of any shape, before it is checked
     payload = _declared_dict(raw, frozenset({"name", "quantity", "value", "note"}), bad=CardInvalid.INVALID_FIELDS)
     name = _flatten_line(payload.get("name"))
     if isinstance(name, str) and not name:
@@ -557,6 +565,7 @@ def _parse_loot(request: CardRequest, raw: object) -> GeneratedCard:
 
 
 def _parse_name_entry(raw: Any) -> dict[str, Any] | None:
+    # justification: one list entry from the model's raw JSON, of any shape, before it is checked
     payload = _declared_dict(raw, frozenset({"name", "note"}), bad=CardInvalid.INVALID_FIELDS)
     name = _flatten_line(payload.get("name"))
     if isinstance(name, str) and not name:
@@ -583,6 +592,7 @@ def _parse_names(request: CardRequest, raw: object) -> GeneratedCard:
 
 
 def _parse_hook_entry(raw: Any) -> dict[str, Any] | None:
+    # justification: one list entry from the model's raw JSON, of any shape, before it is checked
     payload = _declared_dict(raw, frozenset({"title", "text"}), bad=CardInvalid.INVALID_FIELDS)
     title = _flatten_line(payload.get("title"))
     text = _flatten_text(payload.get("text"))
@@ -613,6 +623,7 @@ def _parse_hooks(request: CardRequest, raw: object) -> GeneratedCard:
 
 
 def _cited_source(source: Source) -> dict[str, Any]:
+    # justification: the bare JSON of one citation's source fields, of mixed str/int/None types
     return {"book": source.book, "chapter": source.chapter, "section": source.section, "entity": source.entity,
             "page": source.page, "snippet": source.snippet}
 
@@ -673,6 +684,7 @@ def parse_card(request: CardRequest, text: str, *, finish_reason: str | None) ->
 
 
 def _outcome(config: dict[str, Any], outcome: str) -> None:
+    # justification: a LangChain run config, a free-form mapping, forwarded as-is
     usage_capture.record_structuring_outcome(config, purpose=PURPOSE, outcome=outcome)
 
 
@@ -748,6 +760,7 @@ _SUGGESTIONS: Mapping[ToolId, tuple[ToolSuggestion, ...]] = MappingProxyType({
 
 
 def compose_result(generated: GeneratedCard) -> Mapping[str, Any]:
+    # justification: the bare, wire-shaped JSON of a CardResult (mode="json" dumps)
     """The bare JSON of a ``CardResult``: prose and suggestions from the closed
     tables above, never from model text (SEC-32, SEC-33)."""
     return {

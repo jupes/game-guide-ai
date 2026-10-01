@@ -30,7 +30,7 @@ from langchain_core.messages import AIMessage
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 from service import card_executors as ce
 from service import migrations as mig
-from service import tool_invocations
+from service import ratelimit, tool_invocations
 from service.campaign_store import PostgresCampaignStore
 from service.conversation_store import PostgresConversationStore
 from service.db import Database, PoolSettings
@@ -115,6 +115,13 @@ class World:
                 "SELECT result FROM campaign.tool_invocations WHERE invocation_id = %s", (invocation_id,),
             ).fetchone()
             return row[0]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_window() -> Iterator[None]:
+    ratelimit.reset_all()
+    yield
+    ratelimit.reset_all()
 
 
 @pytest.fixture

@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Final, Protocol
 
 import config as settings
-from ingestion.retrieval import _EMBED_RETRY_BACKOFF_S, EMBED_MAX_ATTEMPTS, TOP_K
+from ingestion.retrieval import _EMBED_RETRY_BACKOFF_S, EMBED_MAX_ATTEMPTS, TOP_K, RetrievalResult
 
 from . import usage_capture
 from .card_generation import (
@@ -35,6 +35,7 @@ from .card_generation import (
     PURPOSE,
     RULES_PASSAGES,
     CardRequest,
+    CorpusPassage,
     GeneratedCard,
     InvalidCardOutput,
     compose_result,
@@ -67,6 +68,8 @@ EMBED_WORST_S: Final = EMBED_MAX_ATTEMPTS * (settings.EMBED_REQUEST_TIMEOUT_S + 
 
 
 class RetrieverLike(Protocol):
+    # justification: structural protocol; `reranker` is RagService's optional cross-encoder,
+    # and the return is RetrievalResult in practice but kept loose so every test fake qualifies.
     def retrieve(self, prompt: str, k: int, reranker: Any, mode: str) -> Any: ...  # pragma: no cover - structural
 
 
@@ -179,7 +182,7 @@ class RulesExecutor(CardExecutor):
         return rag
 
     @staticmethod
-    def _retrieve(ctx: ExecutionContext, rag: RagLike) -> Any:
+    def _retrieve(ctx: ExecutionContext, rag: RagLike) -> RetrievalResult:
         """Inside the embedding scope, so every embed attempt is a ledger row
         under the tool operation (SEC-34)."""
         token = usage_capture.begin_embedding_scope(ctx.run_config())
@@ -189,7 +192,7 @@ class RulesExecutor(CardExecutor):
             usage_capture.end_embedding_scope(token)
 
     @staticmethod
-    def _bounded_passages(ctx: ExecutionContext, passages: tuple[Any, ...]) -> tuple[Any, ...]:
+    def _bounded_passages(ctx: ExecutionContext, passages: tuple[CorpusPassage, ...]) -> tuple[CorpusPassage, ...]:
         """Drop the lowest-ranked passage while the serialized context would
         exceed the bound. Stops at 1: a single oversize passage is left for
         the provider call itself to refuse."""
