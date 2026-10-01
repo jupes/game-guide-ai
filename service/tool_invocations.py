@@ -115,8 +115,11 @@ PROVIDER_CALL_MIN_S: Final = 5.0
 #: The bound on context an executor assembles (the ac comment: "the context
 #: bound applies to context the server assembles; the client sends none").
 CONTEXT_MAX_CHARS: Final = 24_000
-#: The only codes an executor's precheck may answer.
-PRECHECK_CODES: Final = frozenset({ErrorCode.NOTHING_TO_RECAP})
+#: The only codes an executor's precheck may answer. `ACCOUNT_LIMIT_REACHED`
+#: is `DocumentToolExecutor`'s (agent-forge-harness-531x, PR-B): the
+#: document-creating tools' soft check of the account's stored-byte cap,
+#: before any provider spend.
+PRECHECK_CODES: Final = frozenset({ErrorCode.NOTHING_TO_RECAP, ErrorCode.ACCOUNT_LIMIT_REACHED})
 
 # ── Fixed sentences (X-7, D-9): nothing a client sent, no model, no provider ─
 
@@ -135,7 +138,12 @@ PROVIDER_FINAL_MESSAGE: Final = "The assistant couldn't do that one. Edit the br
 ATTEMPT_EXPIRED_MESSAGE: Final = "That took too long and was stopped. Try again."
 #: The product's one refusal sentence, `/chat`'s Rules mode's own (1kg.4.3 I-7).
 NOT_IN_SOURCES_MESSAGE: Final = REFUSAL
-_PRECHECK_MESSAGES: Final = {ErrorCode.NOTHING_TO_RECAP: NOTHING_TO_RECAP_MESSAGE}
+#: agent-forge-harness-531x, PR-B. Names no number (SEC-20).
+STORAGE_CAP_MESSAGE: Final = "This account's document storage is full. Archive and delete documents to make room."
+_PRECHECK_MESSAGES: Final = {
+    ErrorCode.NOTHING_TO_RECAP: NOTHING_TO_RECAP_MESSAGE,
+    ErrorCode.ACCOUNT_LIMIT_REACHED: STORAGE_CAP_MESSAGE,
+}
 
 #: `/chat`'s provider-error categories (`service.app.normalize_llm_error`), in
 #: its order: `APITimeoutError` subclasses `APIConnectionError`, so it comes

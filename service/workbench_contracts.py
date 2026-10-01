@@ -499,6 +499,13 @@ class ErrorCode(str, Enum):
     #: the GM edits the brief. Seen on a stored invocation only, never as a
     #: response status, like ``attempt_expired``.
     NOT_IN_SOURCES = "not_in_sources"
+    #: The account's campaign count or stored document bytes is at its limit
+    #: (agent-forge-harness-531x, PR-B): ``409``, not retryable, message fixed
+    #: and number-free. A new code rather than widening ``cap_reached``, whose
+    #: documented meaning is X-5's retryable in-flight cap and which
+    #: ``ui/src/gm/pendingWork.ts`` already reads that way — changing what it
+    #: means would need a version bump; a new code does not.
+    ACCOUNT_LIMIT_REACHED = "account_limit_reached"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────

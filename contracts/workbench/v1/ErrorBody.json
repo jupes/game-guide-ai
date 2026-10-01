@@ -279,6 +279,16 @@
           "retryable": false
         }
       }
+    },
+    {
+      "name": "the account's campaign count or stored document bytes is at its limit (531x): the number is never named",
+      "value": {
+        "detail": {
+          "code": "account_limit_reached",
+          "message": "This account has as many campaigns as it can hold.",
+          "retryable": false
+        }
+      }
     }
   ],
   "invalid": [
