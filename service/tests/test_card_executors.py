@@ -26,7 +26,14 @@ from ingestion.retrieval import RetrievalResult, RetrievedChunk
 from service import card_executors as ce
 from service import card_generation as cg
 from service import document_tools, generate, tool_invocations, tool_invocations_api, usage_capture
-from service.app import app, get_message_store, get_timeline_database, get_timeline_store, require_session
+from service.app import (
+    app,
+    get_message_store,
+    get_timeline_database,
+    get_timeline_store,
+    get_usage_day,
+    require_session,
+)
 from service.campaign_store import InMemoryCampaignStore
 from service.conversation_store import InMemoryConversationStore
 from service.db import InMemoryDatabase
@@ -48,6 +55,7 @@ from service.tool_invocations import (
     cancellation_probe,
     context_reader,
 )
+from service.usage_ledger import InMemoryUsageLedgerStore, UsageDay
 from service.workbench_contracts import ToolId, ToolInvocationRequest
 from service.workbench_load import InMemoryWorkbenchLoad
 
@@ -141,6 +149,7 @@ class World:
     rag: FakeRag | None
     sink: Sink
     outcomes: list[str]
+    usage_day: UsageDay
     settings: ToolSettings = field(default_factory=lambda: ToolSettings(frozenset(CARD_TOOLS)))
     now: list[datetime] = field(default_factory=lambda: [T0])
 
@@ -182,7 +191,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: llm})
     outcomes: list[str] = []
     executors = {**document_tools.document_executors(doc_tools), **ce.card_executors()}
-    made = World(db, messages, stores, executors, llm, factory, None, Sink(), outcomes)
+    usage_day = UsageDay(InMemoryUsageLedgerStore(db), db)
+    made = World(db, messages, stores, executors, llm, factory, None, Sink(), outcomes, usage_day)
     overrides: dict[Callable[..., Any], Callable[..., Any]] = {
         tool_invocations_api.get_invocation_stores: lambda: made.stores,
         tool_invocations_api.get_tool_executors: lambda: made.executors,
@@ -192,6 +202,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
         get_timeline_database: lambda: made.db,
         get_timeline_store: lambda: made.stores.timeline,
         get_message_store: lambda: made.messages,
+        get_usage_day: lambda: made.usage_day,
     }
     app.dependency_overrides.update(overrides)
     monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: made.sink)
