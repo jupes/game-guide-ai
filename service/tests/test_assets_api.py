@@ -1008,6 +1008,8 @@ def test_ci_installs_ffmpeg_before_the_suite_runs() -> None:
     """Open question 4, answered (a): the python-tests job installs the tools,
     so the audio tests above run in CI, where their fixture refuses to skip."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    job = workflow.split("\n  python-tests:\n", 1)[1].split("\n  ui-tests:\n", 1)[0]
-    install = job.index("apt-get install -y --no-install-recommends ffmpeg")
+    job = workflow.split("\n  python-tests:\n", 1)[1].split("\n  python-db-tests:\n", 1)[0]
+    install = job.index("apt-get install -y --no-install-recommends")
+    install_line = job[install:].split("\n", 1)[0]
+    assert re.search(r"\sffmpeg(?:\s|$)", install_line), install_line
     assert install < job.index("python -m pytest -q --cov")
