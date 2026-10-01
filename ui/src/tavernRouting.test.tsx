@@ -387,3 +387,75 @@ describe('picking a campaign from the tavern (74j, T-8b, T-9, T-10, T-11, T-12a,
     expect(screen.getByText('Campaign: Name of cmp_A')).toBeInTheDocument()
   })
 })
+
+describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
+  it('T-7 a hostile fragment on /tavern selects nothing, names neither id and is stripped to foreign keys (kills M-10)', async () => {
+    const server = boot('/tavern#campaign=cmp_A&conversation=cnv_1&x=1')
+    const item = await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await flush()
+    await flush()
+    expect(server.calls.length).toBeGreaterThan(0)
+    expect(server.calls.every((c) => c.method === 'GET')).toBe(true)
+    expect(server.calls.some((c) => c.url === '/campaigns')).toBe(true)
+    expect(server.calls.some((c) => c.url.includes('cmp_A') || c.url.includes('cnv_1')
+      || (c.body ?? '').includes('cmp_A') || (c.body ?? '').includes('cnv_1'))).toBe(false)
+    expect(window.location.hash).toBe('#x=1')
+    // Two added assertions (inferred decision): the same claim -- "selects
+    // nothing" -- read straight from the DOM, not only from the request log.
+    expect(item).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByRole('button', { name: 'Continue without a campaign' })).toBeNull()
+  })
+
+  it('T-15 no campaign id, name or typed name reaches web storage, and the page title never changes (Critic 45, kills M-23 and M-44)', async () => {
+    const title = document.title
+    const secrets = ['cmp_tavern_probe_1', 'Name of cmp_tavern_probe_1', 'cmp_A', 'Name of cmp_A', 'cmp_New', TYPED]
+    const check = (step: string): void => {
+      for (const s of secrets) expect(storageHolds(s), `${step}: ${s}`).toBe(false)
+      expect(document.title, step).toBe(title)
+    }
+
+    const server = bootProbed('/tavern', { route: listOf([campaignBody('cmp_tavern_probe_1'), campaignBody('cmp_A')]) })
+
+    // 1. Short-text control (Critic 45): storageHolds itself can see a planted value.
+    sessionStorage.setItem('probe', 'cmp_A')
+    expect(storageHolds('cmp_A')).toBe(true)
+    sessionStorage.removeItem('probe')
+
+    // 2. Cold load.
+    await screen.findByRole('button', { name: 'Name of cmp_tavern_probe_1' })
+    check('cold load')
+
+    // 3. Legacy control: a plain prompt still reaches the recall store.
+    await userEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
+    await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
+    await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P1}{Enter}`)
+    await waitFor(() => expect(server.lines()).toContain('POST /chat'))
+    expect(storageHolds(P1)).toBe(true)
+
+    // 4. The pick.
+    openTavern()
+    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_tavern_probe_1' }))
+    await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_tavern_probe_1'))
+    check('pick')
+
+    // 5. The create (the tavern now renders with a selected campaign).
+    openTavern()
+    await userEvent.type(await screen.findByLabelText('Campaign name'), TYPED)
+    await userEvent.click(screen.getByRole('button', { name: 'Create campaign' }))
+    await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_New'))
+    check('create')
+
+    // 6. Continue.
+    openTavern()
+    await userEvent.click(await screen.findByRole('button', { name: 'Continue without a campaign' }))
+    await waitFor(() => expect(window.location.hash).toBe(''))
+    expect(window.location.pathname).toBe('/workspace')
+    check('continue')
+
+    // 7. Sign-out.
+    vi.spyOn(api, 'logout').mockResolvedValue(true)
+    await act(async () => { await live.user.user.signOut() })
+    check('sign-out')
+  })
+})
