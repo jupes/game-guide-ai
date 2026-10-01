@@ -454,6 +454,33 @@ def test_python_tests_job_has_headroom_above_its_normal_runtime():
     )
 
 
+def test_the_unit_step_runs_under_xdist_but_the_db_job_stays_serial():
+    """agent-forge-harness-eddy: the unit/coverage step splits across worker
+    processes; `python-db-tests` does not (per-worker databases are a separate
+    decision). `loadfile` keeps every test module's fixtures in one worker, so
+    a module-scoped fixture never splits across workers; `pytest-cov` combines
+    each worker's coverage data on its own, so dropping either flag would
+    silently go back to one core with nothing here to catch it."""
+    step = re.search(
+        r"^ {6}- name: pytest \(service \+ ingestion \+ repo guards\) \+ coverage gate\n"
+        r"( {8}run:.*\n(?: {10}.*\n)*)",
+        _python_job(),
+        re.M,
+    )
+    assert step, "the unit/coverage pytest step must keep its name and a `run:` line"
+    assert "-n auto" in step.group(1), "the unit step must run pytest-xdist with `-n auto`"
+    assert "--dist loadfile" in step.group(1), (
+        "the unit step must pass `--dist loadfile`, or a module-scoped fixture can "
+        "split across workers"
+    )
+
+    db_job = _db_job()
+    assert "-n " not in db_job and "--dist" not in db_job, (
+        "python-db-tests must stay serial -- per-worker Postgres databases are a "
+        "separate decision (agent-forge-harness-eddy)"
+    )
+
+
 # ── Runner image and action runtimes (agent-forge-harness-7q6) ───────────────
 
 
