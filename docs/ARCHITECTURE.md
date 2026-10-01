@@ -1479,3 +1479,64 @@ invocation service's.
   `provider_timeout`; any other refusal of the request, or a campaign gone
   between admission and `run`, is `backend_unavailable`. None of them leaves a
   document.
+
+### Card tools (1kg.4.3)
+
+Five tools land as a card instead of a document: `monster` (the `/chat`
+stat-block shape, reused), `loot`, `names`, `rules` and `hooks`. Generation is
+`service/card_generation.py`, a library with **no route, no SQL and no
+database**; the executors are `service/card_executors.py`. Almost everything
+`card_generation` needs is imported from `document_generation` (1kg.5.4) —
+the strict-JSON parser, the nonce mechanics, the output bound and, for the
+monster, `validate_generated_fields` itself — never copied, so there is one
+definition of each safety fact across both tool families.
+
+- **The envelope is exactly one key**, the tool's own payload key
+  (`{"rules", "cited"}` for rules): the model cannot pick the card kind,
+  write prose, propose a suggestion or supply a citation's source (SEC-33,
+  X-8). `CardKind`, `TOOL_CARD_KIND` and the five card contract models
+  (`workbench_contracts.py`, `contracts.ts`) are the shared wire shapes; the
+  monster reuses `StatBlockCard`/`StatBlockContent` from the `/chat` contract
+  unchanged.
+- **The monster reuses the statblock document's own validation twice**: the
+  model writes the statblock document type's own keys, `validate_generated_fields`
+  checks them exactly as it does for a stored document, and
+  `card_generation.statblock_to_card` is the one mapping onto the card shape
+  (renaming `creature_type`→`type` and `challenge_rating`→`cr`; every other
+  key passes through unchanged, or is server-owned and never reaches the
+  card). A monster missing `speed`, all six ability scores, `challenge_rating`
+  or an action, beyond `name`/`ac`/`hp` (already required by the statblock
+  type), is `missing_substance` — never a card with nothing to run at the
+  table.
+- **Loot, names and hooks are bounded lists of short entries**, normalized
+  (line breaks flattened, blank optional fields dropped) before validation;
+  an empty list, after normalization, fails the content model's own minimum,
+  so an empty card is never produced.
+- **Rules citations are server-built and cross-checked (I-5).** The tool
+  reuses `/chat`'s own retrieval, its answerable-and-chunks gate and its
+  corpus adapter — never `RagService.answer` or the graph, which would trace
+  the call and bypass the allowlist. The model lists which numbered passages
+  it used in `cited`; the server resolves those numbers against the passages
+  it retrieved and builds each citation's source itself. A citation number
+  the server did not supply is dropped and counted, never trusted; an inline
+  `[n]` marker in the answer that names an unresolved number is refused; and
+  when nothing the model cited resolves, the tool ends `not_in_sources`,
+  final — the GM edits the brief, and nothing beyond the embedding was spent.
+- **The card executors read and write nothing** (`precheck` and `finish` are
+  no-ops): a card has no aggregate, so exactly-once is trivial. `RulesExecutor`
+  is the one exception that retrieves, through a `RagLike` the app registers
+  once (`card_executors.set_rag_provider`, beside `usage_capture`'s ledger
+  provider) — the same registration pattern as every other module that needs
+  something the app builds, so route modules keep importing nothing from it.
+- **Prose and suggestions are server-composed from closed tables**, never
+  model text: every creative tool's prose is `document_generation`'s own
+  "invented" disclosure sentence, and each tool's suggestions (if any) carry a
+  fixed label and icon and no brief, so no model output ever starts work
+  (SEC-32). `judge_result` still drops a suggestion whose target may not run.
+- **Failures** follow the same two markers as the document tools:
+  `card_generation.InvalidCardOutput` is converted to
+  `tool_invocations.OutputRefused` (`provider_failed`, retryable) by the
+  executor, outside the `except` so the raised marker chains neither a cause
+  nor a context; `NotInSources` is the rules corpus miss above
+  (`not_in_sources`, final). Every other refusal is `backend_unavailable` or
+  `provider_timeout`, exactly as 1kg.4.1 already maps them.

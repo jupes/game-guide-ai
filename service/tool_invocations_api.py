@@ -42,7 +42,7 @@ from pydantic import TypeAdapter, ValidationError
 import config
 
 from . import campaign_identity as ident
-from . import document_tools, usage_capture
+from . import card_executors, document_tools, usage_capture
 from .campaign_store import PostgresCampaignStore
 from .campaigns_api import invalid, logged_outage, parse_body
 from .conversation_store import PostgresConversationStore
@@ -103,11 +103,14 @@ def get_invocation_stores() -> InvocationStores:
 
 def get_tool_executors() -> Mapping[ToolId, ToolExecutor]:
     """The registered executors. 1kg.4.4 registers npc and encounter (recap
-    follows); 1kg.4.3 and 1kg.8.3 add theirs beside it, one spread per module.
-    Registered is not enabled: a tool runs only when `WORKBENCH_ENABLED_TOOLS`
-    names it (I-7 of 1kg.4.1). Built per request: the stores hold no state and
-    nothing connects until a read."""
-    return MappingProxyType({**document_tools.document_executors(document_tools.DocumentToolStores.postgres())})
+    follows); 1kg.4.3 adds the five card tools beside it, one spread per
+    module (1kg.8.3 adds its own later). Registered is not enabled: a tool
+    runs only when `WORKBENCH_ENABLED_TOOLS` names it (I-7 of 1kg.4.1). Built
+    per request: the stores hold no state and nothing connects until a read."""
+    return MappingProxyType({
+        **document_tools.document_executors(document_tools.DocumentToolStores.postgres()),
+        **card_executors.card_executors(),
+    })
 
 
 def get_tool_settings() -> ToolSettings:
