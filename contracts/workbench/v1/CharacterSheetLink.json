@@ -1,0 +1,96 @@
+{
+  "schema": "CharacterSheetLink",
+  "direction": "response",
+  "valid": [
+    {
+      "name": "linked to a live seat",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": "prt_aaaaaaaaaaaaaaaaaaaaaa",
+        "seat_active": true
+      }
+    },
+    {
+      "name": "linked to a seat that was since removed (AUD-16: the link survives)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": "prt_aaaaaaaaaaaaaaaaaaaaaa",
+        "seat_active": false
+      }
+    },
+    {
+      "name": "not linked to any seat",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": null,
+        "seat_active": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "active with no seat",
+      "why": "an unlinked sheet has no active seat",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": null,
+        "seat_active": true
+      }
+    },
+    {
+      "name": "seat_active missing",
+      "why": "every answer says whether the seat is live",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": "prt_aaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "a participant id with a space",
+      "why": "ids are [A-Za-z0-9_-]",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": "prt aaaaaaaaaaaaaaaaaaaaa",
+        "seat_active": false
+      }
+    },
+    {
+      "name": "a newer schema_version",
+      "why": "the version this contract speaks is 1",
+      "value": {
+        "schema_version": 2,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": null,
+        "seat_active": false
+      }
+    },
+    {
+      "name": "seat_active as the string \"1\" rather than a boolean",
+      "why": "no coercion: a lax boolean would let the two validators disagree (differential_fuzz.py)",
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": "prt_aaaaaaaaaaaaaaaaaaaaaa",
+        "seat_active": "1"
+      }
+    },
+    {
+      "name": "an extra field naming the sheet",
+      "why": "q156: ids only, no alias or document content — the server is strict, a client strips additive fields",
+      "applies_to": ["server"],
+      "value": {
+        "schema_version": 1,
+        "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+        "participant_id": null,
+        "seat_active": false,
+        "alias": "Wren"
+      }
+    }
+  ]
+}

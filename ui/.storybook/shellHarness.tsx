@@ -122,6 +122,7 @@ function ShellHarness({
   const backToLanding = React.useCallback(() => setScreen('landing'), [])
   const openProfile = React.useCallback(() => setScreen('profile'), [])
   const backToWorkspace = React.useCallback(() => setScreen('workspace'), [])
+  const openTavern = React.useCallback(() => setScreen('tavern'), [])
 
   const nav = React.useMemo<AppNavState>(
     () => ({
@@ -134,8 +135,9 @@ function ShellHarness({
       backToLanding,
       openProfile,
       backToWorkspace,
+      openTavern,
     }),
-    [screen, mode, conversationId, enterWorkspace, backToLanding, openProfile, backToWorkspace],
+    [screen, mode, conversationId, enterWorkspace, backToLanding, openProfile, backToWorkspace, openTavern],
   )
 
   const [displayName, setDisplayName] = React.useState(initialDisplayName)

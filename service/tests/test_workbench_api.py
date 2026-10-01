@@ -42,22 +42,25 @@ from types import ModuleType
 import httpx
 import pytest
 import starlette.exceptions
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict
 
 import config
+from service import app as appmod
 from service import timeline, workbench_api
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
 from service.invites import Role
+from service.media_objects import MediaSettings
 from service.security_headers import (
     CONTENT_SECURITY_POLICY,
     CROSS_ORIGIN_OPENER_POLICY,
     PERMISSIONS_POLICY,
     REFERRER_POLICY,
+    STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
 )
 from service.session import SessionData, encode_session
@@ -97,14 +100,18 @@ def _is_spa(route: APIRoute) -> bool:
 #: Every header `service.app`'s `set_security_headers` middleware adds, with
 #: the values taken from `service.security_headers` itself (never copied here),
 #: so the golden bytes below fail if the middleware drops or changes one and
-#: cannot drift from it again (agent-forge-harness-y58).
+#: cannot drift from it again (agent-forge-harness-y58). agent-forge-harness-5ir1
+#: deliberately added Strict-Transport-Security to every golden below.
 _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ("content-security-policy", CONTENT_SECURITY_POLICY),
     ("cross-origin-opener-policy", CROSS_ORIGIN_OPENER_POLICY),
     ("permissions-policy", PERMISSIONS_POLICY),
     ("referrer-policy", REFERRER_POLICY),
+    ("strict-transport-security", STRICT_TRANSPORT_SECURITY),
     ("x-content-type-options", X_CONTENT_TYPE_OPTIONS),
 )
+#: What a Workbench route adds to the goldens: 5ir1's no-store, deliberately.
+_NO_STORE = ("cache-control", "no-store")
 
 
 def _json_headers(body: bytes, *extra: tuple[str, str]) -> list[tuple[str, str]]:
@@ -144,27 +151,22 @@ def legacy_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[InMemoryAuthStore]
 
 
 def test_legacy_validation_answers_are_byte_identical(legacy_store: InMemoryAuthStore) -> None:
-    """FastAPI's default 422 list — `input` echo included, a recorded residual —
-    and the timeline route's 422 (1kg.4.2), unchanged. Since oqx the timeline
-    is a Workbench route and the one validation handler answers it; the case
-    stays here because these bytes are exactly what the move must preserve."""
+    """FastAPI's default 422 list without its `input` and `ctx`, the echo
+    agent-forge-harness-fhq9 removed, and the timeline route's 422 (1kg.4.2),
+    unchanged. Since oqx the timeline is a Workbench route and the one
+    validation handler answers it; the case stays here because these bytes are
+    exactly what the move must preserve."""
     client = TestClient(app)
-    missing_prompt = b'{"detail":[{"type":"missing","loc":["body","prompt"],"msg":"Field required","input":{}}]}'
+    missing_prompt = b'{"detail":[{"type":"missing","loc":["body","prompt"],"msg":"Field required"}]}'
     bad_mode = (
         b'{"detail":[{"type":"enum","loc":["body","mode"],"msg":"Input should be \'sage\', \'spell\', '
-        b'\'rules\' or \'gm\'","input":"nope","ctx":{"expected":"\'sage\', \'spell\', \'rules\' or \'gm\'"}}]}'
+        b'\'rules\' or \'gm\'"}]}'
     )
-    malformed = (
-        b'{"detail":[{"type":"json_invalid","loc":["body",11],"msg":"JSON decode error","input":{},'
-        b'"ctx":{"error":"Expecting value"}}]}'
-    )
-    login_missing = (
-        b'{"detail":[{"type":"missing","loc":["body","password"],"msg":"Field required",'
-        b'"input":{"email":"a@example.com"}}]}'
-    )
+    malformed = b'{"detail":[{"type":"json_invalid","loc":["body",11],"msg":"JSON decode error"}]}'
+    login_missing = b'{"detail":[{"type":"missing","loc":["body","password"],"msg":"Field required"}]}'
     metrics_bad = (
         b'{"detail":[{"type":"union_tag_not_found","loc":["body","points",0],"msg":"Unable to extract '
-        b'tag using discriminator \'kind\'","input":{"name":"x"},"ctx":{"discriminator":"\'kind\'"}}]}'
+        b'tag using discriminator \'kind\'"}]}'
     )
     timeline_limit = (
         b'{"detail":{"code":"validation_failed","message":"That request isn\'t valid.",'
@@ -184,7 +186,37 @@ def test_legacy_validation_answers_are_byte_identical(legacy_store: InMemoryAuth
         "login: missing field", "metrics: bad point", "timeline: limit=0",
     ]
     for label, response, body in cases:
-        assert _answer(response) == (422, body, _json_headers(body)), label
+        extra = (_NO_STORE,) if label.startswith("timeline") else ()  # the one Workbench route here
+        assert _answer(response) == (422, body, _json_headers(body, *extra)), label
+
+
+#: What each case below sends is refused, and FastAPI's default 422 repeated it:
+#: a password too long or too short included (agent-forge-harness-fhq9).
+_SECRET = "hunter2-canary-fhq9"
+_SHORT = "Qz7#kW!"
+_EMAIL = "a@example.com"
+_POINT = {"name": "ui.interaction.chat_round_trip_ms", "kind": "numeric", "unit": "ms", "value": 1}
+_LEGACY_REJECTIONS = {
+    "login: password too long": ("/auth/login", {"email": _EMAIL, "password": _SECRET * 60}, _SECRET),
+    "login: password not text": ("/auth/login", {"email": _EMAIL, "password": [_SECRET]}, _SECRET),
+    "signup: password too long": ("/auth/signup", {"email": _EMAIL, "password": _SECRET * 60, "invite": "i"}, _SECRET),
+    "signup: password too short": ("/auth/signup", {"email": _EMAIL, "password": _SHORT, "invite": "i"}, _SHORT),
+    "chat: prompt not text": ("/chat", {"prompt": [_SECRET]}, _SECRET),
+    "chat: unknown mode": ("/chat", {"prompt": "hi", "mode": _SECRET}, _SECRET),
+    "metrics: unknown metric": ("/metrics/ui", {"points": [{**_POINT, "name": _SECRET}]}, _SECRET),
+    "metrics: unknown kind": ("/metrics/ui", {"points": [{**_POINT, "kind": _SECRET}]}, _SECRET),
+    "metrics: undeclared label": ("/metrics/ui", {"points": [{**_POINT, "labels": {_SECRET: "x"}}]}, _SECRET),
+    "attachment: name not text": ("/conversations/c1/attachments", {"filename": [_SECRET], "data": "aGk="}, _SECRET),
+}
+
+
+@pytest.mark.parametrize(("path", "body", "value"), list(_LEGACY_REJECTIONS.values()), ids=list(_LEGACY_REJECTIONS))
+def test_no_legacy_validation_answer_repeats_what_was_sent(
+        legacy_store: InMemoryAuthStore, path: str, body: dict[str, object], value: str) -> None:
+    r = TestClient(app).post(path, json=body)
+    assert r.status_code == 422, r.text[:300]
+    assert value not in r.text
+    assert all(set(error) == {"type", "loc", "msg"} for error in r.json()["detail"]), "no input, no ctx"
 
 
 @pytest.mark.real_auth
@@ -366,7 +398,8 @@ def _json_bytes(payload: object) -> bytes:
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":")).encode()
 
 
-_JSON_ONLY = (("content-type", "application/json"),)
+#: Every Workbench answer's header set: its JSON type and, since 5ir1, no-store.
+_JSON_ONLY = (_NO_STORE, ("content-type", "application/json"))
 
 #: (method, path, JSON body) for every probe Workbench route, asserted by value
 #: wherever a test iterates it.
@@ -477,7 +510,7 @@ def test_the_real_workbench_routes_answer_one_401_body(legacy_store: InMemoryAut
                for method, path, body in routes for state, headers in failures.items()}
     assert len(answers) == 15
     distinct = {(status, body, tuple(headers)) for status, body, headers in answers.values()}
-    assert distinct == {(401, _NOT_SIGNED_IN, tuple(_json_headers(_NOT_SIGNED_IN)))}
+    assert distinct == {(401, _NOT_SIGNED_IN, tuple(_json_headers(_NOT_SIGNED_IN, _NO_STORE)))}
 
     legacy_store.seed_invite("inv-gm", role="dm")
     legacy_store.redeem_invite("inv-gm", "gm@example.com", "not-a-real-hash")
@@ -816,22 +849,21 @@ def test_a_workbench_validation_failure_echoes_nothing(world: _World) -> None:
     assert _CANARY not in r.text
 
 
-def test_a_legacy_validation_failure_keeps_fastapis_default(world: _World) -> None:
+def test_a_legacy_validation_failure_keeps_fastapis_list_and_echoes_nothing(world: _World) -> None:
     """The same handler, a non-Workbench route on the same app: FastAPI's list,
-    `input` echo included (a recorded residual, left as it is)."""
+    without the `input` its default repeated (agent-forge-harness-fhq9)."""
     r = world.client.post("/legacy/docs", json={"title": [_CANARY]})
     assert (r.status_code, r.json()) == (422, {"detail": [{
-        "type": "string_type", "loc": ["body", "title"], "msg": "Input should be a valid string",
-        "input": [_CANARY]}]})
+        "type": "string_type", "loc": ["body", "title"], "msg": "Input should be a valid string"}]})
+    assert _CANARY not in r.text
 
 
 def test_a_legacy_validation_failure_that_cannot_be_encoded_is_a_redacted_422(world: _World) -> None:
-    """The test above, with a lone surrogate in what is echoed. FastAPI's
+    """The test above, with a lone surrogate in what was echoed. FastAPI's
     default repeats `input`, and UTF-8 cannot carry a lone surrogate, so that
-    default was a 500 (bead 5mj). Such a failure — and only such a failure, the
-    test above keeps the rest — answers `redacted_errors`: the field named, the
-    value not. `ensure_ascii` sends the surrogate the way a browser's
-    `JSON.stringify` does."""
+    default was a 500 (bead 5mj). The answer names the field, never the value.
+    `ensure_ascii` sends the surrogate the way a browser's `JSON.stringify`
+    does."""
     client = TestClient(world.probe, raise_server_exceptions=False)
     body = json.dumps({"title": [_CANARY + chr(0xD800)]}).encode("ascii")
     r = client.post("/legacy/docs", content=body, headers={"content-type": "application/json"})
@@ -964,8 +996,9 @@ EXPECTED_LEGACY_ROUTES = {
 #: `workbench_router`, and the first two table routes, on the table router,
 #: whose route class is a `WorkbenchRoute`; then 1kg.4.1 slice B: the GM's
 #: tool invocations, three more on `workbench_router`; then btb PR-2: the GM's
-#: named groups, six more on `workbench_router`. No exemption list and nothing
-#: pending.
+#: named groups, six more on `workbench_router`; then q156: the
+#: character-sheet link, three more in `document_lifecycle_api`. No
+#: exemption list and nothing pending.
 EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/conversations"), ("POST", "/conversations"),
     ("GET", "/conversations/{conversation_id}"), ("PATCH", "/conversations/{conversation_id}"),
@@ -989,9 +1022,15 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/archive"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unarchive"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/link/{participant_id}"),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unlink"),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/link"),
     # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
     # while the media capability is off (`service/assets_api.py`).
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
+    # 1kg.8.1.3's media reads and deletes: two more, dark the same way
+    # (`service/asset_serving_api.py`).
+    ("GET", "/campaigns/{campaign_id}/assets/{asset_id}"), ("DELETE", "/campaigns/{campaign_id}/assets/{asset_id}"),
     ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
     ("POST", "/table/screen"), ("POST", "/table/leave"),
@@ -1027,6 +1066,45 @@ def test_the_route_census_is_complete() -> None:
     assert workbench == EXPECTED_WORKBENCH_ROUTES
 
 
+@pytest.mark.real_auth
+def test_every_workbench_route_on_the_real_app_answers_no_store(
+    legacy_store: InMemoryAuthStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """5ir1 (release review S8) over the whole census, not a sample: every
+    Workbench route answers a caller with no cookie with `Cache-Control:
+    no-store`, once. The media capability is on, or its two routes would
+    match nothing. Positive control: a legacy answer carries none — it is
+    the route class that sends it, not the middleware."""
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+    client = TestClient(app)
+    _, workbench = _census(app)
+    assert workbench == EXPECTED_WORKBENCH_ROUTES
+    for method, path in sorted(workbench):
+        answer = client.request(method, re.sub(r"\{[^}]+\}", "x", path), json=None if method == "GET" else {})
+        assert answer.headers.get_list("cache-control") == ["no-store"], (method, path, answer.status_code)
+    legacy = client.get("/auth/me")
+    assert (legacy.status_code, legacy.headers.get("cache-control")) == (401, None)
+
+
+def test_a_workbench_route_that_sends_its_own_cache_control_keeps_it() -> None:
+    target = FastAPI()
+    install_workbench(target)
+    router = workbench_router(lambda: SessionData(user_id=1, role="dm"))
+
+    @router.get("/own")
+    def own() -> Response:
+        return Response(content=b"x", headers={"Cache-Control": "private, max-age=60"})
+
+    @router.get("/plain")
+    def plain() -> dict[str, str]:
+        return {}
+
+    target.include_router(router)
+    client = TestClient(target)
+    assert client.get("/own").headers.get_list("cache-control") == ["private, max-age=60"]
+    assert client.get("/plain").headers.get_list("cache-control") == ["no-store"]
+
+
 def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:
     (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
     target = FastAPI()
@@ -1037,7 +1115,9 @@ def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:
 
     install_spa(target, tmp_path)
     everything = sorted((m, p) for p, r in api_routes(target) for m in (r.methods or set()) - {"HEAD"})
-    assert everything == [("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/workspace")]
+    assert everything == [
+        ("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/tavern"), ("GET", "/workspace"),
+    ]
     assert _census(target) == ({("GET", "/healthz")}, set())
 
 
@@ -1058,7 +1138,7 @@ def test_an_api_route_named_like_the_spa_mount_is_still_seen(tmp_path: Path) -> 
     target.include_router(router)
     install_spa(target, tmp_path)
     names = sorted(route.name for _, route in api_routes(target))
-    assert names == ["spa:/", "spa:/profile", "spa:/workspace", SPA_MOUNT_NAME]
+    assert names == ["spa:/", "spa:/profile", "spa:/tavern", "spa:/workspace", SPA_MOUNT_NAME]
     assert _census(target) == (set(), {("GET", "/campaigns/{campaign_id}/ui")})
     assert _prefixes_of(target) == {"campaigns"}
     assert _live_api_prefixes(target) == {"/campaigns", "/docs", "/openapi.json", "/redoc"}
@@ -1306,6 +1386,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "documents_api.py").resolve(),
         (REPO_ROOT / "service" / "document_lifecycle_api.py").resolve(),
         (REPO_ROOT / "service" / "assets_api.py").resolve(),
+        (REPO_ROOT / "service" / "asset_serving_api.py").resolve(),
         (REPO_ROOT / "service" / "table_session_api.py").resolve(),
         (REPO_ROOT / "service" / "table_api.py").resolve(),
         (REPO_ROOT / "service" / "tool_invocations_api.py").resolve(),

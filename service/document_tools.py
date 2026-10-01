@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
 
+import config
+
 from .campaign_store import CampaignStore, PostgresCampaignStore
 from .conversation_store import ConversationStore, PostgresConversationStore
 from .db import UnitOfWork
@@ -162,8 +164,17 @@ class DocumentToolExecutor:
         return self._tool_id
 
     def precheck(self, unit: UnitOfWork, target: InvocationTarget) -> ErrorCode | None:
-        """Nothing to check before admission: the brief is required, and T1
-        has already checked the campaign and the thread with their owner."""
+        """`account_limit_reached` at the account's stored-byte cap
+        (agent-forge-harness-531x, PR-B), before any provider spend — T2's
+        `persist_generated` write carries no quota of its own (its locks are
+        not ours to reorder), so the account is soft-checked here instead.
+        The overshoot this admits is bounded by `IN_FLIGHT_CAP` (2) times one
+        generated document, about 12 KB or less. Otherwise nothing: the brief
+        is required, and T1 has already checked the campaign and the thread
+        with their owner."""
+        stored = self._stores.documents.stored_bytes(unit, target.owner_id)
+        if stored >= config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX:
+            return ErrorCode.ACCOUNT_LIMIT_REACHED
         return None
 
     def run(self, ctx: ExecutionContext) -> DocumentResult:

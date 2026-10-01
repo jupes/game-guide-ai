@@ -1,7 +1,7 @@
 {
   "contract_version": 1,
   "result_kinds": ["card", "document", "media"],
-  "card_kinds": ["stat_block"],
+  "card_kinds": ["stat_block", "loot", "names", "rules", "hooks"],
   "library_categories": ["npcs", "bestiary", "documents", "session-log", "cues"],
   "renderers": ["game_document", "stat_block_card"],
   "capabilities": [
@@ -13,12 +13,12 @@
   "tools": [
     {"id": "npc", "result_kind": "document", "creates_doc_type": "npc", "card_kind": null, "brief": "required", "command": "/npc", "aliases": [], "label": "NPC", "icon": "person_add", "blurb": "Generate an NPC dossier", "working_label": "Writing the dossier…", "capability": null},
     {"id": "monster", "result_kind": "card", "creates_doc_type": null, "card_kind": "stat_block", "brief": "required", "command": "/monster", "aliases": [], "label": "Monster", "icon": "shield", "blurb": "Generate a stat block", "working_label": "Building the stat block…", "capability": null},
-    {"id": "loot", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/loot", "aliases": [], "label": "Loot", "icon": "diamond", "blurb": "Roll treasure and hoards", "working_label": "Rolling treasure…", "capability": null},
-    {"id": "names", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/names", "aliases": [], "label": "Names", "icon": "badge", "blurb": "Names by culture and role", "working_label": "Gathering names…", "capability": null},
-    {"id": "rules", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/rules", "aliases": [], "label": "Rules", "icon": "gavel", "blurb": "Look up a rule, with citations", "working_label": "Checking the rules…", "capability": null},
+    {"id": "loot", "result_kind": "card", "creates_doc_type": null, "card_kind": "loot", "brief": "required", "command": "/loot", "aliases": [], "label": "Loot", "icon": "diamond", "blurb": "Roll treasure and hoards", "working_label": "Rolling treasure…", "capability": null},
+    {"id": "names", "result_kind": "card", "creates_doc_type": null, "card_kind": "names", "brief": "required", "command": "/names", "aliases": [], "label": "Names", "icon": "badge", "blurb": "Names by culture and role", "working_label": "Gathering names…", "capability": null},
+    {"id": "rules", "result_kind": "card", "creates_doc_type": null, "card_kind": "rules", "brief": "required", "command": "/rules", "aliases": [], "label": "Rules", "icon": "gavel", "blurb": "Look up a rule, with citations", "working_label": "Checking the rules…", "capability": null},
     {"id": "portrait", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/portrait", "aliases": [], "label": "Portrait", "icon": "image", "blurb": "Portrait or scene art", "working_label": "Painting…", "capability": "image_generation"},
     {"id": "encounter", "result_kind": "document", "creates_doc_type": "encounter", "card_kind": null, "brief": "required", "command": "/encounter", "aliases": [], "label": "Encounter", "icon": "swords", "blurb": "Build a balanced encounter", "working_label": "Balancing the encounter…", "capability": null},
-    {"id": "hooks", "result_kind": "card", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/hook", "aliases": ["/hooks"], "label": "Hooks", "icon": "flag", "blurb": "Three plot hooks", "working_label": "Finding hooks…", "capability": null},
+    {"id": "hooks", "result_kind": "card", "creates_doc_type": null, "card_kind": "hooks", "brief": "required", "command": "/hook", "aliases": ["/hooks"], "label": "Hooks", "icon": "flag", "blurb": "Three plot hooks", "working_label": "Finding hooks…", "capability": null},
     {"id": "recap", "result_kind": "document", "creates_doc_type": "session-notes", "card_kind": null, "brief": "optional", "command": "/recap", "aliases": [], "label": "Recap", "icon": "history_edu", "blurb": "Recap the session so far", "working_label": "Recapping the session…", "capability": null},
     {"id": "map", "result_kind": "media", "creates_doc_type": null, "card_kind": null, "brief": "required", "command": "/map", "aliases": [], "label": "Map", "icon": "map", "blurb": "Sketch a battlemap", "working_label": "Sketching the map…", "capability": "image_generation"}
   ],

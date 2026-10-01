@@ -50,7 +50,7 @@ describe('suggestionFor', () => {
 describe('toStatBlockCardProps', () => {
   function statBlock(overrides: Record<string, unknown> = {}) {
     const result = ToolResultSchema.parse(cardResult(overrides))
-    if (result.result_kind !== 'card') throw new Error('unreachable')
+    if (result.result_kind !== 'card' || result.card.card_kind !== 'stat_block') throw new Error('unreachable')
     return result.card.stat_block
   }
 

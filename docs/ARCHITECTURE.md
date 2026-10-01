@@ -882,7 +882,7 @@ The running service reads them once, at startup, through `startup_settings`,
 which adds two rules: the capability cannot be on with no store, and `gcs`
 needs a build that carries the client (asked without importing it). Both are
 refused by name, so startup fails loudly, database or no database. Every object-store call outside `service/media_objects.py` goes through
-`via_store`, where slice c puts the thread limiter. The store's health signal
+`via_store`, where the thread limiter holds (below). The store's health signal
 for `1kg.9.2` is the read-only `reachable()`.
 
 **The Cloud Storage store** (`service/media_gcs.py`) keeps the same contract,
@@ -919,7 +919,7 @@ asset store is GM-side and system-side only.
 Two Workbench routes on `workbench_router`, each a `MediaRoute` whose `matches`
 answers `Match.NONE` while the capability is off, so the router goes on exactly
 as for a path that does not exist, in every topology (`SchedulerRoute`'s
-precedent; no catch-all). Serving the bytes and deleting an asset are slice c's.
+precedent; no catch-all). Serving the bytes and deleting an asset are below.
 
 | Route | Answers |
 |---|---|
@@ -951,6 +951,53 @@ with `client_max_body_size 20m`, `proxy_request_buffering off` and
 `/campaigns` request keeps the prefix location's settings. Production has no
 nginx; Cloud Run's settings, ffmpeg and Pillow in both images, and the bucket are
 `1kg.9.5`'s. CI installs ffmpeg for the tests (`.github/workflows/ci.yml`).
+
+### Serving and deleting (`service/asset_serving_api.py`, `service/media_serving.py`)
+
+Two more `MediaRoute`s on `workbench_router`, dark the same way. They are the
+GM's alone: a table client never sees an `asset_id`, and its reads are
+`1kg.7.x`'s. No API route begins with `/assets/`, where the built UI's bundle
+lives (RV-1).
+
+| Route | Answers |
+|---|---|
+| `GET /campaigns/{campaign_id}/assets/{asset_id}` | a `ready` asset's bytes: `200`, `206` for one byte range, `416` with `Content-Range: bytes */<size>` for a range past the end. A position of any length means its value (one longer than the size in digits is compared, never converted), so no numeral makes a `500`. Another unit, a syntax error, several ranges and any `If-Range` are ignored and the whole object answered (RFC 9110 section 14; no validator is ever issued, so no `If-Range` can match). `503` with `Retry-After` when the instance's store tokens are all taken |
+| `DELETE /campaigns/{campaign_id}/assets/{asset_id}` | `204`. One transaction writes the tombstone, releases the reservation, enqueues `asset.delete` last and records `asset.deleted` (detail: the asset id); the job is tried after the response. A deleted asset is missing, so a second delete is the `404` |
+
+**A read, in order.** Ownership and `ready` in one statement (`resolve_ready`;
+missing, another GM's, not yet ready, failed and deleted are one `404`), in a
+transaction that commits before any byte moves; then the range; then one of the
+instance's store tokens for the response's whole life; then the stream, opened
+and pulled 256 KiB at a time on worker threads under that token. An object that
+vanished between the query and the read is the `404` too: only a deletion takes
+one away.
+
+**The headers** (SEC-19): the type the server recorded, `nosniff`,
+`Content-Security-Policy: default-src 'none'; sandbox` sent by the route itself
+(the application's middleware only fills in what a response has not set),
+`Content-Disposition: inline` with no filename, `Cache-Control: no-store`,
+`Accept-Ranges: bytes`, and no `ETag` or `Last-Modified`. No
+`Cross-Origin-Resource-Policy`: that is undecided for non-table pages (threat
+model TA-6, `ifq`).
+
+**The thread limiter** (MS-10, MS-7; `service/media_objects.py`). The stores are
+synchronous, so they run in a dedicated limiter of six tokens per instance
+(*suggested*), counted under a lock rather than by an event loop, never waited
+for. A byte response holds one token for its whole life and runs its store call
+and every chunk pull on a worker thread under it — never on the event loop, and
+on none of the default limiter's tokens, which are the request pool login and
+chat run in (F-2, SEC-35) — so a seventh concurrent response is refused.
+`via_store` refuses to run on an event loop's thread at all, and every other
+caller (the upload leg, the job handlers) borrows a token there for one call:
+when all six are taken an upload answers `503` and a job attempt fails and is
+retried later. A stream an upload leg pulls outside `via_store` is not yet
+counted (`agent-forge-harness-f8l1`).
+
+**The re-check seam** (requirement 5.6, SEC-16). A byte response may be given an
+async re-check, asked before each chunk once 1 MB has gone since the last
+answer; `False` ends the stream. The GM's route passes none — its authorisation
+is the query that found the key — and the table side's is `1kg.7.x`'s, which may
+use `media_serving` without importing the asset store.
 
 ## Running it
 
@@ -1353,22 +1400,40 @@ else `failed attempt_expired`. An attempt's deadline is 150 s from its start,
 and every provider call an executor makes is bounded by what is left of it.
 
 **One clock.** Every time the service writes or compares is the route's clock,
-passed into SQL; no statement calls `now()`. The pilot day's chat half is
-`calls_today()`'s own database day, so the two agree except within seconds of
-UTC midnight.
+passed into SQL; no statement calls `now()`. The pilot day's chat half is the
+ledger's chat turns since the route clock's UTC midnight (`UsageDay.chat_turns`,
+agent-forge-harness-u2uj), so the two agree except within seconds of UTC
+midnight.
 
 **Cost guards.** The X-5 cap is two in-flight tool invocations per GM across
 every campaign and instance, counted in PostgreSQL under the advisory lock;
 `/chat` turns are not counted. The hourly window is `/chat`'s own per-user
-window, so a GM who spends it on tools is throttled on `/chat` too. The pilot
-day counts today's chat turns plus every GM's tool attempts against
-`CHAT_DAILY_CAP`, while `/chat`'s own daily check is unchanged and does not
-count tools. Two residuals follow, acceptable only because E-8 forbids enabling
-any tool before the owner chooses the limits: once a tool is enabled, the
-pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
+window, so a GM who spends it on tools is throttled on `/chat` too. `/chat`
+checks the per-account day, then the pilot day, both from
+`metering.provider_attempts`; the pilot day counts today's chat turns plus
+every GM's tool attempts against `CHAT_DAILY_CAP`. The tool route does not
+check the per-account cap at all -- a deliberate follow-up, not an oversight
+(agent-forge-harness-u2uj). Two residuals follow, acceptable only because E-8
+forbids enabling any tool before the owner chooses the limits: once a tool is
+enabled, the pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
 different GMs at the edge can overshoot, because the day check is serialised
 per GM only. Each provider attempt is recorded in the cost ledger under the
 operation `tool_invocation`, with the attempt row's `operation_id`.
+
+**The cap and the day are shared with AI edits** (bead `1kg.5.5`, I-3, I-4).
+Both counts are read through one reader, `service/workbench_load.py`'s
+`WorkbenchLoad`, which the tool admission (`InvocationStores.load`, a required
+field) and the AI edit admission both use: `in_flight` is one `UNION ALL` over
+`campaign.tool_invocations` and `campaign.document_edits`, and `attempts_since`
+counts `campaign.tool_attempts` and `campaign.document_edit_attempts`. So X-5's
+two slots are two operations of either kind, and the pilot day counts edit
+attempts too. Both admissions take the same lock, `(WORKBENCH_IN_FLIGHT, owner)`
+— the tool store's own member and key, taken by `WorkbenchLoad.hold_in_flight_lock`
+on the edit path — so they serialise across tabs and instances. The cap's
+sentence says what holds it: *Two tools are already running.* only when both
+slots are tools, otherwise *Two assistant tasks are already running.* (C-15).
+`tool_invocations.bounded_client` is the one builder of a Workbench provider
+client, for an admitted attempt only; a static test pins its callers (C-24).
 
 **The model.** `resolve_tool_model` is the one place the server chooses the
 model (D-8; bead `iov` gives it the tier mapping), and the client can send none.
@@ -1414,3 +1479,64 @@ invocation service's.
   `provider_timeout`; any other refusal of the request, or a campaign gone
   between admission and `run`, is `backend_unavailable`. None of them leaves a
   document.
+
+### Card tools (1kg.4.3)
+
+Five tools land as a card instead of a document: `monster` (the `/chat`
+stat-block shape, reused), `loot`, `names`, `rules` and `hooks`. Generation is
+`service/card_generation.py`, a library with **no route, no SQL and no
+database**; the executors are `service/card_executors.py`. Almost everything
+`card_generation` needs is imported from `document_generation` (1kg.5.4) —
+the strict-JSON parser, the nonce mechanics, the output bound and, for the
+monster, `validate_generated_fields` itself — never copied, so there is one
+definition of each safety fact across both tool families.
+
+- **The envelope is exactly one key**, the tool's own payload key
+  (`{"rules", "cited"}` for rules): the model cannot pick the card kind,
+  write prose, propose a suggestion or supply a citation's source (SEC-33,
+  X-8). `CardKind`, `TOOL_CARD_KIND` and the five card contract models
+  (`workbench_contracts.py`, `contracts.ts`) are the shared wire shapes; the
+  monster reuses `StatBlockCard`/`StatBlockContent` from the `/chat` contract
+  unchanged.
+- **The monster reuses the statblock document's own validation twice**: the
+  model writes the statblock document type's own keys, `validate_generated_fields`
+  checks them exactly as it does for a stored document, and
+  `card_generation.statblock_to_card` is the one mapping onto the card shape
+  (renaming `creature_type`→`type` and `challenge_rating`→`cr`; every other
+  key passes through unchanged, or is server-owned and never reaches the
+  card). A monster missing `speed`, all six ability scores, `challenge_rating`
+  or an action, beyond `name`/`ac`/`hp` (already required by the statblock
+  type), is `missing_substance` — never a card with nothing to run at the
+  table.
+- **Loot, names and hooks are bounded lists of short entries**, normalized
+  (line breaks flattened, blank optional fields dropped) before validation;
+  an empty list, after normalization, fails the content model's own minimum,
+  so an empty card is never produced.
+- **Rules citations are server-built and cross-checked (I-5).** The tool
+  reuses `/chat`'s own retrieval, its answerable-and-chunks gate and its
+  corpus adapter — never `RagService.answer` or the graph, which would trace
+  the call and bypass the allowlist. The model lists which numbered passages
+  it used in `cited`; the server resolves those numbers against the passages
+  it retrieved and builds each citation's source itself. A citation number
+  the server did not supply is dropped and counted, never trusted; an inline
+  `[n]` marker in the answer that names an unresolved number is refused; and
+  when nothing the model cited resolves, the tool ends `not_in_sources`,
+  final — the GM edits the brief, and nothing beyond the embedding was spent.
+- **The card executors read and write nothing** (`precheck` and `finish` are
+  no-ops): a card has no aggregate, so exactly-once is trivial. `RulesExecutor`
+  is the one exception that retrieves, through a `RagLike` the app registers
+  once (`card_executors.set_rag_provider`, beside `usage_capture`'s ledger
+  provider) — the same registration pattern as every other module that needs
+  something the app builds, so route modules keep importing nothing from it.
+- **Prose and suggestions are server-composed from closed tables**, never
+  model text: every creative tool's prose is `document_generation`'s own
+  "invented" disclosure sentence, and each tool's suggestions (if any) carry a
+  fixed label and icon and no brief, so no model output ever starts work
+  (SEC-32). `judge_result` still drops a suggestion whose target may not run.
+- **Failures** follow the same two markers as the document tools:
+  `card_generation.InvalidCardOutput` is converted to
+  `tool_invocations.OutputRefused` (`provider_failed`, retryable) by the
+  executor, outside the `except` so the raised marker chains neither a cause
+  nor a context; `NotInSources` is the rules corpus miss above
+  (`not_in_sources`, final). Every other refusal is `backend_unavailable` or
+  `provider_timeout`, exactly as 1kg.4.1 already maps them.

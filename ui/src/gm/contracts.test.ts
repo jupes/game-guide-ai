@@ -81,6 +81,7 @@ import {
   GROUP_NAME_MAX_CHARS,
   GroupCreateRequestSchema,
   GroupPatchRequestSchema,
+  CharacterSheetLinkSchema,
   SEAT_ALIAS_MAX_CHARS,
   SEAT_STATUSES,
   SeatCreateRequestSchema,
@@ -497,10 +498,18 @@ describe('forward-version behaviour (RAIL-24, X-8)', () => {
     })
   })
 
-  it('turns an unknown card kind into the same placeholder (1kg.4.3 adds four)', () => {
-    const loot = { result_kind: 'card', tool_id: 'loot', prose: '', suggestions: [], card: { card_kind: 'loot', items: [] } }
-    expect(parseToolResult(loot)).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
-    expect(parseToolInvocation({ ...working, status: 'done', result: loot })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  it('turns an unknown card kind into the same placeholder', () => {
+    const scroll = { result_kind: 'card', tool_id: 'loot', prose: '', suggestions: [], card: { card_kind: 'spell_scroll', items: [] } }
+    expect(parseToolResult(scroll)).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+    expect(parseToolInvocation({ ...working, status: 'done', result: scroll })).toEqual({ kind: 'unknown', reason: 'unknown_kind' })
+  })
+
+  it('reads an empty loot card as invalid, never as a kind it does not know (1kg.4.3)', () => {
+    const empty = { result_kind: 'card', tool_id: 'loot', prose: '', suggestions: [], card: { card_kind: 'loot', loot: { title: 'A pouch', items: [] } } }
+    expect(parseToolResult(empty)).toEqual({ kind: 'unknown', reason: 'invalid' })
+    expect(parseToolInvocation({ ...working, status: 'done', result: empty })).toEqual({ kind: 'unknown', reason: 'invalid' })
+    const one = { ...empty, card: { card_kind: 'loot', loot: { title: 'A pouch', items: [{ name: 'Copper pieces' }] } } }
+    expect(parseToolResult(one).kind).not.toBe('unknown')
   })
 
   it('reads a version as an integral number only', () => {
@@ -584,7 +593,7 @@ describe('reading a timeline (AE-43, RAIL-24)', () => {
         invocation: {
           ...invocation,
           status: 'done',
-          result: { result_kind: 'card', tool_id: 'monster', prose: '', suggestions: [], card: { card_kind: 'loot', items: [] } },
+          result: { result_kind: 'card', tool_id: 'monster', prose: '', suggestions: [], card: { card_kind: 'spell_scroll', items: [] } },
         },
       },
       'unknown_kind',
@@ -1917,6 +1926,15 @@ describe('the groups family (btb)', () => {
     expect(isKnownErrorCode('group_taken')).toBe(false)
   })
 
+  it('knows the account-limit code (agent-forge-harness-531x, PR-B) and still reads an unknown code as generic', () => {
+    const code = 'account_limit_reached'
+    expect(isKnownErrorCode(code)).toBe(true)
+    expect(readErrorBody({ detail: { code, message: 'Fixed.', retryable: false } })).toEqual({
+      kind: 'workbench',
+      info: { code, message: 'Fixed.', retryable: false },
+    })
+  })
+
   it('takes a key minted by crypto.randomUUID, and refuses a create without one', () => {
     const create = (command_id?: string) =>
       GroupCreateRequestSchema.safeParse({ schema_version: 1, ...(command_id ? { command_id } : {}), name: 'Scouts' })
@@ -1933,5 +1951,34 @@ describe('the groups family (btb)', () => {
       expect(request(` ${dice.repeat(GROUP_NAME_MAX_CHARS)} `).success).toBe(true)
       expect(request(dice.repeat(GROUP_NAME_MAX_CHARS + 1)).success).toBe(false)
     }
+  })
+})
+
+describe('the character-sheet link (q156)', () => {
+  it('knows the link_taken code, and still reads an unknown code as generic', () => {
+    expect(isKnownErrorCode('link_taken')).toBe(true)
+    expect(readErrorBody({ detail: { code: 'link_taken', message: 'Fixed.', retryable: false } })).toEqual({
+      kind: 'workbench',
+      info: { code: 'link_taken', message: 'Fixed.', retryable: false },
+    })
+  })
+
+  it('refuses seat_active without a live seat, and accepts every other shape', () => {
+    const base = { schema_version: 1, document_id: 'doc_aaaaaaaaaaaaaaaaaaaaaa' }
+    expect(CharacterSheetLinkSchema.safeParse({ ...base, participant_id: null, seat_active: false }).success)
+      .toBe(true)
+    expect(
+      CharacterSheetLinkSchema.safeParse({ ...base, participant_id: 'prt_aaaaaaaaaaaaaaaaaaaaaa', seat_active: true })
+        .success,
+    ).toBe(true)
+    expect(
+      CharacterSheetLinkSchema.safeParse({
+        ...base,
+        participant_id: 'prt_aaaaaaaaaaaaaaaaaaaaaa',
+        seat_active: false,
+      }).success,
+    ).toBe(true)
+    expect(CharacterSheetLinkSchema.safeParse({ ...base, participant_id: null, seat_active: true }).success)
+      .toBe(false)
   })
 })

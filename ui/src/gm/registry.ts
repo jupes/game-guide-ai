@@ -744,6 +744,7 @@ export function validateRegistry(registry: Registry): void {
     }
     if ((t.creates_doc_type !== null) !== (t.result_kind === 'document')) problems.push(`${t.id}: only a document result names the type it creates`)
     if (t.card_kind !== null && t.result_kind !== 'card') problems.push(`${t.id}: only a card result names a card kind`)
+    if (t.card_kind === null && t.result_kind === 'card') problems.push(`${t.id}: a card tool names its card kind`)
     if (t.capability !== null && !capabilityIds.has(t.capability)) problems.push(`${t.id}: unknown capability ${t.capability}`)
     if (t.creates_doc_type !== null && !registry.document_types.some((d) => d.id === t.creates_doc_type)) {
       problems.push(`${t.id}: creates an unknown document type`)

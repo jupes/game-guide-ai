@@ -1,0 +1,787 @@
+"""`service/card_executors.py` (agent-forge-harness-1kg.4.3): group O of the
+alignment brief, plus unit-level coverage of `CardExecutor`/`RulesExecutor`.
+Every store is an in-memory twin; the LLM is a scripted fake behind the real
+`ProviderClientFactory`; the rules corpus is a scripted fake `RagLike`.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import traceback
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+
+import httpx
+import openai
+import pytest
+from fastapi import Request
+from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage
+
+from ingestion.retrieval import RetrievalResult, RetrievedChunk
+from service import card_executors as ce
+from service import card_generation as cg
+from service import document_tools, generate, tool_invocations, tool_invocations_api, usage_capture
+from service.app import (
+    app,
+    get_message_store,
+    get_timeline_database,
+    get_timeline_store,
+    get_usage_day,
+    require_session,
+)
+from service.campaign_store import InMemoryCampaignStore
+from service.conversation_store import InMemoryConversationStore
+from service.db import InMemoryDatabase
+from service.document_store import InMemoryDocumentStore
+from service.history import InMemoryMessageStore
+from service.model_catalog import DEFAULT_ALIAS
+from service.models import Source
+from service.providers import ProviderClientFactory
+from service.session import SessionData
+from service.tests import card_generation_fixtures as fx
+from service.timeline_store import InMemoryTimelineStore
+from service.tool_invocation_store import InMemoryToolInvocationStore
+from service.tool_invocations import (
+    Admission,
+    ExecutionContext,
+    InvocationStores,
+    InvocationTarget,
+    ToolSettings,
+    cancellation_probe,
+    context_reader,
+)
+from service.usage_ledger import InMemoryUsageLedgerStore, UsageDay
+from service.workbench_contracts import ToolId, ToolInvocationRequest
+from service.workbench_load import InMemoryWorkbenchLoad
+
+GM_A, GM_B = 1, 2
+T0 = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+TTL = timedelta(seconds=tool_invocations.ATTEMPT_TTL_S)
+CARD_TOOLS = (ToolId.MONSTER, ToolId.LOOT, ToolId.NAMES, ToolId.HOOKS, ToolId.RULES)
+
+
+def good(tool: ToolId) -> str:
+    return fx.envelope(tool)
+
+
+class ScriptedLLM:
+    """The provider: answers from a script; an item may be a callable run first."""
+
+    def __init__(self, tool: ToolId = ToolId.MONSTER) -> None:
+        self.script: list[Any] = [good(tool)]
+        self.calls: list[dict[str, Any]] = []
+
+    def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:
+        self.calls.append({"input": input, "config": config, **kwargs})
+        item = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
+        while callable(item) and not isinstance(item, BaseException):
+            item = item()
+        if isinstance(item, BaseException):
+            raise item
+        return AIMessage(content=item, usage_metadata={"input_tokens": 3, "output_tokens": 5, "total_tokens": 8})
+
+
+def _chunk(n: int) -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=f"c{n}", content_type="rule", entity_name=None, class_name=None, feature_name=None,
+        chapter="Conditions", section=f"Section {n}", page_start=n, text_preview=f"preview {n}",
+        cosine_distance=0.1,
+    )
+
+
+def _result(n: int = 1, *, answerable: bool = True) -> RetrievalResult:
+    chunks = [_chunk(i) for i in range(1, n + 1)]
+    return RetrievalResult(
+        chunks=chunks, full_texts={c.chunk_id: f"A held creature's speed becomes 0. (passage {c.chunk_id})"
+                                    for c in chunks},
+        top1_distance=0.1 if answerable else 0.9, answerable=answerable,
+        book_by_id={c.chunk_id: "synthetic-5e" for c in chunks},
+    )
+
+
+class FakeRetriever:
+    def __init__(self, result: RetrievalResult | Callable[[], RetrievalResult] | BaseException) -> None:
+        self._result = result
+        self.calls: list[tuple[Any, ...]] = []
+
+    def retrieve(self, prompt: str, k: int, reranker: Any, mode: str) -> RetrievalResult:
+        self.calls.append((prompt, k, reranker, mode))
+        if isinstance(self._result, BaseException):
+            raise self._result
+        return self._result() if callable(self._result) else self._result
+
+
+@dataclass
+class FakeRag:
+    retriever: FakeRetriever
+    reranker: Any = None
+
+
+class Sink:
+    def __init__(self) -> None:
+        self.rows: list[Any] = []
+
+    def write(self, rows: Any) -> int:
+        self.rows.extend(rows)
+        return len(rows)
+
+
+@dataclass(frozen=True)
+class Table:
+    owner: int
+    campaign: str
+    conversation: str
+
+
+@dataclass
+class World:
+    db: InMemoryDatabase
+    messages: InMemoryMessageStore
+    stores: InvocationStores
+    executors: dict[ToolId, Any]
+    llm: ScriptedLLM
+    factory: ProviderClientFactory
+    rag: FakeRag | None
+    sink: Sink
+    outcomes: list[str]
+    usage_day: UsageDay
+    settings: ToolSettings = field(default_factory=lambda: ToolSettings(frozenset(CARD_TOOLS)))
+    now: list[datetime] = field(default_factory=lambda: [T0])
+
+    def clock(self) -> datetime:
+        return self.now[0]
+
+    def table(self, owner: int = GM_A, *, name: str = "Nocturne") -> Table:
+        with self.db.transaction() as unit:
+            campaign = self.stores.campaigns.create(unit, owner_id=owner, name=name, now=self.now[0]).id
+            conversation = self.stores.conversations.create(
+                unit, owner_id=owner, campaign_id=campaign, title=None, started_mode=None,
+            )
+        self.messages.claim_conversation(conversation.id, owner)
+        return Table(owner, campaign, conversation.id)
+
+    def count(self, name: str) -> int:
+        with self.db.transaction() as unit:
+            from service.campaign_store import shared_rows
+
+            return len(shared_rows(self.db, name).visible(unit))
+
+    def entries(self, table: Table) -> list[dict[str, Any]]:
+        with self.db.transaction() as unit:
+            found = self.stores.timeline.entry_window(unit, table.conversation, before=None, limit=50)
+        return [cast(dict[str, Any], row.payload) for row in found]
+
+
+@pytest.fixture
+def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
+    db = InMemoryDatabase()
+    messages = InMemoryMessageStore()
+    campaigns, conversations = InMemoryCampaignStore(db), InMemoryConversationStore(db)
+    timeline = InMemoryTimelineStore(db, messages=messages)
+    stores = InvocationStores(
+        InMemoryToolInvocationStore(db), campaigns, conversations, timeline, InMemoryWorkbenchLoad(db),
+    )
+    doc_tools = document_tools.DocumentToolStores(campaigns, conversations, timeline, InMemoryDocumentStore(db))
+    llm = ScriptedLLM()
+    factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: llm})
+    outcomes: list[str] = []
+    executors = {**document_tools.document_executors(doc_tools), **ce.card_executors()}
+    usage_day = UsageDay(InMemoryUsageLedgerStore(db), db)
+    made = World(db, messages, stores, executors, llm, factory, None, Sink(), outcomes, usage_day)
+    overrides: dict[Callable[..., Any], Callable[..., Any]] = {
+        tool_invocations_api.get_invocation_stores: lambda: made.stores,
+        tool_invocations_api.get_tool_executors: lambda: made.executors,
+        tool_invocations_api.get_tool_settings: lambda: made.settings,
+        tool_invocations_api.get_clock: lambda: made.clock,
+        tool_invocations_api.get_provider_factory: lambda: made.factory,
+        get_timeline_database: lambda: made.db,
+        get_timeline_store: lambda: made.stores.timeline,
+        get_message_store: lambda: made.messages,
+        get_usage_day: lambda: made.usage_day,
+    }
+    app.dependency_overrides.update(overrides)
+    monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: made.sink)
+    monkeypatch.setattr(ce, "_provider", lambda: made.rag)
+    real_outcome = usage_capture._emit_outcome_record
+
+    def outcome(operation: Any, fields: dict[str, Any]) -> None:
+        outcomes.append(f"{fields.get('purpose')}:{fields.get('outcome')}")
+        real_outcome(operation, fields)
+
+    monkeypatch.setattr(usage_capture, "_emit_outcome_record", outcome)
+    monkeypatch.setattr(generate, "_RETRY_BACKOFF_SECONDS", 0.0)
+    _as(GM_A)
+    yield made
+    for dependency in (*overrides, require_session):
+        app.dependency_overrides.pop(cast(Any, dependency), None)
+
+
+@pytest.fixture
+def client(world: World) -> TestClient:
+    return TestClient(app)
+
+
+def _as(user_id: int) -> None:
+    def session(request: Request) -> SessionData:
+        return SessionData(user_id=user_id, role="dm")
+
+    app.dependency_overrides[require_session] = session
+
+
+_BRIEFS = {ToolId.MONSTER: "a brute", ToolId.LOOT: "a chest", ToolId.NAMES: "five dockworkers",
+           ToolId.HOOKS: "a rumour", ToolId.RULES: "what happens when held"}
+
+
+def body(table: Table, *, tool: ToolId, invocation_id: str, brief: str | None = None,
+          campaign: str | None = None, conversation: str | None = None) -> dict[str, Any]:
+    return {
+        "schema_version": 1, "invocation_id": invocation_id, "tool_id": tool.value,
+        "brief": brief if brief is not None else _BRIEFS[tool],
+        "campaign_id": campaign or table.campaign, "conversation_id": conversation or table.conversation,
+    }
+
+
+def _wire_id(name: str) -> str:
+    """`InvocationId` is 16 to 64 characters; pad a short, readable test name."""
+    return name.ljust(16, "0")
+
+
+def post(client: TestClient, table: Table, invocation_id: str, **kwargs: Any) -> Any:
+    made = body(table, invocation_id=_wire_id(invocation_id), **kwargs)
+    return client.post(f"/campaigns/{made['campaign_id']}/tool-invocations", json=made)
+
+
+# ── O-1: each tool completes, and the entry agrees with the GET ─────────────
+
+
+@pytest.mark.parametrize("tool", CARD_TOOLS)
+def test_o1_each_card_tool_completes_and_the_entry_matches_the_status_read(
+    world: World, client: TestClient, tool: ToolId) -> None:
+    world.rag = FakeRag(FakeRetriever(_result()))
+    world.llm.script = [good(tool)]
+    table = world.table()
+    inv = f"inv_card_{tool.value}"
+    response = post(client, table, inv, tool=tool)
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    assert answer["status"] == "done"
+    assert answer["result"]["card"]["card_kind"] == (
+        "stat_block" if tool is ToolId.MONSTER else tool.value
+    )
+    status = client.get(f"/campaigns/{table.campaign}/tool-invocations/{_wire_id(inv)}")
+    assert status.json() == answer
+    [entry] = world.entries(table)
+    assert entry["invocation"] == answer
+
+
+# ── O-2: a malformed answer is provider_failed, retryable; a retry runs every guard ─
+
+
+def test_o2_a_malformed_answer_is_provider_failed_and_a_retry_runs_every_guard(
+    world: World, client: TestClient) -> None:
+    world.llm.script = ["not json", good(ToolId.MONSTER)]
+    table = world.table()
+    inv = "inv_card_bad"
+    failed = post(client, table, inv, tool=ToolId.MONSTER).json()
+    assert (failed["status"], failed["error"]["code"], failed["error"]["retryable"]) == (
+        "failed", "provider_failed", True,
+    )
+    assert world.outcomes[-1] == "card_generation:parse_failure"
+    world.now[0] = T0 + timedelta(seconds=30)
+    done = post(client, table, inv, tool=ToolId.MONSTER).json()
+    assert (done["status"], done["attempt"]) == ("done", 2)
+
+
+# ── O-3: a rules miss is not_in_sources, final, and spends no generation call ─
+
+
+def test_o3_a_rules_miss_is_not_in_sources_final_with_no_generation_call(
+    world: World, client: TestClient) -> None:
+    world.rag = FakeRag(FakeRetriever(_result(answerable=False)))
+    table = world.table()
+    inv = "inv_rules_miss"
+    answer = post(client, table, inv, tool=ToolId.RULES).json()
+    assert (answer["status"], answer["error"]["code"], answer["error"]["retryable"]) == (
+        "failed", "not_in_sources", False,
+    )
+    assert world.llm.calls == []
+    assert world.outcomes == ["card_generation:skipped_by_gate"]
+    again = post(client, table, inv, tool=ToolId.RULES)
+    assert again.json()["status"] == "failed"
+    assert world.llm.calls == []
+
+
+# ── O-4: no RagService is backend_unavailable, retryable, 0 invokes ─────────
+
+
+def test_o4_no_rag_service_is_backend_unavailable_retryable(world: World, client: TestClient) -> None:
+    world.rag = None
+    table = world.table()
+    answer = post(client, table, "inv_rules_norag", tool=ToolId.RULES).json()
+    assert (answer["status"], answer["error"]["code"], answer["error"]["retryable"]) == (
+        "failed", "backend_unavailable", True,
+    )
+    assert world.llm.calls == []
+
+
+# ── O-5: the retriever is called with exactly (brief, TOP_K, reranker, "rules") ─
+
+
+def test_o5_the_retriever_is_called_with_the_chat_rules_scope(world: World, client: TestClient) -> None:
+    from config import TOP_K
+
+    retriever = FakeRetriever(_result())
+    reranker = object()
+    world.rag = FakeRag(retriever, reranker)
+    table = world.table()
+    post(client, table, "inv_rules_scope", tool=ToolId.RULES, brief="what happens when held")
+    assert retriever.calls == [("what happens when held", TOP_K, reranker, "rules")]
+
+
+# ── O-8: no model, provider or tier is ever named ────────────────────────────
+
+
+def test_o8_no_model_or_tier_is_named_anywhere(world: World, client: TestClient) -> None:
+    from typing import get_args
+
+    from service.model_catalog import CATALOG, PUBLIC_MODELS, PublicTier
+
+    world.rag = FakeRag(FakeRetriever(_result()))
+    table = world.table()
+    hidden = {alias.lower() for alias in CATALOG} | {m.lower() for m in PUBLIC_MODELS} | {
+        tier.lower() for tier in get_args(PublicTier)
+    }
+    for tool in CARD_TOOLS:
+        world.llm.script = [good(tool)]
+        response = post(client, table, f"inv_card_names_{tool.value}", tool=tool)
+        text = response.text.lower()
+        assert not any(name in text for name in hidden if name), (tool, text)
+
+
+# ── O-9b: `run` turns every InvalidCardOutput code into OutputRefused ───────
+
+
+def test_o9b_a_refused_output_chains_no_cause_and_logs_the_code_once(
+    world: World, client: TestClient, caplog: Any) -> None:
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    world.llm.script = ["not json"]
+    table = world.table()
+    post(client, table, "inv_card_chain", tool=ToolId.MONSTER)
+    warnings = [r for r in caplog.records if r.name == "service.card_executors"]
+    assert len(warnings) == 1
+    assert "not_json" in warnings[0].getMessage()
+
+
+def test_o9b_unit_the_cause_and_context_are_both_none() -> None:
+    executor = ce.CardExecutor(ToolId.MONSTER)
+    ctx = _fake_ctx(ScriptedLLM(), ["not json"])
+    try:
+        executor._generate(ctx, cg.CardRequest(ToolId.MONSTER, "x"), 1)
+    except tool_invocations.OutputRefused as exc:
+        assert exc.__cause__ is None and exc.__context__ is None
+    else:
+        pytest.fail("expected OutputRefused")
+
+
+def _fake_ctx(llm: ScriptedLLM, script: list[Any] | None = None) -> ExecutionContext:
+    if script is not None:
+        llm.script = script
+    factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: llm})
+    target = InvocationTarget(GM_A, "camp_x", "conv_x", ToolId.MONSTER, "a brief", None)
+    admission = Admission(target, "inv_x", "entry_x", T0, 1, "op_x", T0 + TTL, DEFAULT_ALIAS)
+    return ExecutionContext(admission, clock=lambda: T0, factory=factory, probe=lambda: None)
+
+
+# ── O-10: suggestions are filtered against availability ──────────────────────
+
+
+def test_o10_suggestions_keep_only_enabled_tools(world: World, client: TestClient) -> None:
+    world.settings = ToolSettings(frozenset({ToolId.MONSTER, ToolId.LOOT}))  # encounter is not enabled
+    table = world.table()
+    answer = post(client, table, "inv_card_suggestions", tool=ToolId.MONSTER).json()
+    tools = {s["tool_id"] for s in answer["result"]["suggestions"]}
+    assert tools == {"loot"}
+
+
+# ── O-11: precheck and finish are side-effect free ──────────────────────────
+
+
+def test_o11_precheck_returns_none_and_finish_returns_its_input_unchanged() -> None:
+    executor = ce.CardExecutor(ToolId.LOOT)
+    assert executor.precheck(cast(Any, None), cast(Any, None)) is None
+    sentinel = {"tool_id": "loot"}
+    assert executor.finish(cast(Any, None), cast(Any, None), cast(Any, sentinel)) is sentinel
+
+
+# ── O-12: the embedding provider is pinned to the allowlist ─────────────────
+
+
+def test_o12_openai_is_on_the_workbench_allowlist_and_the_embed_alias_too() -> None:
+    from service.model_catalog import WORKBENCH_PROVIDERS
+
+    assert "openai" in WORKBENCH_PROVIDERS
+    assert usage_capture.EMBED_MODEL  # a non-empty alias exists to record under
+
+
+# ── Unit-level: the rules executor's own guards ─────────────────────────────
+
+
+def test_rules_executor_cancel_between_retrieval_and_generation_ends_cancelled(
+    world: World, client: TestClient) -> None:
+    table = world.table()
+    inv = "inv_rules_cancel"
+
+    def cancel_then_result() -> RetrievalResult:
+        client.post(f"/campaigns/{table.campaign}/tool-invocations/{inv}/cancel")
+        return _result()
+
+    world.rag = FakeRag(FakeRetriever(cancel_then_result))
+    # First admit the row so the cancel endpoint has something to flag.
+    admitted = tool_invocations.submit(
+        world.db, world.stores, world.executors, world.settings, SessionData(user_id=GM_A, role="dm"),
+        ToolInvocationRequest.model_validate(body(table, tool=ToolId.RULES, invocation_id=inv)),
+        now=world.clock(), chat_turns_today=0,
+    )
+    assert isinstance(admitted, Admission)
+    ctx = ExecutionContext(admitted, clock=world.clock, factory=world.factory,
+                            probe=cancellation_probe(world.db, world.stores, admitted, world.clock),
+                            reader=context_reader(world.db))
+    outcome = tool_invocations.execute(world.executors[ToolId.RULES], ctx, available=lambda t: True)
+    assert outcome.cancelled is True
+    assert world.llm.calls == []
+
+
+def test_rules_executor_out_of_time_before_the_embed_call(world: World) -> None:
+    world.rag = FakeRag(FakeRetriever(_result()))
+    admission = Admission(
+        InvocationTarget(GM_A, "camp_x", "conv_x", ToolId.RULES, "a rules question", None),
+        "inv_x", "entry_x", T0, 1, "op_x", T0 + timedelta(seconds=ce.EMBED_WORST_S + 1), DEFAULT_ALIAS,
+    )
+    ctx = ExecutionContext(admission, clock=lambda: T0, factory=world.factory, probe=lambda: None)
+    with pytest.raises(tool_invocations.OutOfTime):
+        ce.RulesExecutor().run(ctx)
+    assert world.rag.retriever.calls == []
+
+
+def test_rules_executor_trims_the_lowest_ranked_passage_until_it_fits(
+    monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ce, "GENERATION_CONTEXT_MAX_CHARS", 400)
+    passages = tuple(
+        cg.CorpusPassage(text="x" * 100, source=Source(book="synthetic-5e", page=n, snippet="s"))
+        for n in range(1, 6)
+    )
+    bounded = ce.RulesExecutor._bounded_passages(
+        cast(Any, type("Ctx", (), {"target": InvocationTarget(GM_A, "c", "v", ToolId.RULES, "q", None)})()),
+        passages,
+    )
+    assert 1 <= len(bounded) < len(passages)
+    # M-2: the trim drops from the END (the lowest-ranked passage), never the
+    # best-ranked one — kills the mutant that trims `passages[1:]` instead.
+    assert bounded == passages[:len(bounded)]
+
+
+def test_card_executors_keys_equal_card_tools() -> None:
+    assert set(ce.card_executors()) == set(cg.CARD_TOOLS)
+    assert isinstance(ce.card_executors()[ToolId.RULES], ce.RulesExecutor)
+    for tool in cg.CARD_TOOLS - {ToolId.RULES}:
+        assert type(ce.card_executors()[tool]) is ce.CardExecutor
+
+
+# ── H-2: private/produced text never reaches a log, an exception, a repr or a
+# response body (agent-forge-harness-1kg.4.3, PR #228 review) ───────────────
+
+
+def test_h2_n6_refusal_warning_logs_only_operation_tool_and_code(
+    world: World, client: TestClient, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A malformed answer is refused; the warning names only the operation,
+    the tool and the code — never the brief or the model's own text. Kills
+    the mutant that appends `ctx.target.brief` to the message (N-6)."""
+    caplog.set_level(logging.DEBUG)
+    canary = fx.CANARY
+    world.llm.script = [f"not json {canary}"]
+    table = world.table()
+    answer = post(client, table, "inv_h2_n6", tool=ToolId.MONSTER, brief=f"a brief with {canary}").json()
+    assert answer["status"] == "failed"
+    warnings = [r for r in caplog.records if r.name == "service.card_executors"]
+    assert len(warnings) == 1
+    record = warnings[0]
+    assert isinstance(record.args, tuple)
+    assert len(record.args) == 3
+    assert record.args[1:] == (ToolId.MONSTER.value, cg.CardInvalid.NOT_JSON.value)
+    for r in caplog.records:
+        assert canary not in r.getMessage()
+        assert canary not in repr(r.args)
+
+
+def test_h2_n5b_repr_of_generated_card_excludes_the_card_content(world: World) -> None:
+    """`GeneratedCard.card` stays `repr=False` — kills the mutant that drops
+    it, which would otherwise print the model's own produced text (N-5b)."""
+    canary = fx.CANARY
+    executor = ce.CardExecutor(ToolId.LOOT)
+    tainted = fx.envelope(ToolId.LOOT, loot={**fx.LOOT_FIELDS, "title": f"tainted {canary}"})
+    ctx = _fake_ctx(ScriptedLLM(), [tainted])
+    request = cg.CardRequest(ToolId.LOOT, f"brief with {canary}")
+    generated = executor._generate(ctx, request, 1)
+    assert canary not in repr(generated)
+    assert canary not in repr(request)
+
+
+def test_h2_n5c_the_loot_validation_chain_is_suppressed(world: World) -> None:
+    """A malformed loot quantity fails Pydantic validation; the translation
+    keeps `from None`, so the chain is suppressed and pydantic's own
+    `input_value` (which could echo the model's text) never rides along.
+    Kills the mutant that drops `from None` (N-5c)."""
+    canary = fx.CANARY
+    request = cg.CardRequest(ToolId.LOOT, "a brief")
+    raw = {"title": "T", "items": [{"name": "N", "quantity": {"bad": canary}}]}
+    with pytest.raises(cg.InvalidCardOutput) as excinfo:
+        cg._parse_loot(request, raw)
+    exc = excinfo.value
+    assert exc.__cause__ is None
+    assert exc.__suppress_context__ is True
+    rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert canary not in rendered
+
+
+def test_h2_route_level_canary_never_reaches_logs_or_responses(
+    world: World, client: TestClient, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The GM's brief, the model's own produced text, and the rules corpus
+    text and label the server retrieves, must never surface in a log record
+    — across a parse failure, both `not_in_sources` paths, a provider error,
+    and two successes (so the produced/passage logging paths are exercised,
+    not just the refusal ones)."""
+    caplog.set_level(logging.DEBUG)
+    canary = fx.CANARY
+    table = world.table()
+
+    def tainted_brief(tool: ToolId) -> str:
+        return f"{_BRIEFS[tool]} {canary}"
+
+    # (a) success: the canary rides in the model's own produced field text.
+    tainted_monster = fx.envelope(ToolId.MONSTER, stat_block={**fx.MONSTER_FIELDS, "name": f"Grix {canary}"})
+    world.llm.script = [tainted_monster]
+    ok = post(client, table, "inv_h2_ok", tool=ToolId.MONSTER, brief=tainted_brief(ToolId.MONSTER)).json()
+    assert ok["status"] == "done"
+
+    # (d) a parse failure: the canary is in the unparseable text itself.
+    world.llm.script = ["not json " + canary]
+    bad = post(client, table, "inv_h2_bad", tool=ToolId.LOOT, brief=tainted_brief(ToolId.LOOT)).json()
+    assert bad["status"] == "failed"
+
+    provider_response = httpx.Response(401, request=httpx.Request("POST", "https://provider.invalid"))
+    world.llm.script = [openai.AuthenticationError(f"nope {canary}", response=provider_response, body=None)]
+    provider_failed = post(
+        client, table, "inv_h2_provider", tool=ToolId.NAMES, brief=tainted_brief(ToolId.NAMES),
+    ).json()
+    assert provider_failed["status"] == "failed"
+
+    tainted_chunk = _chunk(1)
+    gate_miss_result = RetrievalResult(
+        chunks=[tainted_chunk], full_texts={tainted_chunk.chunk_id: f"a synthetic passage about {canary}"},
+        top1_distance=0.9, answerable=False, book_by_id={tainted_chunk.chunk_id: f"synthetic-5e {canary}"},
+    )
+    world.rag = FakeRag(FakeRetriever(gate_miss_result))
+    gate_miss = post(client, table, "inv_h2_gate", tool=ToolId.RULES, brief=tainted_brief(ToolId.RULES)).json()
+    assert (gate_miss["status"], gate_miss["error"]["code"]) == ("failed", "not_in_sources")
+
+    # (b) a cited-list miss: unlike the gate, this reaches generation, so the
+    # retrieved passage text/label AND the model's own answer text are both
+    # tainted, and both must still never reach a log.
+    cited_chunk = _chunk(2)
+    cited_miss_result = RetrievalResult(
+        chunks=[cited_chunk], full_texts={cited_chunk.chunk_id: f"a synthetic passage about {canary}"},
+        top1_distance=0.1, answerable=True, book_by_id={cited_chunk.chunk_id: f"synthetic-5e {canary}"},
+    )
+    world.rag = FakeRag(FakeRetriever(cited_miss_result))
+    world.llm.script = [json.dumps({"rules": {"title": "T", "answer": f"An answer {canary}."}, "cited": [99]})]
+    cited_miss = post(client, table, "inv_h2_cited", tool=ToolId.RULES, brief=tainted_brief(ToolId.RULES)).json()
+    assert (cited_miss["status"], cited_miss["error"]["code"]) == ("failed", "not_in_sources")
+
+    # (c) a rules SUCCESS: cited [1] so the tainted passage/label actually
+    # reaches generation and a card is produced from it — the only path that
+    # exercises both the passages-log site (card_executors) and the
+    # produced-outcome log site (card_generation) with corpus text.
+    success_chunk = _chunk(3)
+    rules_success_result = RetrievalResult(
+        chunks=[success_chunk], full_texts={success_chunk.chunk_id: f"A held creature's speed becomes 0. {canary}"},
+        top1_distance=0.1, answerable=True, book_by_id={success_chunk.chunk_id: f"synthetic-5e {canary}"},
+    )
+    world.rag = FakeRag(FakeRetriever(rules_success_result))
+    world.llm.script = [json.dumps({"rules": {"title": "T", "answer": f"The speed becomes 0. {canary} [1]"},
+                                     "cited": [1]})]
+    rules_ok = post(client, table, "inv_h2_rules_ok", tool=ToolId.RULES, brief=tainted_brief(ToolId.RULES)).json()
+    assert rules_ok["status"] == "done"
+
+    for record in caplog.records:
+        assert canary not in record.getMessage(), record.getMessage()
+        assert canary not in repr(record.args)
+    # The two successes legitimately echo the produced text in their own
+    # response body (that is the point of a card); only the refusal paths
+    # must never show the canary in their response.
+    for inv in ("inv_h2_bad", "inv_h2_provider", "inv_h2_gate", "inv_h2_cited"):
+        status = client.get(f"/campaigns/{table.campaign}/tool-invocations/{_wire_id(inv)}")
+        assert canary not in status.text, (inv, status.text)
+    for inv in ("inv_h2_ok", "inv_h2_rules_ok"):
+        status = client.get(f"/campaigns/{table.campaign}/tool-invocations/{_wire_id(inv)}")
+        assert status.json()["status"] == "done", (inv, status.text)
+
+
+def test_h2_generation_exceptions_never_carry_the_canary() -> None:
+    """`generate_card`'s own raised exceptions — `InvalidCardOutput` on the
+    parse-failure path and `NotInSources` on the citation-miss path — must
+    never carry the canary in `str`, `repr`, the `__context__`/`__cause__`
+    chain, or a rendered traceback. The route-level test above only ever
+    sees the executor's translated `OutputRefused`/`failed` envelope; this
+    calls the generation layer directly so the raw exception is inspected."""
+    canary = fx.CANARY
+
+    def raised(tool: ToolId, script: list[Any], passages: tuple[cg.CorpusPassage, ...] = ()) -> BaseException:
+        llm = ScriptedLLM()
+        llm.script = script
+        request = cg.CardRequest(tool, f"brief {canary}", passages)
+        try:
+            cg.generate_card(request, client=llm, alias=DEFAULT_ALIAS, config=None, max_attempts=1)
+        except (cg.InvalidCardOutput, cg.NotInSources) as exc:
+            return exc
+        raise AssertionError("expected generate_card to raise")
+
+    def assert_clean(exc: BaseException) -> None:
+        assert canary not in str(exc)
+        assert canary not in repr(exc)
+        assert canary not in repr(exc.__context__)
+        assert canary not in repr(exc.__cause__)
+        rendered = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        assert canary not in rendered
+
+    assert_clean(raised(ToolId.MONSTER, ["not json " + canary]))
+    tainted_passage = cg.CorpusPassage(
+        text=f"A held creature's speed becomes 0. {canary}",
+        source=Source(book=f"synthetic-5e {canary}", chapter="Conditions", section="S1", page=1, snippet="s"),
+    )
+    assert_clean(raised(
+        ToolId.RULES,
+        [json.dumps({"rules": {"title": "T", "answer": f"An answer {canary}."}, "cited": [99]})],
+        passages=(tainted_passage,),
+    ))
+
+
+# ── M-1: EMBED_WORST_S is pinned to the retriever's own backoff constant ────
+
+
+def test_m1_embed_worst_s_is_pinned_to_the_retriever_s_own_backoff() -> None:
+    """`EMBED_WORST_S` mirrors `RagRetriever.embed`'s own retry loop; pinning
+    it independently (a sum, not the closed form) means the two can never
+    drift silently. Kills the mutant that changes the closed form's `/2` to
+    `/20` (M-1, E-13)."""
+    import config
+    from ingestion.retrieval import _EMBED_RETRY_BACKOFF_S, EMBED_MAX_ATTEMPTS
+
+    expected = EMBED_MAX_ATTEMPTS * (config.EMBED_REQUEST_TIMEOUT_S + config.EMBED_CONNECT_TIMEOUT_S) + sum(
+        _EMBED_RETRY_BACKOFF_S * n for n in range(1, EMBED_MAX_ATTEMPTS)
+    )
+    assert ce.EMBED_WORST_S == expected
+
+
+# ── M-3: a cancel flagged before attempt 2 stops the retry — no paid retry ──
+
+
+def test_m3_a_cancel_flagged_after_a_transient_failure_stops_the_retry(
+    world: World, client: TestClient) -> None:
+    """The executor forwards `between_attempts=ctx.check_cancelled` into the
+    retry loop; a cancel flagged while the first attempt is in flight must
+    stop a second, paid attempt. Kills the mutant that drops the forwarded
+    callback (M-3, E-10)."""
+    table = world.table()
+    inv = _wire_id("inv_m3_cancel")
+
+    def transient_then_cancel() -> BaseException:
+        client.post(f"/campaigns/{table.campaign}/tool-invocations/{inv}/cancel")
+        response = httpx.Response(429, request=httpx.Request("POST", "https://provider.invalid"))
+        return openai.RateLimitError("slow down", response=response, body=None)
+
+    world.llm.script = [transient_then_cancel]
+    admitted = tool_invocations.submit(
+        world.db, world.stores, world.executors, world.settings, SessionData(user_id=GM_A, role="dm"),
+        ToolInvocationRequest.model_validate(body(table, tool=ToolId.MONSTER, invocation_id=inv)),
+        now=world.clock(), chat_turns_today=0,
+    )
+    assert isinstance(admitted, Admission)
+    ctx = ExecutionContext(admitted, clock=world.clock, factory=world.factory,
+                            probe=cancellation_probe(world.db, world.stores, admitted, world.clock),
+                            reader=context_reader(world.db))
+    outcome = tool_invocations.execute(world.executors[ToolId.MONSTER], ctx, available=lambda t: True)
+    assert outcome.cancelled is True
+    assert len(world.llm.calls) == 1
+
+
+# ── M-4: a cited-list miss (unlike the gate) spends one call; outcome is `none` ─
+
+
+def test_o3b_a_cited_list_miss_after_generation_is_not_in_sources_with_outcome_none(
+    world: World, client: TestClient) -> None:
+    """Unlike the retrieval gate (O-3), a citation-list miss spends one
+    generation call; the recorded outcome must be `none`, never `produced`
+    (M-4, G-7)."""
+    world.rag = FakeRag(FakeRetriever(_result()))
+    world.llm.script = [json.dumps({"rules": {"title": "T", "answer": "An answer."}, "cited": [99]})]
+    table = world.table()
+    answer = post(client, table, "inv_o3b_cited_miss", tool=ToolId.RULES).json()
+    assert (answer["status"], answer["error"]["code"], answer["error"]["retryable"]) == (
+        "failed", "not_in_sources", False,
+    )
+    assert len(world.llm.calls) == 1
+    assert world.outcomes == ["card_generation:none"]
+
+
+# ── M-5: RULES_PASSAGES never exceeds the contract's own citation bound ─────
+
+
+def test_m5_rules_passages_clamps_to_the_contract_bound() -> None:
+    """`RULES_PASSAGES` may never exceed the contract's own
+    `RULES_MAX_CITATIONS` (8), however large `RAG_CONTEXT_TOP_N` is
+    configured. Kills the mutant that drops the `min(...)` clamp (M-5,
+    G-11). Runs in a subprocess: `card_generation.RULES_PASSAGES` is a
+    module-level constant fixed at import time, and re-importing it here
+    with a different config, in-process via `importlib.reload`, would leave
+    every other already-imported reference to its classes (this module's own
+    `cg`, `card_generation_fixtures.py`'s `CardRequest`, and so on) pointing
+    at stale, pre-reload class objects for the rest of the test session."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    env = {**os.environ, "RAG_CONTEXT_TOP_N": "10"}
+    script = "from service import card_generation as cg; assert cg.RULES_PASSAGES == 8, cg.RULES_PASSAGES"
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env,
+        cwd=str(Path(__file__).resolve().parents[2]),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+# ── M-6: the embedding ContextVar scope always closes, even on the happy path ─
+
+
+def test_m6_the_embedding_scope_closes_after_retrieval(world: World) -> None:
+    """`_retrieve` always closes the embedding scope it opens — kills the
+    mutant that turns `end_embedding_scope` into a no-op, which would leave a
+    stale ContextVar scope for the next call to inherit (M-6, E-12)."""
+    from ingestion import retrieval
+
+    token = usage_capture.begin_operation(mode="gm", billed_account_id=GM_A)
+    try:
+        rag = FakeRag(FakeRetriever(_result()))
+        ctx = _fake_ctx(ScriptedLLM())
+        ce.RulesExecutor._retrieve(ctx, cast(ce.RagLike, rag))
+        assert retrieval._EMBED_SINK.get() is None
+    finally:
+        usage_capture.end_operation(token)

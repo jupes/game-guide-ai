@@ -23,9 +23,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import service.app as app_module
-from service.app import app, get_message_store, get_service
+from service.app import app, get_message_store, get_service, get_usage_day
 from service.history import InMemoryMessageStore
 from service.models import ChatMode, ChatResponse
+from service.usage_ledger import DayCount
 
 #: By code point, so that no invisible character sits in this file.
 _REFUSED = {
@@ -97,12 +98,17 @@ def test_a_refused_prompt_never_reaches_the_throttle_or_the_daily_cap(env, monke
     service, store = env
     calls: list[str] = []
 
-    def _spent(*_args: object) -> int:
-        calls.append("daily_cap")
-        return 0
+    class _RecordingDay:
+        def chat_turns(self, *, now: object) -> int:
+            calls.append("daily_cap")
+            return 0
+
+        def for_account(self, billed_account_id: int, *, now: object) -> DayCount:
+            calls.append("daily_cap")
+            return DayCount(pilot_chat_turns=0, account_operations=0)
 
     monkeypatch.setattr(app_module, "check_chat_request", lambda user_id: calls.append("throttle"))
-    monkeypatch.setattr(store, "calls_today", _spent)
+    monkeypatch.setitem(app.dependency_overrides, get_usage_day, lambda: _RecordingDay())
 
     response = _ask("Vashti" + chr(0) + "whispers of fireball")
 

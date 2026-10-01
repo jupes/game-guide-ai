@@ -87,11 +87,23 @@ lives next to this rationale at
     denying everywhere else. ``payment`` is denied because Stripe is not
     integrated (`xiu-yje`); that decision is the one to revisit here.
 
+``Strict-Transport-Security: max-age=31536000; includeSubDomains``
+    agent-forge-harness-5ir1 (release review S9). Until now HTTPS rested on the
+    ``.app`` TLD's place on the browsers' preload list, which stops holding the
+    day a custom domain is put in front (agent-forge-harness-na7). One year is
+    the floor the preload list itself asks for; ``includeSubDomains`` because
+    nothing under this host serves plain HTTP — na7 must keep that true of a
+    custom domain's subdomains, or narrow this. No ``preload``: that
+    submits the domain to a list that is slow to leave, which is an owner's
+    decision, not a header's. A browser ignores the header on a plain-HTTP
+    response, so Compose and the E2E (nginx on ``http://localhost``) are
+    unaffected.
+
 A route may set a policy of its own and keep it: the middleware in `app.py`
 uses ``setdefault`` for every header below, so the asset route of SEC-19 can
 answer with ``default-src 'none'; sandbox``, and a table page with
 ``no-referrer``, without having to unpick this.
-`service/tests/test_security_headers.py` pins that for all five headers.
+`service/tests/test_security_headers.py` pins that for all six headers.
 """
 
 from __future__ import annotations
@@ -125,3 +137,7 @@ CROSS_ORIGIN_OPENER_POLICY: Final[str] = "same-origin"
 #: `microphone=(self)` goes on the GM pages' own responses (kept by the
 #: middleware's `setdefault`), never here, where it would grant it app-wide.
 PERMISSIONS_POLICY: Final[str] = "camera=(), microphone=(), geolocation=(), payment=()"
+
+#: agent-forge-harness-5ir1. Sent by the same middleware and, byte for byte, by
+#: `ui/nginx.conf`; guarded by `tests/test_security_headers_contract.py`.
+STRICT_TRANSPORT_SECURITY: Final[str] = "max-age=31536000; includeSubDomains"

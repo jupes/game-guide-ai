@@ -279,6 +279,26 @@
           "retryable": false
         }
       }
+    },
+    {
+      "name": "a sheet linked to another seat, or a seat that already has a sheet (q156, AUD-15): names neither id",
+      "value": {
+        "detail": {
+          "code": "link_taken",
+          "message": "That sheet or seat is already linked. Unlink it first.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "name": "the account's campaign count or stored document bytes is at its limit (531x): the number is never named",
+      "value": {
+        "detail": {
+          "code": "account_limit_reached",
+          "message": "This account has as many campaigns as it can hold.",
+          "retryable": false
+        }
+      }
     }
   ],
   "invalid": [

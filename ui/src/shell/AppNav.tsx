@@ -17,7 +17,7 @@ import * as React from 'react'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type Screen = 'landing' | 'workspace' | 'profile'
+export type Screen = 'landing' | 'workspace' | 'profile' | 'tavern'
 export type ChatMode = 'sage' | 'spell' | 'rules' | 'gm'
 
 /**
@@ -41,6 +41,14 @@ export interface AppNavState {
   /** Return to the workspace without disturbing the active mode (swe1.7). */
   backToWorkspace: () => void
   /**
+   * Open the campaign screen at /tavern (agent-forge-harness-74j): a user
+   * navigation (`push`) that leaves the mode, the conversation and the
+   * campaign selection alone. Optional, as `navIntent` is, so the hand-built
+   * `AppNavState` values in existing tests still type-check; call it as
+   * `openTavern?.()`.
+   */
+  openTavern?: () => void
+  /**
    * How the MOST RECENT screen change above should reach the URL
    * (agent-forge-harness-y40). Optional so `.storybook/shellHarness.tsx`'s
    * hand-built `AppNavState` still type-checks unedited; `UrlNavigation.tsx`
@@ -61,6 +69,7 @@ const defaultState: AppNavState = {
   backToLanding: () => {},
   openProfile: () => {},
   backToWorkspace: () => {},
+  openTavern: () => {},
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- context co-located with provider; HMR-only rule
@@ -138,6 +147,11 @@ export function AppNavProvider(
     setNavIntent('push')
   }, [])
 
+  const openTavern = useCallback(() => {
+    setScreen('tavern')
+    setNavIntent('push')
+  }, [])
+
   const value = useMemo<AppNavState>(
     () => ({
       screen,
@@ -149,6 +163,7 @@ export function AppNavProvider(
       backToLanding,
       openProfile,
       backToWorkspace,
+      openTavern,
       navIntent,
     }),
     [
@@ -161,6 +176,7 @@ export function AppNavProvider(
       backToLanding,
       openProfile,
       backToWorkspace,
+      openTavern,
       navIntent,
     ],
   )

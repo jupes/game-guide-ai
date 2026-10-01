@@ -342,6 +342,14 @@ function throttled(res: Response): ChatResult {
       outcome: 'throttled',
     }
   }
+  if (reason === 'account') {
+    return {
+      kind: 'error',
+      message:
+        "You've reached your daily question limit. It resets overnight; your conversations are all still here.",
+      outcome: 'throttled',
+    }
+  }
   if (reason === 'user') {
     return {
       kind: 'error',

@@ -36,10 +36,10 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-#: The three client screens. `ui/src/shell/routes.ts` is the client half of
+#: The client screens. `ui/src/shell/routes.ts` is the client half of
 #: this table; `tests/test_spa_routes_parity.py` fails if the two drift.
 #: Exact-match only -- no parameters, no wildcards, no trailing slash.
-CLIENT_ROUTES: tuple[str, ...] = ("/", "/workspace", "/profile")
+CLIENT_ROUTES: tuple[str, ...] = ("/", "/workspace", "/profile", "/tavern")
 
 #: Name prefix for each allowlist route `install_spa` registers. Exported so
 #: a test can filter these (and the mount below) out of the live route table

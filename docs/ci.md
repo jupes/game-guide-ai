@@ -7,19 +7,32 @@ quality gate but never deploy.
 
 ```text
 pull request / push to master
-   ├─ python-tests        pytest — service, ingestion, repo guards ─┐
-   ├─ ui-tests            typecheck · lint · vitest ───────────────┤
-   ├─ contract-parity     Pydantic vs Zod, differential fuzz       │
-   │                      (gates deploy; not a need of ui-e2e)     │
-   │                                                              ▼
-   │                    ui-e2e — production Compose + perf budgets
-   └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate
-          │                    (skips loudly until secrets are configured)
-          ▼
-       deploy             push/manual, master only; requires every gate to pass
+   ├─ python-tests        ruff · mypy · pytest (service, ingestion, repo guards) ─┐
+   ├─ python-db-tests     pytest against a real PostgreSQL service ──────────────┤
+   ├─ ui-tests            typecheck · lint · vitest ───────────────────────────┤
+   ├─ contract-parity     Pydantic vs Zod, differential fuzz                   │
+   ├─ ui-e2e              production Compose + perf budgets                    │
+   │                      (no `needs:` — runs in parallel with the above)      │
+   └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate      │
+          │                    (skips loudly until secrets are configured)     │
+          ▼                                                                    ▼
+       deploy             push/manual, master only; requires every job above to pass
                           (skipped until hosting exists — never a green
                            check for having deployed nothing)
 ```
+
+`python-tests` and `python-db-tests` used to be one job, run one after the other:
+the unit/coverage step then the PostgreSQL integration step. They are now two
+jobs that start together, because the second needs nothing the first produces
+(agent-forge-harness-k768). `python-tests` also caches the downloaded `ffmpeg`
+`.deb` with `actions/cache`, keyed on the runner's OS and image — some runners
+draw a slow package mirror, and a cache hit skips that download entirely;
+`apt-get` still re-fetches the signed package lists and verifies the cached
+`.deb` against them, so a poisoned cache entry cannot install an unverified
+package. `ui-e2e` carries no `needs:` either: it builds and starts its own
+Compose stack rather than consuming an artifact from any other job, so nothing
+stops it starting immediately. `deploy` is unaffected by either change — it
+still needs every test job's own result, `python-db-tests` included.
 
 ## Contract parity
 
@@ -54,6 +67,34 @@ bodies, `sys.version_info` guards, `assert_never` exhaustiveness arms, and
 narrowing on a value typed `Any`. Silence one **per line**, with
 `# type: ignore[unreachable]` and a comment naming which of those it is — never
 by removing the flag, because the next genuinely dead branch then ships unseen.
+
+## Parallel unit tests (pytest-xdist)
+
+`python-tests`' pytest step runs with **`-n auto --dist loadfile`**
+(agent-forge-harness-eddy, a follow-up to `agent-forge-harness-k768`), splitting
+the ~6.8k unit/repo-guard tests across worker processes instead of one core.
+`loadfile` assigns every test in a module to the same worker, so module-scoped
+fixtures (and anything else a module's tests share) never split across workers.
+`pytest-cov` combines each worker's coverage data automatically, so the coverage
+gate is unchanged. `auto` sizes the worker count to the runner's own CPU count —
+GitHub's public-repo Linux runners are 4 vCPU, so expect ~4 workers there.
+
+The PostgreSQL job (`python-db-tests`) stays serial: per-worker databases are a
+separate decision (agent-forge-harness-eddy), so it runs no `-n` flag.
+
+Before switching, the full unit suite was run locally three consecutive times
+under `-n 4 --dist loadfile`, plus once more with a reversed test-file order
+(`pytest-randomly` is not a project dependency), to shake out order and
+shared-state dependence. All runs matched the serial baseline's passed/skipped
+counts — see the PR that introduced this section for the measured numbers and
+wall-clock times.
+
+A test that only fails under `-n`/`--dist` is depending on state shared across
+the process (a module-global rate limiter, a reloaded env var, a fixed port or
+temp path, captured logging). Fix the test's isolation when that's small;
+otherwise pin it to a single worker with
+`@pytest.mark.xdist_group(name="<reason>")` and a one-line reason for the pin.
+Never weaken or delete an assertion to make a test pass under parallel workers.
 
 ## Browser release tracer and UI performance gate
 
@@ -136,7 +177,10 @@ into click-to-approve, independent of the metrics gate.
 Everything CI runs works locally, same commands:
 
 ```bash
-uv run --with '.[test]' python -m pytest -q                 # python-tests
+uv run --with '.[dev]' python -m pytest -q -n auto --dist loadfile  # python-tests (dev extra: pytest-xdist)
+DATABASE_URL=postgresql://<user>:<pass>@localhost:5432/<db> \
+    uv run --with '.[test]' python -m pytest -q --no-cov \
+    tests/test_schema.py ...                                 # python-db-tests (needs a real Postgres)
 cd ui && bun run typecheck && bun run lint && bun run test  # ui-tests
 uv run python contracts/workbench/tools/differential_fuzz.py  # contract-parity (needs bun too)
 cd ui && bun run test:e2e                                   # production Compose E2E

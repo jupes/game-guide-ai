@@ -103,16 +103,17 @@ def _validate_catalog_contract(
     labels: MetricLabels,
     category: str | None = None,
 ) -> None:
+    # Fixed messages: /metrics/ui answers each one to anyone (agent-forge-harness-fhq9).
     definition = _CATALOG.get(name)
     if definition is None:
-        raise ValueError(f"unknown metric: {name}")
+        raise ValueError("unknown metric")
     if kind != definition["kind"] or unit != definition["unit"]:
-        raise ValueError(f"metric kind/unit mismatch: {name}")
+        raise ValueError("metric kind/unit mismatch")
     supplied_labels = set(labels.model_dump(exclude_none=True))
     if not supplied_labels.issubset(definition["labels"]):
-        raise ValueError(f"unsupported labels for metric: {name}")
+        raise ValueError("unsupported labels for metric")
     if category is not None and category not in definition["categories"]:
-        raise ValueError(f"unsupported category for metric: {name}")
+        raise ValueError("unsupported category for metric")
 
 
 class NumericMetricPoint(BaseModel):

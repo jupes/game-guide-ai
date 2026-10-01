@@ -180,9 +180,12 @@ _Row = tuple[str, str, str, int | None, bool, tuple[str, ...] | None]
 _PRE_BEAD: dict[tuple[str, str], _Row] = {
     ("GET", "/healthz"): ("APIRoute", "healthz", "dict", None, True, ()),
     ("GET", "/models"): ("APIRoute", "get_models", "dict", None, True, ()),
+    # The body is read by a dependency, after the session check (agent-forge-harness-dl7x).
+    # agent-forge-harness-u2uj added `get_usage_day`: the daily caps now read the
+    # usage ledger instead of `get_message_store.calls_today()`.
     ("POST", "/chat"): ("APIRoute", "chat", "ChatResponse", None, True, (
-        "get_service", "get_message_store", "get_metrics_sink", "require_session",
-        "get_timeline_store", "get_timeline_database")),
+        "_chat_request", "get_service", "get_message_store", "get_metrics_sink", "require_session",
+        "get_timeline_store", "get_timeline_database", "get_usage_day")),
     ("POST", "/metrics/ui"): ("APIRoute", "record_ui_metrics", "dict", 202, True, ("get_metrics_sink",)),
     ("GET", "/conversations/{conversation_id}/messages"): (
         "APIRoute", "conversation_messages", "MessagesResponse", None, True, ("get_message_store", "require_session")),

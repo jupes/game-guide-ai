@@ -73,6 +73,7 @@
     "GroupPage",
     "GroupCreateRequest",
     "GroupPatchRequest",
+    "CharacterSheetLink",
     "LegacyChatResponse",
     "LegacyMessagesResponse"
   ]

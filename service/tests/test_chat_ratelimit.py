@@ -14,6 +14,7 @@ handing anyone on a fresh address a new one.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -21,10 +22,10 @@ from fastapi.testclient import TestClient
 
 import config
 from service import ratelimit
-from service.app import app, get_auth_store, get_message_store, get_service
+from service.app import app, get_auth_store, get_service, get_usage_day
 from service.auth_store import InMemoryAuthStore
-from service.history import InMemoryMessageStore
 from service.models import ChatMode, ChatResponse
+from service.usage_ledger import DayCount
 
 pytestmark = pytest.mark.real_auth
 
@@ -158,41 +159,51 @@ def test_a_nonsense_chat_budget_refuses_to_build_and_names_the_env_var() -> None
         )
 
 
-# ── The global daily cap (x5bz.3.3) ──────────────────────────────────────────
-# The per-tester limit above bounds a RATE. This bounds the pilot's total spend
-# for the day, because twenty testers each politely under their hourly budget is
-# still twenty times the bill. Counted from rows already in chat.messages: no new
-# schema, exact across instances, and it survives the scale-to-zero that would
-# reset an in-process counter exactly when testers come back after a break.
+# ── The daily caps (x5bz.3.3, agent-forge-harness-u2uj) ──────────────────────
+# The per-tester limit above bounds a RATE. These bound total spend for the
+# day: the pilot's shared budget, and one account's own. Counted from
+# metering.provider_attempts rather than chat.messages: a failed-but-attempted
+# turn still spends it, the count is exact across instances, and it survives
+# the scale-to-zero that would reset an in-process counter exactly when
+# testers come back after a break. `UsageDayReader` is exercised for real
+# against the ledger in service/tests/test_usage_ledger_chat.py; here a fixed
+# fake pins the /chat-level wiring: which count gates which refusal, in which
+# order, and that a read failure is 503.
 
 
-class _CappedStore(InMemoryMessageStore):
-    """A store already at (or near) the day's ceiling."""
+@dataclass
+class _FixedDay:
+    """Answers the same two counts on every read, whatever the account."""
 
-    def __init__(self, already: int) -> None:
-        super().__init__()
-        self._already = already
+    pilot: int = 0
+    account: int = 0
 
-    def calls_today(self) -> int:
-        return self._already
+    def chat_turns(self, *, now: datetime) -> int:
+        return self.pilot
+
+    def for_account(self, billed_account_id: int, *, now: datetime) -> DayCount:
+        return DayCount(pilot_chat_turns=self.pilot, account_operations=self.account)
 
 
-class _BrokenStore(InMemoryMessageStore):
-    def calls_today(self) -> int:
+class _BrokenDay:
+    def chat_turns(self, *, now: datetime) -> int:
+        raise RuntimeError("connection reset by peer")
+
+    def for_account(self, billed_account_id: int, *, now: datetime) -> DayCount:
         raise RuntimeError("connection reset by peer")
 
 
-def _client_with_store(auth, store, role: str = "player", email: str | None = None):
-    app.dependency_overrides[get_message_store] = lambda: store
+def _client_with_day(auth, day, role: str = "player", email: str | None = None):
+    app.dependency_overrides[get_usage_day] = lambda: day
     return _client_as(auth, role, email)
 
 
 def test_the_days_last_question_is_answered_and_the_next_is_refused(store) -> None:
-    at_limit = _CappedStore(config.CHAT_DAILY_CAP - 1)
-    client = _client_with_store(store, at_limit)
+    day = _FixedDay(pilot=config.CHAT_DAILY_CAP - 1)
+    client = _client_with_day(store, day)
 
     assert _ask(client) == 200, "the cap is a ceiling, not a fence one short of it"
-    at_limit._already = config.CHAT_DAILY_CAP
+    day.pilot = config.CHAT_DAILY_CAP
     assert _ask(client) == 429
 
 
@@ -201,47 +212,64 @@ def test_the_cap_refusal_names_the_daily_control_not_the_hourly_one(store) -> No
     them: 'slow down' is wrong and actively misleading once the day is spent."""
     from service.app import CHAT_THROTTLE_HEADER
 
-    client = _client_with_store(store, _CappedStore(config.CHAT_DAILY_CAP))
+    client = _client_with_day(store, _FixedDay(pilot=config.CHAT_DAILY_CAP))
     refused = client.post("/chat", json={"prompt": "one more"})
 
     assert refused.status_code == 429
     assert refused.headers[CHAT_THROTTLE_HEADER] == "daily"
 
 
-def test_the_cap_applies_to_the_operator_too(store) -> None:
+def test_the_accounts_last_operation_is_answered_and_the_next_is_refused(store) -> None:
+    """The per-account half, symmetric with the pilot-wide one above."""
+    from service.app import ACCOUNT_CAP_DETAIL, CHAT_THROTTLE_HEADER
+
+    day = _FixedDay(account=config.CHAT_ACCOUNT_DAILY_CAP - 1)
+    client = _client_with_day(store, day)
+
+    assert _ask(client) == 200, "the cap is a ceiling, not a fence one short of it"
+    day.account = config.CHAT_ACCOUNT_DAILY_CAP
+    refused = client.post("/chat", json={"prompt": "one more"})
+    assert refused.status_code == 429
+    assert refused.headers[CHAT_THROTTLE_HEADER] == "account"
+    assert refused.json() == {"detail": ACCOUNT_CAP_DETAIL}
+    assert "retry-after" not in refused.headers
+
+
+def test_the_account_cap_is_checked_before_the_pilot_cap(store) -> None:
+    """Both spent names the account, never the pilot: the tester's own budget
+    is the more specific -- and more actionable -- of the two answers."""
+    from service.app import CHAT_THROTTLE_HEADER
+
+    day = _FixedDay(pilot=config.CHAT_DAILY_CAP, account=config.CHAT_ACCOUNT_DAILY_CAP)
+    client = _client_with_day(store, day)
+
+    refused = client.post("/chat", json={"prompt": "one more"})
+    assert refused.status_code == 429
+    assert refused.headers[CHAT_THROTTLE_HEADER] == "account"
+
+
+def test_the_caps_apply_to_the_operator_too(store) -> None:
     """No role exemption. The cap exists to stop spend, and the account most able
     to run up a bill by accident is the one being used to test."""
-    client = _client_with_store(store, _CappedStore(config.CHAT_DAILY_CAP), role="dm")
-    assert client.post("/chat", json={"prompt": "plot a dungeon", "mode": "gm"}).status_code == 429
+    pilot_client = _client_with_day(store, _FixedDay(pilot=config.CHAT_DAILY_CAP), role="dm")
+    assert pilot_client.post(
+        "/chat", json={"prompt": "plot a dungeon", "mode": "gm"},
+    ).status_code == 429
+
+    account_client = _client_with_day(
+        store, _FixedDay(account=config.CHAT_ACCOUNT_DAILY_CAP), role="dm", email="dm2@example.com",
+    )
+    assert account_client.post(
+        "/chat", json={"prompt": "plot a dungeon", "mode": "gm"},
+    ).status_code == 429
 
 
-def test_a_store_failure_during_the_cap_check_is_503_not_500(store) -> None:
+def test_a_day_read_failure_is_503_not_500(store) -> None:
     """Fail closed. An unreadable count must never be followed by an allowed
     request — that would make the ceiling optional whenever the database
     hiccups — and it must not surface as an internal error either, since the
     honest answer to the tester is 'retry later'."""
-    client = _client_with_store(store, _BrokenStore())
+    client = _client_with_day(store, _BrokenDay())
     response = client.post("/chat", json={"prompt": "what does fireball do"})
 
     assert response.status_code == 503, f"expected 503, got {response.status_code}"
-
-
-def test_counting_ignores_assistant_rows_and_yesterday(store) -> None:
-    """Each turn writes a user row AND an assistant row; counting both would
-    halve the configured cap without anyone noticing."""
-    from datetime import timedelta
-
-    from service.history import _Row
-
-    messages = InMemoryMessageStore()
-    now = datetime.now(UTC)
-    messages._rows.extend([
-        _Row(id=1, conversation_id="c", mode="sage", role="user",
-             content="q", suggestions=None, created_at=now),
-        _Row(id=2, conversation_id="c", mode="sage", role="assistant",
-             content="a", suggestions=None, created_at=now),
-        _Row(id=3, conversation_id="c", mode="sage", role="user",
-             content="old", suggestions=None, created_at=now - timedelta(days=1)),
-    ])
-
-    assert messages.calls_today() == 1

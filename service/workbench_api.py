@@ -24,7 +24,8 @@ the prefix an `include_router(..., prefix=...)` added. The two handlers
 `install_workbench` registers branch on that membership (SEC-23 and S-A say
 "by path"; route membership is the same rule with a key that can be
 implemented). Every other route — every legacy route, an unknown path, a 405
-— is answered by FastAPI's own default handler, byte for byte.
+— is answered by FastAPI's own default handler, byte for byte, but for a
+validation error, which echoes nothing (`legacy_validation_errors`).
 
 Two factories here. `workbench_router` applies the `dm` gate through
 `gm_session`, so it is for GM routes and nothing else. `account_router` is the
@@ -52,6 +53,10 @@ The order of checks, as a client observes it
    entries in `workbench_router`'s dependency list.
 3. Authentication → the one 401 body, whatever `require_session` said.
 4. Role → 403 (`gm_session`), naming no resource.
+4b. Write throttle (agent-forge-harness-531x) → 429, the existing
+    `throttled_user` shape, before any route's own body is read. A GET, HEAD
+    or OPTIONS, and a route marked `reads_by_post` (a search sent by POST,
+    X-7), spend nothing from the caller's per-account budget.
 5. Ownership, in the statement → `not_found()`: missing, someone else's and
    deleted are one answer from one call.
 6. Validation that depends on the resource, then state (409). Both are
@@ -93,13 +98,16 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, params
 from fastapi.dependencies.models import Dependant
-from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, iter_route_contexts
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
+from starlette.types import Message, Receive, Scope, Send
 
+from . import ratelimit
 from .session import SessionData
 from .workbench_contracts import ErrorBody, ErrorCode, ErrorInfo, redacted_errors, validation_error_body
 
@@ -137,6 +145,10 @@ INACTIVE_DETAIL = _refusal(ErrorCode.INACTIVE, "There's no live table here.")
 #: SEC-45's Fetch Metadata refusal on a table route. It depends on nothing but
 #: those headers; the sentence is SEC-7's, because the cause is the same.
 CROSS_SITE_DETAIL = _refusal(ErrorCode.CROSS_SITE, "That request didn't come from this application.")
+#: Every Workbench answer's `Cache-Control` (agent-forge-harness-5ir1, release
+#: review S8): a campaign's private content must not stay in a shared
+#: device's browser cache. A route that sends its own keeps it.
+NO_STORE = "no-store"
 
 
 class WorkbenchRoute(APIRoute):
@@ -149,9 +161,22 @@ class WorkbenchRoute(APIRoute):
     exception that deletes a cookie, and nothing else of it. Only the table
     route class sets it — a table answer deletes a screen-grant cookie that is
     no longer live (SEC-44) — so every GM and account route's 401 stays exactly
-    one body and no header."""
+    one body, with no header of the exception's.
+
+    Every answer a Workbench route builds — its own, a refusal, a 422 —
+    carries `Cache-Control: no-store` unless the route set one (5ir1)."""
 
     forwards_cookie_deletion: ClassVar[bool] = False
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def sending(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                if "cache-control" not in headers:
+                    headers["cache-control"] = NO_STORE
+            await send(message)
+
+        await super().handle(scope, receive, sending)
 
 
 def not_found() -> NoReturn:
@@ -197,6 +222,86 @@ def gm_session(session: SessionDependency) -> SessionDependency:
 
 _STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+# ── The write throttle (agent-forge-harness-531x) ────────────────────────────
+#: The write throttle's fixed sentence (SEC-3: a refusal names no resource).
+WRITE_THROTTLED_MESSAGE = "You're saving a lot at once. Wait, then try again."
+#: Set on an endpoint function by `reads_by_post`: it is state-changing by HTTP
+#: method (a search sent by POST, X-7) but writes nothing, so it spends no
+#: write budget. Checked by attribute, never by name, so renaming a route
+#: cannot silently exempt it.
+_READS_ONLY = "_workbench_reads_only"
+#: Set on the throttle dependency itself, so the route-pin test
+#: (`test_workbench_write_throttle.py`) can find it in a route's effective
+#: dependant tree without depending on the dependency's name or module.
+_WRITE_THROTTLE = "_workbench_write_throttle"
+
+
+def reads_by_post[F: Callable[..., object]](endpoint: F) -> F:
+    """Mark a POST route that writes nothing (`documents_api.library`, a
+    search sent by POST so its text stays out of URLs, X-7): it must not spend
+    a write from the caller's budget, or the GM's read would use up their
+    write budget."""
+    setattr(endpoint, _READS_ONLY, True)
+    return endpoint
+
+
+def spend_write(user_id: int) -> None:
+    """The ONE way a Workbench write throttle answers 429: the existing
+    Workbench throttle shape (`campaigns_api.refusal`, SEC's `throttled_user`),
+    naming no resource, logged with no body and no path id beyond the
+    template."""
+    try:
+        ratelimit.check_workbench_write(user_id)
+        return
+    except ratelimit.RateLimited as exc:
+        wait = min(exc.retry_after, 86_400)
+    log.info("workbench write throttled (user_id=%s, retry_after=%ss)", user_id, wait)
+    info = ErrorInfo(code=ErrorCode.THROTTLED_USER, message=WRITE_THROTTLED_MESSAGE, retryable=True, retry_after_s=wait)
+    body = ErrorBody(detail=info).model_dump(mode="json", exclude_none=True)
+    raise HTTPException(status_code=429, detail=body["detail"], headers={"Retry-After": str(wait)})
+
+
+def write_throttle(session: SessionDependency) -> Callable[..., None]:
+    """The router-level dependency that spends one write from the caller's
+    budget on every state-changing request, before any route's own body is
+    read. A GET, HEAD or OPTIONS, and a route marked `reads_by_post`, spend
+    nothing. Declares `Depends(session)` rather than calling it, exactly as
+    `gm_session` does, so the session is resolved once per request and a
+    test's `dependency_overrides` still reaches through it."""
+
+    def throttle(request: Request, caller: SessionData = Depends(session)) -> None:
+        if request.method not in _STATE_CHANGING:
+            return
+        route = request.scope.get("route")
+        endpoint = getattr(route, "endpoint", None)
+        if getattr(endpoint, _READS_ONLY, False):
+            return
+        spend_write(caller.user_id)
+
+    setattr(throttle, _WRITE_THROTTLE, True)
+    return throttle
+
+
+def mark_write_throttle[F: Callable[..., object]](dependency: F) -> F:
+    """Mark a dependency outside this module (`table_api.mint_throttle`) as a
+    write-throttle check, so the route-pin test finds it in a route's
+    effective dependant tree without importing this module's private marker."""
+    setattr(dependency, _WRITE_THROTTLE, True)
+    return dependency
+
+
+def is_write_throttle(dependency: object) -> bool:
+    """Whether a dependency's `call` is a write-throttle check — `write_throttle`'s
+    own, or one `mark_write_throttle` marked."""
+    return bool(getattr(dependency, _WRITE_THROTTLE, False))
+
+
+def is_reads_only(endpoint: object) -> bool:
+    """Whether a route's endpoint was marked `reads_by_post`: state-changing by
+    HTTP method, but writes nothing, so it spends no write-throttle budget."""
+    return bool(getattr(endpoint, _READS_ONLY, False))
 
 
 def _is_own_origin(origin: str, host: str | None) -> bool:
@@ -284,14 +389,16 @@ def workbench_router(
 
     Router-level dependencies run in this order, before any route's own:
     `dependencies` (a capability switch that must answer like an unknown path
-    belongs here), then the origin check, then `gm`. A route cannot forget any
-    of them; a handler that needs the session declares `Depends(gm)` as well,
-    and FastAPI resolves it once per request.
+    belongs here), then the origin check, then `gm`, then the write throttle
+    (agent-forge-harness-531x) → 429. A route cannot forget any of them; a
+    handler that needs the session declares `Depends(gm)` as well, and FastAPI
+    resolves it once per request — the throttle's own `Depends(gm)` is the same
+    cached call, so the session is looked up only once.
     """
     return APIRouter(
         prefix=prefix,
         route_class=WorkbenchRoute,
-        dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm)],
+        dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm), Depends(write_throttle(gm))],
     )
 
 
@@ -305,15 +412,16 @@ def account_router(
     (bead 1kg.2.2, L-3): `workbench_router` without the `dm` gate.
 
     The same route class, so the one 401 body and the Workbench validation
-    handler apply, and the same order: the origin check, then `session`. There
-    is no role check — a player must reach these routes, and so must a GM who
-    holds a seat at another GM's table. Everything a route here reads is the
-    caller's own, found by the account in the statement.
+    handler apply, and the same order: the origin check, then `session`, then
+    the write throttle (agent-forge-harness-531x) → 429. There is no role
+    check — a player must reach these routes, and so must a GM who holds a
+    seat at another GM's table. Everything a route here reads is the caller's
+    own, found by the account in the statement.
     """
     return APIRouter(
         prefix=prefix,
         route_class=WorkbenchRoute,
-        dependencies=[Depends(origin_check(content_types)), Depends(session)],
+        dependencies=[Depends(origin_check(content_types)), Depends(session), Depends(write_throttle(session))],
     )
 
 
@@ -452,11 +560,9 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
     A Workbench route answers `validation_error_body`, which echoes nothing it
     was sent, and logs `redacted_errors` with the method and route template —
     never the exception's text, its raw errors or the URL (SEC-20, SEC-21).
-    Every other route keeps FastAPI's default answer, `input` echo included (a
-    recorded residual) — unless that answer cannot be encoded: UTF-8 cannot
-    carry a lone surrogate, so repeating one was a 500. That failure alone
-    answers `redacted_errors` instead, which names the field and never the
-    value (bead 5mj); every default that could be sent is sent byte for byte.
+    Every other route keeps FastAPI's list shape, `legacy_validation_errors`:
+    its default repeated each error's `input`, a rejected password included
+    (agent-forge-harness-fhq9), and a lone surrogate in it was a 500 (5mj).
 
     Once answered, the error and every error it chains drop their tracebacks
     (agent-forge-harness-ust7, review H1). FastAPI's frame holds the error it
@@ -476,12 +582,22 @@ async def handle_validation_error(request: Request, exc: Exception) -> Response:
             link = link.__cause__ or link.__context__
 
 
+# justification: pydantic's error dicts carry values of any type (redacted_errors takes the same).
+def legacy_validation_errors(errors: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """A legacy route's 422 list (agent-forge-harness-fhq9): `redacted_errors`,
+    each error's type, location and message, never its `input` or `ctx`. One
+    Pydantic message also repeats what was sent, a discriminated union's
+    unknown tag: it is answered without the tag."""
+    out = redacted_errors(errors)
+    for error in out:
+        if error["type"] == "union_tag_invalid":
+            error["msg"] = "Input tag does not match any of the expected tags"
+    return out
+
+
 async def _answer_validation_error(request: Request, exc: RequestValidationError) -> Response:
     if not is_workbench_route(request):
-        try:
-            return await request_validation_exception_handler(request, exc)
-        except UnicodeEncodeError:
-            return JSONResponse(status_code=422, content={"detail": redacted_errors(exc.errors())})
+        return JSONResponse(status_code=422, content={"detail": legacy_validation_errors(exc.errors())})
     errors = exc.errors()
     log.info("workbench request refused by validation: %s %s %s",
              request.method, _route_template(request), redacted_errors(errors))

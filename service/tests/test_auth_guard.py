@@ -131,12 +131,25 @@ PROTECTED_ROUTES: list[Route] = [
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/delete",
      {"schema_version": 1, "password": "password123"}),
+    # q156: the character-sheet link.
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/link/{participant_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/link/prt_aaaaaaaaaaaaaaaaaaaaaa",
+     None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unlink",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/unlink", None),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/link",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/link", None),
     # 1kg.8.1.2, live for this module only (the `store` fixture switches media on).
     ("POST", "/campaigns/{campaign_id}/assets", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets",
      {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
       "kind": "audio", "media_type": "audio/mpeg", "size_bytes": 10}),
     ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa/bytes", None),
+    # 1kg.8.1.3, live for this module only, like the two above.
+    ("GET", "/campaigns/{campaign_id}/assets/{asset_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa", None),
+    ("DELETE", "/campaigns/{campaign_id}/assets/{asset_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa", None),
     # 1kg.2.3 PR-B (agent-forge-harness-1kg.2.10): the GM's table session.
     ("GET", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session", None),
     ("POST", "/campaigns/{campaign_id}/table-session", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session",

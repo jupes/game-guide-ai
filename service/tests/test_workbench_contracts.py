@@ -1776,3 +1776,10 @@ def test_the_group_codes_are_in_the_closed_set() -> None:
     an epoch moved): a new code is no version bump, a changed meaning is one."""
     assert wc.ErrorCode("group_name_taken") is wc.ErrorCode.GROUP_NAME_TAKEN
     assert wc.ErrorCode("group_cap_reached") is wc.ErrorCode.GROUP_CAP_REACHED
+
+
+def test_the_account_limit_code_is_in_the_closed_set() -> None:
+    """A new code rather than widening ``cap_reached`` (agent-forge-harness-531x,
+    PR-B): that code's documented meaning is X-5's retryable in-flight cap, and
+    ``ui/src/gm/pendingWork.ts`` already reads it that way."""
+    assert wc.ErrorCode("account_limit_reached") is wc.ErrorCode.ACCOUNT_LIMIT_REACHED

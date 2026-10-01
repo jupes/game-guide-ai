@@ -45,8 +45,88 @@ jobs:
   python-tests:
     runs-on: ubuntu-24.04
     # The job normally takes 10-12 min. A slow apt mirror or runner used to
-    # cancel it with no test failing (agent-forge-harness-ky89).
+    # cancel it with no test failing (agent-forge-harness-ky89). The PostgreSQL
+    # integration suite used to run here too; it is now the parallel
+    # `python-db-tests` job below (agent-forge-harness-k768).
     timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # --frozen: install exactly what uv.lock pins and FAIL if the lock has
+      # drifted from pyproject.toml. Without it CI re-resolves every transitive
+      # dependency on each run, so a green build says nothing about what ships.
+      - name: Install from the lockfile
+        run: uv sync --frozen --extra dev
+      # ffmpeg and ffprobe for the media upload's audio half (1kg.8.1.2, MS-6):
+      # a system package, not a Python one. Without them the audio tests FAIL
+      # in CI rather than skip (service/tests/test_assets_api.py). The images
+      # are 1kg.9.5's to change (media ADR section 8.3), not this workflow's.
+      #
+      # The .deb itself is cached: some runners draw a slow Ubuntu archive
+      # mirror and the plain `apt-get install` has taken as long as 16 min
+      # (agent-forge-harness-k768) against a normal 17-42s. Master's push run
+      # seeds the cache every PR restores; apt still verifies each cached
+      # .deb's hash against the signed package lists it re-fetches on every
+      # run, so a poisoned cache entry cannot install an unverified package.
+      #
+      # ImageOS/ImageVersion are process environment variables the GitHub-hosted
+      # runner sets. They are NOT in the `env` expression context, which
+      # holds only the env: keys this workflow declares, so `env.ImageVersion`
+      # is an empty string. Read them in the shell and hand the key a step output.
+      - name: Runner image (cache key inputs)
+        id: runner-image
+        run: |
+          test -n "$ImageOS"
+          test -n "$ImageVersion"
+          echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+          echo "image=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - name: Cache the ffmpeg .deb
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/apt-archives
+          key: apt-ffmpeg-${{ runner.os }}-${{ steps.runner-image.outputs.image }}-v1
+          restore-keys: |
+            apt-ffmpeg-${{ runner.os }}-
+      - name: Install ffmpeg (media processing)
+        run: |
+          mkdir -p "$HOME/.cache/apt-archives/partial"
+          # Two lines, not `update && install`: under the runner's `bash -e`, a
+          # failure left of `&&` does not stop the script.
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/.cache/apt-archives" -o APT::Keep-Downloaded-Packages=true -o Acquire::Retries=3 -o Acquire::http::Timeout=30 ffmpeg
+          # `apt-get` ran under sudo, so root now owns the cache dir; give it
+          # back to the runner user or `actions/cache`'s post-job save step
+          # cannot read it. The lock file and partial/ are apt's own
+          # in-progress bookkeeping, not package data worth caching, and a
+          # stale lock left behind would block the next run's apt-get.
+          sudo chown -R "$(id -u)":"$(id -g)" "$HOME/.cache/apt-archives"
+          sudo rm -f "$HOME/.cache/apt-archives/lock"
+          sudo find "$HOME/.cache/apt-archives/partial" -mindepth 1 -delete
+      - name: Lint (ruff)
+        run: uv run --frozen --no-sync ruff check .
+      - name: Typecheck (mypy — service/ + config.py)
+        run: uv run --frozen --no-sync mypy
+      # -n auto --dist loadfile (agent-forge-harness-eddy): auto picks one worker
+      # per available core (this repo is public, so GitHub's 4 vCPU Linux runner —
+      # docs/ci.md), and loadfile keeps every test module's fixtures — including
+      # its module-scoped ones — in a single worker, so nothing splits a fixture
+      # across workers. pytest-cov combines each worker's coverage data, so the
+      # gate is unchanged. Proven flake-free first: three consecutive local
+      # `-n 4 --dist loadfile` runs plus a reversed-file-order run all matched the
+      # serial baseline's passed/skipped counts (docs/ci.md).
+      - name: pytest (service + ingestion + repo guards) + coverage gate
+        run: uv run --frozen --no-sync python -m pytest -q --cov -n auto --dist loadfile
+
+  # The PostgreSQL integration suite, split out of `python-tests` so it runs in
+  # parallel with the unit/coverage step instead of after it
+  # (agent-forge-harness-k768): the two used to run one after the other in the
+  # same job, 5-9 min of unit tests then 4-6.5 min of integration tests. This
+  # job needs no ffmpeg, so it carries none of the apt caching above.
+  python-db-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     # A real PostgreSQL, for the tests whose whole subject is behaviour no fake
     # reproduces: the atomic single-use invite guarantee (row locks), what the
     # schema actually enforces (cascades, SET NULL, NOT VALID), the migration
@@ -82,18 +162,6 @@ jobs:
       # dependency on each run, so a green build says nothing about what ships.
       - name: Install from the lockfile
         run: uv sync --frozen --extra dev
-      # ffmpeg and ffprobe for the media upload's audio half (1kg.8.1.2, MS-6):
-      # a system package, not a Python one. Without them the audio tests FAIL
-      # in CI rather than skip (service/tests/test_assets_api.py). The images
-      # are 1kg.9.5's to change (media ADR section 8.3), not this workflow's.
-      - name: Install ffmpeg (media processing)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-      - name: Lint (ruff)
-        run: uv run --frozen --no-sync ruff check .
-      - name: Typecheck (mypy — service/ + config.py)
-        run: uv run --frozen --no-sync mypy
-      - name: pytest (service + ingestion + repo guards) + coverage gate
-        run: uv run --frozen --no-sync python -m pytest -q --cov
       # Separate step, and a separate pytest run, so DATABASE_URL is scoped to
       # the tests that want a database. Exporting it for the whole suite would
       # change what the startup path does in every unrelated test (the lifespan
@@ -119,8 +187,12 @@ jobs:
             tests/test_corpus_schema.py ingestion/tests/test_scrape_wikidot.py \
             tests/test_asset_db.py tests/test_session_dividers_db.py \
             tests/test_reveal_db.py tests/test_eligibility_db.py tests/test_assets_api_db.py \
-            tests/test_document_generation_db.py tests/test_groups_api_db.py \
-            tests/test_document_tools_db.py
+            tests/test_asset_serving_db.py tests/test_document_generation_db.py \
+            tests/test_groups_api_db.py tests/test_document_tools_db.py \
+            tests/test_card_tools_db.py \
+            tests/test_document_edit_store_db.py tests/test_workbench_load_db.py \
+            tests/test_timeline_edit_entries_db.py tests/test_character_link_api_db.py \
+            tests/test_account_quotas_db.py
 
   ui-tests:
     runs-on: ubuntu-24.04
@@ -157,8 +229,13 @@ jobs:
 
   # Browser-level release tracer. This builds and starts the production Nginx
   # UI plus a deterministic FastAPI service, then records TTFB/FCP/LCP/CLS.
+  #
+  # No `needs:` (agent-forge-harness-k768): this job downloads no artifact from
+  # python-tests, python-db-tests or ui-tests — it builds and starts its own
+  # stack from the checked-out source — so it can run in parallel with them
+  # instead of waiting on both to finish first. `deploy` below still gates on
+  # every test job's own result, ui-e2e included.
   ui-e2e:
-    needs: [python-tests, ui-tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -259,7 +336,7 @@ jobs:
   deploy:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [python-tests, ui-tests, ui-e2e, contract-parity, retrieval-metrics]
+    needs: [python-tests, python-db-tests, ui-tests, ui-e2e, contract-parity, retrieval-metrics]
     # DEPLOY_TARGET gates the JOB, not a step inside it. Previously an
     # unconfigured repo ran the job, printed a "No-op" summary and exited 0 — a
     # green check for deploying nothing, which is exactly how a merge came to be
@@ -284,6 +361,7 @@ jobs:
       && github.ref == 'refs/heads/master'
       && vars.DEPLOY_TARGET != ''
       && needs.python-tests.result == 'success'
+      && needs.python-db-tests.result == 'success'
       && needs.ui-tests.result == 'success'
       && needs.ui-e2e.result == 'success'
       && needs.contract-parity.result == 'success'

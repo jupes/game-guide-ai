@@ -33,7 +33,15 @@ from pydantic import TypeAdapter, ValidationError
 
 import config
 from service import ratelimit, tool_invocations, tool_invocations_api, tracing, usage_capture, workbench_api
-from service.app import app, get_auth_store, get_message_store, get_service, get_timeline_database, require_session
+from service.app import (
+    app,
+    get_auth_store,
+    get_message_store,
+    get_service,
+    get_timeline_database,
+    get_usage_day,
+    require_session,
+)
 from service.auth_store import InMemoryAuthStore
 from service.campaign_store import InMemoryCampaignStore, shared_rows
 from service.conversation_store import InMemoryConversationStore
@@ -55,8 +63,10 @@ from service.tool_invocations import (
     InvocationTarget,
     ToolSettings,
 )
+from service.usage_ledger import InMemoryUsageLedgerStore, UsageDay
 from service.workbench_api import FORBIDDEN_ORIGIN_DETAIL, FORBIDDEN_ROLE_DETAIL, NOT_FOUND_DETAIL
 from service.workbench_contracts import BRIEF_MAX_CHARS, ErrorCode, ToolId, ToolInvocation, validation_error_body
+from service.workbench_load import InMemoryWorkbenchLoad
 
 GM_A, GM_B = 1, 2
 T0 = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
@@ -119,12 +129,19 @@ class FakeLLM:
 
 
 class Sink:
-    def __init__(self) -> None:
+    """Collects every write, and also stores each row for real in the ledger
+    twin (agent-forge-harness-u2uj), so the day reader built over the same
+    twin sees exactly what a turn or an attempt spent."""
+
+    def __init__(self, store: InMemoryUsageLedgerStore, db: InMemoryDatabase) -> None:
+        self._store = store
+        self._db = db
         self.rows: list[Any] = []
 
     def write(self, rows: Any) -> int:
         self.rows.extend(rows)
-        return len(rows)
+        with self._db.transaction() as unit:
+            return self._store.record_attempts(unit, rows)
 
 
 @dataclass(frozen=True)
@@ -142,6 +159,7 @@ class World:
     executors: dict[ToolId, Recording]
     llm: FakeLLM
     sink: Sink
+    usage_day: UsageDay
     settings: ToolSettings = field(default_factory=lambda: ToolSettings(frozenset({ToolId.NPC, ToolId.RECAP})))
     now: list[datetime] = field(default_factory=lambda: [T0])
 
@@ -183,9 +201,13 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
     messages = InMemoryMessageStore()
     stores = InvocationStores(
         InMemoryToolInvocationStore(db), InMemoryCampaignStore(db), InMemoryConversationStore(db),
-        InMemoryTimelineStore(db, messages=messages),
+        InMemoryTimelineStore(db, messages=messages), InMemoryWorkbenchLoad(db),
     )
-    made = World(db, messages, stores, {tool: Recording(tool) for tool in ToolId}, FakeLLM(), Sink())
+    ledger_store = InMemoryUsageLedgerStore(db)
+    made = World(
+        db, messages, stores, {tool: Recording(tool) for tool in ToolId}, FakeLLM(), Sink(ledger_store, db),
+        UsageDay(ledger_store, db),
+    )
     factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: made.llm})
     overrides: dict[Callable[..., Any], Callable[..., Any]] = {
         tool_invocations_api.get_invocation_stores: lambda: made.stores,
@@ -195,6 +217,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
         tool_invocations_api.get_provider_factory: lambda: factory,
         get_timeline_database: lambda: made.db,
         get_message_store: lambda: made.messages,
+        get_usage_day: lambda: made.usage_day,
     }
     app.dependency_overrides.update(overrides)
     monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: made.sink)
@@ -1175,20 +1198,21 @@ def test_f6_a_chat_turn_still_records_a_chat_turn_under_a_fresh_id(world: World)
         usage_capture.end_operation(token)
 
 
-@pytest.mark.parametrize("fault", ["calls_today", "database", "lock_timeout", "no_db", "no_messages"])
+@pytest.mark.parametrize("fault", ["day_count", "database", "lock_timeout", "no_db", "no_usage_day"])
 def test_f7_an_outage_before_any_attempt_is_a_503_and_creates_nothing(world: World, client: TestClient,
                                                                      fault: str) -> None:
-    """M-F10: the day count fails closed."""
+    """M-F10: the day count fails closed (agent-forge-harness-u2uj: from the
+    usage ledger's day reader, not the message store)."""
     table = world.table()
-    if fault == "calls_today":
-        world.messages.calls_today = _raise_now(RuntimeError())  # type: ignore[method-assign]
+    if fault == "day_count":
+        world.usage_day.chat_turns = _raise_now(RuntimeError())  # type: ignore[method-assign]
     elif fault in {"database", "lock_timeout"}:
         error = psycopg.OperationalError() if fault == "database" else psycopg.errors.LockNotAvailable()
         world.stores.invocations.hold_in_flight_lock = _raise_now(error)  # type: ignore[method-assign]
     elif fault == "no_db":
         app.dependency_overrides[get_timeline_database] = lambda: None
     else:
-        app.dependency_overrides[get_message_store] = lambda: None
+        app.dependency_overrides[get_usage_day] = lambda: None
     response = post(client, table)
     assert response.status_code == 503
     assert _error(response) == {"code": "backend_unavailable", "retryable": True,
@@ -1353,9 +1377,15 @@ def test_h3_a_row_this_build_cannot_read_is_a_503_and_is_never_overwritten(world
 
 
 def test_i2_the_real_executors_and_settings_disable_every_tool(world: World, client: TestClient) -> None:
+    """The key set is the union of every module's registered tools (1kg.4.3
+    O-9): document tools (1kg.4.4) and the five card tools (1kg.4.3) beside
+    them. A merge that keeps only one side's spread line is the regression
+    this pins against."""
     for dependency in (tool_invocations_api.get_tool_executors, tool_invocations_api.get_tool_settings):
         app.dependency_overrides.pop(dependency)
-    assert set(tool_invocations_api.get_tool_executors()) == {ToolId.NPC, ToolId.ENCOUNTER}
+    assert set(tool_invocations_api.get_tool_executors()) == {
+        ToolId.NPC, ToolId.ENCOUNTER, ToolId.MONSTER, ToolId.LOOT, ToolId.NAMES, ToolId.RULES, ToolId.HOOKS,
+    }
     table = world.table()
     for tool in ToolId:
         response = post(client, table, tool=tool.value, brief="" if tool is ToolId.RECAP else "a brief")
@@ -1394,7 +1424,7 @@ def test_a7_the_brief_never_leaves_through_any_answer_or_log(world: World, clien
     answers.append(post(client, table, invocation_id="inv_route_000000000007", brief=CANARY))  # 429 user
     world.archive(table)
     answers.append(post(client, table, invocation_id="inv_route_000000000008", brief=CANARY))  # 409 archived
-    world.messages.calls_today = _raise_now(RuntimeError(CANARY))  # type: ignore[method-assign]
+    world.usage_day.chat_turns = _raise_now(RuntimeError(CANARY))  # type: ignore[method-assign]
     answers.append(post(client, table, invocation_id="inv_route_000000000009", brief=CANARY))  # 503
     assert sorted({r.status_code for r in answers}) == [200, 404, 409, 422, 429, 503]
     for response in answers:
@@ -1438,7 +1468,74 @@ def test_a7b_what_an_executor_raises_is_logged_by_its_class_only(
     assert logged.endswith(f"error={type(exc).__name__})")
 
 
+@pytest.mark.parametrize("where", ["run", "finish"], ids=["run-refusal", "finish-refusal"])
+def test_a7c_a_refused_results_own_field_is_never_logged(
+        world: World, client: TestClient, caplog: pytest.LogCaptureFixture, where: str) -> None:
+    """M-1 (carry from #205, bead 8frw): `judge_result`'s refusal logs error
+    locations only (`redacted_errors`'s `loc`), never `exc` itself — a
+    produced result can quote the brief or a provider's answer in its own
+    field value, and pydantic's `ValidationError` text echoes that value via
+    `input_value=...` (I-24, SEC-20/21). A canary sitting in an enum field
+    pins this for both call sites: `run`'s own answer is judged in `execute`,
+    and a `finish` answer is judged again in `_finished`."""
+    caplog.set_level(logging.DEBUG)
+    bad = _canary_document()
+    with pytest.raises(ValidationError) as excinfo:
+        tool_invocations._RESULT.validate_python(bad)
+    assert CANARY in str(excinfo.value), "the positive control: the text a leak would log"
+    table = world.table()
+    if where == "run":
+        world.executors[ToolId.NPC].behaviour = lambda ctx: bad
+    else:
+        world.executors[ToolId.NPC].finish = lambda unit, ctx, result: bad  # type: ignore[method-assign]
+    response = post(client, table)
+    assert response.status_code == (200 if where == "run" else 503)
+    if where == "run":
+        answer = response.json()
+        assert (answer["status"], answer["error"]["code"], answer["error"]["retryable"]) == (
+            "failed", "provider_failed", True)
+    assert CANARY not in response.text
+    [logged] = [record.getMessage() for record in caplog.records
+                if record.getMessage().startswith("tool result refused")]
+    for record in caplog.records:
+        assert CANARY not in record.getMessage()
+        assert all(CANARY not in str(arg) for arg in (record.args or ()))
+    assert CANARY not in caplog.text
+    assert logged.endswith("at=[['document', 'document', 'type']])")
+
+
+@pytest.mark.parametrize("where", ["run", "finish"], ids=["run-mismatch", "finish-mismatch"])
+def test_a7c_a_result_for_another_tool_is_refused_without_its_text(
+        world: World, client: TestClient, caplog: pytest.LogCaptureFixture, where: str) -> None:
+    """H-1 (bead 8frw, mutants M5/M6): `judge_result` has a second refusal
+    site — a produced result that validates but names a different tool
+    (`result.tool_id is not tool_id`) — and that site must stay as blind to
+    the produced value as the validation-error site above. A canary in the
+    result's own (otherwise valid) fields pins the constant `[["tool_id"]]`
+    location against a mutant that logs `raw` or `result` instead."""
+    caplog.set_level(logging.DEBUG)
+    bad = npc_result(title=CANARY, tool="encounter", doc_type="encounter", category="documents")
+    table = world.table()
+    if where == "run":
+        world.executors[ToolId.NPC].behaviour = lambda ctx: bad
+    else:
+        world.executors[ToolId.NPC].finish = lambda unit, ctx, result: bad  # type: ignore[method-assign]
+    response = post(client, table)
+    assert response.status_code == (200 if where == "run" else 503)
+    assert CANARY not in response.text
+    [logged] = [record.getMessage() for record in caplog.records
+                if record.getMessage().startswith("tool result refused")]
+    assert CANARY not in caplog.text
+    assert logged.endswith("at=[['tool_id']])")
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _canary_document() -> dict[str, Any]:
+    """A produced result whose enum field (`document.type`) is invalid: the
+    same shape `judge_result` refuses, with the canary as the bad value."""
+    return npc_result(doc_type=CANARY)
 
 
 def _canary_validation_error() -> ValidationError:
@@ -1453,6 +1550,16 @@ def _canary_validation_error() -> ValidationError:
 class _ChatService:
     def answer(self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
                attachment_context: Any = None, attachment_label: Any = None) -> ChatResponse:
+        # agent-forge-harness-u2uj: the pilot day now counts from the ledger, so
+        # a chat turn must record at least one attempt to be seen by it -- as a
+        # real turn always does (the embedding call alone spends it). Without
+        # this, f4's "tools alone never close chat" control would write zero
+        # ledger rows and prove nothing about the pilot day counting chat too.
+        operation = usage_capture.current_operation()
+        if operation is not None:
+            usage_capture.AttemptRecorder(
+                operation, purpose=usage_capture.PURPOSE_ANSWER, alias=DEFAULT_ALIAS,
+            ).record(alias=DEFAULT_ALIAS, result=None, error=None)
         return ChatResponse(answer="ok", sources=[], answerable=True, mode=ChatMode(mode),
                             conversation_id=conversation_id)
 

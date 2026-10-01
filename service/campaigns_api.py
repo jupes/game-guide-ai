@@ -66,9 +66,18 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+import config
+
 from . import campaign_identity as ident
 from .audit_log import ActorKind, AuditAction, AuditLog, Decision, ObjectKind, PostgresAuditLog
-from .campaign_store import AliasTaken, CampaignStore, InvalidCursor, PostgresCampaignStore, SeatNotAccepted
+from .campaign_store import (
+    AliasTaken,
+    CampaignCapReached,
+    CampaignStore,
+    InvalidCursor,
+    PostgresCampaignStore,
+    SeatNotAccepted,
+)
 from .campaign_store import Campaign as StoredCampaign
 from .campaign_store import SeatUnavailable as _SeatUnavailable
 from .campaign_summary_store import (
@@ -137,6 +146,9 @@ NOT_APPLIED_MESSAGE = "That change isn't applied yet. Try again."
 ARCHIVED_MESSAGE = "That campaign is archived."
 ALIAS_TAKEN_MESSAGE = "Someone at this table already has that name."
 SEAT_CAP_MESSAGE = f"A table seats at most {SEAT_CAP}."
+#: agent-forge-harness-531x, PR-B. Names no number (SEC-20): the account's
+#: cap is not client-facing data.
+CAMPAIGN_CAP_MESSAGE = "This account has as many campaigns as it can hold."
 SEAT_NOT_OPEN_MESSAGE = "That seat isn't open."
 SEAT_NOT_ACCEPTED_MESSAGE = "Nobody has accepted that seat yet."
 THROTTLED_MESSAGE = "You've made a lot of offers today. Try again later."
@@ -865,17 +877,29 @@ def build_router(
     ) -> Campaign:
         """A new campaign, the caller its GM (D-5). Duplicate names are allowed,
         and a retried create makes a second campaign, which archive recovers.
-        Only a name is required; a tone line is optional (§19 A-31)."""
+        Only a name is required; a tone line is optional (§19 A-31).
+
+        Refused with `account_limit_reached` (409) at the account's campaign
+        cap (agent-forge-harness-531x) — archived and concluded campaigns
+        count toward it too, before anything is written."""
         request = parse_body(CampaignCreateRequest, raw)
         live_db = _database(db)
 
         def work() -> StoredCampaign:
             with live_db.transaction() as unit:
                 return stores.campaigns.create(
-                    unit, owner_id=user.user_id, name=request.name, tone=request.tone, now=now
+                    unit, owner_id=user.user_id, name=request.name, tone=request.tone, now=now,
+                    max_per_owner=config.WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX,
                 )
 
-        made = guarded(work)
+        made: StoredCampaign | None
+        try:
+            made = guarded(work)
+        except CampaignCapReached:
+            made = None
+        if made is None:
+            # Outside the except, so the refusal chains nothing (module rule).
+            raise conflict(ErrorCode.ACCOUNT_LIMIT_REACHED, CAMPAIGN_CAP_MESSAGE)
         return campaign_to_wire(made, OwnerFacts.nothing_yet(made.id), now)
 
     @router.get("/campaigns/{campaign_id}", response_model=Campaign)

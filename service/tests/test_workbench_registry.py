@@ -180,6 +180,7 @@ def _character_sheet(**changes: object) -> tuple[reg.DocumentType, ...]:
             "only a document result",
         ),
         (_broken(tools=_with_tool(replace(_tool("npc"), card_kind=reg.CardKind.STAT_BLOCK))), "only a card result"),
+        (_broken(tools=_with_tool(replace(_tool("rules"), card_kind=None))), "a card tool names its card kind"),
         (_broken(document_types=reg.REGISTRY.document_types[1:]), "creates an unknown document type"),
         (_broken(document_types=_with_first_type(icon="Person!")), "not a ligature name"),
         (_broken(default_pinned=tuple(ToolId)[:6]), "at most 5"),

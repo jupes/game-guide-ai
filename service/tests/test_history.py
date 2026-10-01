@@ -68,14 +68,6 @@ class _ExplodingStore:
     def recent(self, conversation_id, limit):
         return []
 
-    def calls_today(self) -> int:
-        # Answers normally, on the same principle as owner_of below: the daily
-        # cost cap (x5bz.3.3) is NOT best-effort — an unreadable count fails
-        # closed with a 503, deliberately. Raising here would make this test
-        # assert that a fail-closed control breaks the answer, which is the
-        # opposite of what it is for.
-        return 0
-
     def attachments_for(self, conversation_id):
         raise RuntimeError("disk on fire")
 
@@ -257,3 +249,15 @@ def test_assistant_suggestions_persist_and_recall():
         ]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_no_message_store_counts_the_day() -> None:
+    """The pilot day's count moved to the usage ledger (agent-forge-harness-u2uj):
+    `MessageStore` no longer has a way to count anything, on the Protocol or on
+    either implementation, so a reintroduced `calls_today` fails here."""
+    from service.history import InMemoryMessageStore as _InMemory
+    from service.history import MessageStore as _Protocol
+    from service.history import PostgresMessageStore as _Postgres
+
+    for cls in (_Protocol, _InMemory, _Postgres):
+        assert not hasattr(cls, "calls_today"), cls

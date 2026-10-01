@@ -107,3 +107,58 @@
   border-top: 1px solid var(--md-sys-color-outline-variant);
   flex-shrink: 0;
 }
+
+/* ── The campaign line (agent-forge-harness-1kg.2.5, PR-2) ───────────────────
+   Above a campaign's GM threads: its name, or its loading, failed or
+   unavailable state with the way out. It wraps; nothing here sizes a button
+   (touchTargetLeak.test.ts). */
+.left-nav__campaign {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 16px 0;
+  flex-shrink: 0;
+}
+
+.left-nav__campaign-line {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  color: var(--md-sys-color-on-surface);
+}
+
+.left-nav__campaign-note,
+.left-nav__campaign-error {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.left-nav__campaign-error {
+  flex-basis: 100%;
+  color: var(--md-sys-color-error);
+}
+
+.left-nav__conversation-row--editing {
+  flex-wrap: wrap;
+}
+
+/* Loading rows: never the only signal (the visible line after them). */
+.left-nav__skeleton {
+  height: var(--aether-touch-min);
+  border-radius: 8px;
+  background: var(--md-sys-color-surface-container-high);
+  animation: left-nav-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes left-nav-pulse {
+  50% { opacity: 0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .left-nav__skeleton { animation: none; }
+}

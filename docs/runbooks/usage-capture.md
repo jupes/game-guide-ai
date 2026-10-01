@@ -20,8 +20,10 @@ or failure, including every retried attempt and the final failure. It is written
 `service/usage_capture.py` as one JSON line on stdout, which Cloud Run parses into
 `jsonPayload`.
 
-Five capture points produce them inside a live `POST /chat` turn, and a sixth
-(`document_generation`) inside a GM tool's invocation once `1kg.4.4` runs it:
+Five capture points produce them inside a live `POST /chat` turn, and three more
+outside one: `document_generation` once `1kg.4.4` runs it, `card_generation` once a
+card tool (`1kg.4.3`) is enabled, and `document_edit` once an AI document edit
+(`1kg.5.5`) is enabled:
 
 | `purpose` | What it paid for |
 | --- | --- |
@@ -31,6 +33,8 @@ Five capture points produce them inside a live `POST /chat` turn, and a sixth
 | `spell_structuring` | The structured spell card (spell mode) |
 | `statblock_structuring` | The structured NPC/stat block (sage/GM, behind the cost heuristic) |
 | `document_generation` | A GM tool's generated document (`service/document_generation.py`, bead `1kg.5.4`): one record per attempt, retries included |
+| `card_generation` | A GM card tool's generated card — monster, loot, names, rules or hooks (bead `1kg.4.3`): one record per attempt, retries included. The rules tool's query embedding is recorded as `embedding` under the same tool operation |
+| `document_edit` | A scoped AI document edit (`service/document_editing.py`, bead `1kg.5.5`): one record per attempt, retries included |
 
 There is **no one-per-turn record**. The shared `operation_id` is what groups a turn's
 attempts — count distinct `operation_id` values if you want turns.
@@ -42,8 +46,8 @@ attempts — count distinct `operation_id` values if you want turns.
 | `event` | str | Always `provider_attempt`. **This is the filter key** — filter on it, never on message text. |
 | `record_version` | int | `1`. Bumped if the shape changes. |
 | `operation_id` | str | uuid4 hex, one per `/chat` turn, shared by every attempt of that turn. |
-| `operation` | str | `chat_turn` (slice b adds more). |
-| `purpose` | str | One of the six above. |
+| `operation` | str | `chat_turn`; `tool_invocation`, one attempt of a GM tool (bead `1kg.4.1`); or `document_edit`, one attempt of an AI document edit (bead `1kg.5.5`). A tool or edit attempt's `operation_id` is the attempt's own, stored on `campaign.tool_attempts` or `campaign.document_edit_attempts`. |
+| `purpose` | str | One of the seven above. |
 | `mode` | str | `sage` \| `spell` \| `rules` \| `gm`. |
 | `alias` | str | The alias **actually handed to the provider client** — not the disclosure label the model picker shows the user. |
 | `provider` | str \| null | From the model catalog, or `openai` for embeddings. **Null when unknown — never guessed.** |
@@ -116,6 +120,10 @@ turn**, classifying what happened to it.
 
 `document_generation` (bead `1kg.5.4`) records exactly one outcome per generation that reached a provider: `produced`, `parse_failure` (the output failed a check; the record carries no reason, and the closed code exists only on the `InvalidGeneration` raised to the caller), or `none` (the provider call failed, or a cancellation stopped a retry). A request refused before any call records nothing, and it never produces `skipped_by_gate`.
 
+`card_generation` (bead `1kg.4.3`) follows the same rule — one outcome per generation that reached a provider: `produced`, `parse_failure` or `none` (a rules answer that cites none of the passages it was handed is `none`: the provider answered, and there is nothing to ground a card on). Its one gate is the rules tool's retrieval: when the corpus does not ground the brief, it records exactly one `skipped_by_gate` and no generation attempt, and the invocation fails `not_in_sources`. A request refused before any call records nothing.
+
+`document_edit` (bead `1kg.5.5`) follows the same rule — one outcome per edit attempt that reached a provider: `produced` (a changed document or an explicit `no_change`), `parse_failure` (the model's output did not parse into an allowed patch or replacement) or `none` (the provider call failed). A refusal before any provider call — an out-of-scope field, a stale selection, the size bound — records nothing, and it never produces `skipped_by_gate`.
+
 It shares `operation_id` with that turn's `provider_attempt` records (both
 come from the same `Operation`) — join on it to see "one call, no record" for
 a skip — but it is a **separate `event`, and therefore a separate filter**:
@@ -130,7 +138,7 @@ querying `jsonPayload.event="provider_attempt"` will never return a
 | `record_version` | int | `1`. |
 | `operation_id` | str | Shared with this turn's `provider_attempt` records. |
 | `operation` | str | `chat_turn`. |
-| `purpose` | str | One of `suggestions`, `spell_structuring`, `statblock_structuring`, `document_generation`. |
+| `purpose` | str | One of `suggestions`, `spell_structuring`, `statblock_structuring`, `document_generation`, `card_generation`, `document_edit`. |
 | `mode` | str | `sage` \| `spell` \| `rules` \| `gm`. |
 | `outcome` | str | One of `produced`, `none`, `parse_failure`, `skipped_by_gate` — see the table above. |
 | `billed_account_id` | int | The account that pays. |

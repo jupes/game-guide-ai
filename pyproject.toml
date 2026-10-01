@@ -64,6 +64,9 @@ dev = [
     "pytest",
     "httpx",
     "pytest-cov",
+    # Parallel test workers for the CI unit/coverage step (agent-forge-harness-eddy):
+    # `-n auto --dist loadfile` keeps each module's fixtures in one worker.
+    "pytest-xdist",
     "ruff",
     "mypy",
     "game-guide-ai[gcs]",

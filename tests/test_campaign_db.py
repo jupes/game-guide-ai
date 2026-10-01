@@ -41,6 +41,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from itertools import count
 from typing import Any
 
 import psycopg
@@ -48,6 +49,7 @@ import pytest
 from _pg import connect, needs_db, throwaway_database
 from fastapi import HTTPException
 
+from service import campaign_identity
 from service import migrations as mig
 from service.audit_log import (
     ActorKind,
@@ -3422,7 +3424,18 @@ def test_a_removed_confirmed_seat_is_no_longer_confirmed(world: World) -> None:
 # ── Offers ──────────────────────────────────────────────────────────────────
 
 
-def test_an_offer_is_created_open_for_fourteen_days_and_names_no_account(world: World) -> None:
+def test_an_offer_is_created_open_for_fourteen_days_and_names_no_account(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `repr(made)` also prints the offer's three random ids (secrets.token_urlsafe),
+    # and "Wren" or "example" could turn up in one by chance. Rather than take the
+    # ids out of the rendered repr before checking it -- which would also hide a
+    # store that slipped address text into the one id it mints itself, `made.id`,
+    # since only campaign_id and participant_id are pinned by the equality assert
+    # below -- mint digit-only ids for this test. A digit body can never match
+    # either probe, so the whole, unstripped repr can be checked directly.
+    ids = count()
+    monkeypatch.setattr(campaign_identity.secrets, "token_urlsafe", lambda _n: f"{next(ids):022d}")
     campaign = _a_campaign(world)
     seat, offer_id = _held_offer(world, campaign, "Rook", "Wren@Example.com")
     with world.db.transaction() as unit:
@@ -3431,7 +3444,15 @@ def test_an_offer_is_created_open_for_fourteen_days_and_names_no_account(world: 
     assert (made.campaign_id, made.participant_id, made.offered_by) == (campaign, seat, world.owner)
     assert (made.address, made.address_key) == ("Wren@Example.com", "wren@example.com")
     assert made.expires_at - made.created_at == OFFER_LIFETIME and made.outcome is None
-    assert "Wren" not in repr(made) and "example" not in repr(made)
+    # The offerer, the address and its key are hidden from `repr()` (SeatOffer's
+    # docstring: a repr reaches a log line, and ids also go into URLs). Confirm
+    # the dataclass marks all three unrepr'd -- a mutant that flips one back to
+    # `repr=True` would otherwise survive, since a hidden account id never shows
+    # up in these three probe strings -- and that the probes are absent too.
+    assert {f.name for f in fields(made) if not f.repr} >= {"offered_by", "address", "address_key"}
+    rendered = repr(made)
+    assert "Wren" not in rendered and "example" not in rendered
+    assert f"offered_by={world.owner}" not in rendered
 
 
 def test_a_seat_holds_one_open_offer_and_the_refusal_names_nothing(world: World) -> None:

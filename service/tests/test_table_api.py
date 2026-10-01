@@ -37,7 +37,7 @@ from httpx import Response
 
 import config
 from service import app as appmod
-from service import security_headers, table_api, table_session_api
+from service import ratelimit, security_headers, table_api, table_session_api
 from service.app import app, get_auth_store
 from service.audit_log import InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
@@ -442,6 +442,55 @@ def test_leave_is_never_a_401_and_never_signs_an_account_out(world: _World) -> N
     assert world.lifecycle.resolve_screen(live, now=world.now[0]) is None
 
 
+# ── The digest lookup's source budget (release review S6, 6621) ──────────────
+
+SOURCE_A, SOURCE_B = {"x-forwarded-for": "203.0.113.7"}, {"x-forwarded-for": "203.0.113.8"}
+
+
+@pytest.fixture
+def budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A source budget of two in place of the auth one, keyed on the address
+    one trusted hop appended, so two sources can be told apart."""
+    monkeypatch.setattr(ratelimit, "source_limiter", ratelimit.SlidingWindowLimiter(limit=2, window_seconds=60))
+    monkeypatch.setattr(config, "AUTH_TRUSTED_PROXY_HOPS", 1)
+
+
+def test_past_the_source_budget_a_grant_shaped_cookie_is_429_and_nothing_is_looked_up(
+    world: _World, budget: None
+) -> None:
+    campaign, _ = world.live()
+    stale, live = secrets.token_urlsafe(32), world.grant(campaign)
+    within = [_post(LEAVE, LEAVE_BODY, grant=stale, headers=SOURCE_A),
+              _mint(campaign, grant=stale, account=BYSTANDER, headers=SOURCE_A)]
+    assert [answer.status_code for answer in within] == [204, 404]
+    assert (within[0].content, within[1].json()) == (b"", INACTIVE)
+    assert all(_deletes_the_grant(answer) for answer in within), "under the budget, the answers are unchanged"
+
+    opened, reads = world.counting.opened, world.auth.reads
+    refused = {
+        "leave": _post(LEAVE, LEAVE_BODY, grant=live, headers=SOURCE_A),
+        "mint": _mint(campaign, grant=live, account=GM_A, headers=SOURCE_A),
+    }
+    assert (world.counting.opened, world.auth.reads) == (opened, reads), "no row read, no account read"
+    for name, answer in refused.items():
+        detail = answer.json()["detail"]
+        assert (answer.status_code, detail["code"], detail["retryable"]) == (429, "throttled_user", True), name
+        assert answer.headers.get_list("retry-after") == [str(detail["retry_after_s"])], name
+        assert _cookies(answer) == [], (name, "a throttled request deletes nothing and signs nothing out")
+        assert answer.headers.get_list("cache-control") == ["no-store"], name
+
+    other = _post(LEAVE, LEAVE_BODY, grant=live, headers=SOURCE_B)
+    assert other.headers.get_list("clear-site-data") == ['"cache", "storage"'], "another source has its own budget"
+
+
+def test_no_cookie_and_a_cookie_that_is_not_a_grant_spend_nothing(world: _World, budget: None) -> None:
+    for grant in (None, "garbage", None, "garbage"):
+        assert _post(LEAVE, LEAVE_BODY, grant=grant, headers=SOURCE_A).status_code == 204, grant
+    stale = secrets.token_urlsafe(32)
+    answers = [_post(LEAVE, LEAVE_BODY, grant=stale, headers=SOURCE_A).status_code for _ in range(3)]
+    assert answers == [204, 204, 429], "the whole budget of two was still there"
+
+
 # ── Fetch Metadata and the origin check (SEC-45, SEC-7; T-19) ────────────────
 
 
@@ -586,6 +635,10 @@ FORBIDDEN_IMPORTS = frozenset({
     "conversations_api", "timeline_api", "table_session_api", "campaigns_api", "documents_api", "seats_api",
     "document_store", "document_wire", "history", "conversation_store", "timeline_store", "timeline",
     "asset_store", "asset_jobs", "media_objects", "attachments", "app",
+    # T-23, SEC-44 (1kg.4.3 I-27): a table route acts with table authority
+    # only, so it may never reach the Workbench tool modules either.
+    "tool_invocations", "tool_invocations_api", "document_generation", "document_tools",
+    "card_generation", "card_executors",
 })
 
 

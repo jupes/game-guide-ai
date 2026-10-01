@@ -49,6 +49,7 @@ from .usage_capture import (
     ACTOR_ACCOUNT,
     MAX_TOKEN_COUNT,
     OPERATION_CHAT_TURN,
+    OPERATION_DOCUMENT_EDIT,
     OPERATION_TOOL_INVOCATION,
     PURPOSE_EMBEDDING,
     PURPOSES,
@@ -63,7 +64,7 @@ from .usage_capture import (
 # SHAPE of the open ones (operation, purpose, mode, provider, alias), so a later
 # bead can add a purpose without a migration while no sentence fits (X-7).
 
-OPERATIONS: Final = frozenset({OPERATION_CHAT_TURN, OPERATION_TOOL_INVOCATION})
+OPERATIONS: Final = frozenset({OPERATION_CHAT_TURN, OPERATION_TOOL_INVOCATION, OPERATION_DOCUMENT_EDIT})
 MODES: Final = frozenset(mode.value for mode in ChatMode)
 STATUSES: Final = frozenset({STATUS_OK, STATUS_ERROR})
 #: No `guest`: there are no guests, and nothing is metered for an anonymous
@@ -252,6 +253,13 @@ def _check_period(billed_account_id: Any, since: Any, until: Any) -> None:
             raise _refuse("period", key)
 
 
+# justification: validators accept untrusted input by design (the module's
+# convention -- see check_attempt and _check_period above).
+def _check_since(since: Any) -> None:
+    if not _aware(since):
+        raise _refuse("period", "since")
+
+
 # ── The arithmetic: one definition, both worlds ──────────────────────────────
 
 
@@ -373,6 +381,19 @@ class UsageLedgerStore(Protocol):
         """`[since, until)`: a row at exactly `since` is in, one at `until` is out."""
         ...  # pragma: no cover - structural type
 
+    def chat_turns_since(self, unit: UnitOfWork, *, since: datetime) -> int:
+        """How many `chat_turn` operations, pilot-wide, have an attempt at or
+        after `since` -- whatever its status (agent-forge-harness-u2uj): a turn
+        that failed after reaching a provider still counts. Distinct
+        `operation_id`s, so a turn's several attempts count once."""
+        ...  # pragma: no cover - structural type
+
+    def operations_since(self, unit: UnitOfWork, billed_account_id: int, *, since: datetime) -> int:
+        """How many operations (chat turns, tool invocations, document edits)
+        billed to the account have an attempt at or after `since`, whatever its
+        status (agent-forge-harness-u2uj). Distinct `operation_id`s."""
+        ...  # pragma: no cover - structural type
+
 
 # ── PostgreSQL ───────────────────────────────────────────────────────────────
 
@@ -411,6 +432,21 @@ SELECT a.purpose, a.input_tokens, a.cached_input_tokens, a.output_tokens, a.pric
          LIMIT 1
        ) r ON true
  WHERE a.billed_account_id = %(account)s AND a.occurred_at >= %(since)s AND a.occurred_at < %(until)s
+"""
+
+#: The pilot day's chat count (agent-forge-harness-u2uj): one per `/chat` turn
+#: that reached a provider, whatever its status. A range scan of
+#: `provider_attempts_operation_time_idx` (migration 0021).
+CHAT_TURNS_SINCE_SQL: Final = """
+SELECT count(DISTINCT operation_id) FROM metering.provider_attempts
+ WHERE operation = %(operation)s AND occurred_at >= %(since)s
+"""
+
+#: One account's day: every operation billed to it, of any kind. A range scan
+#: of `provider_attempts_account_time_idx`.
+ACCOUNT_OPERATIONS_SINCE_SQL: Final = """
+SELECT count(DISTINCT operation_id) FROM metering.provider_attempts
+ WHERE billed_account_id = %(account)s AND occurred_at >= %(since)s
 """
 
 
@@ -481,6 +517,18 @@ class PostgresUsageLedgerStore:
             _Priceable(r[0], r[1], r[2], r[3], r[4], r[5], None if r[5] is None else Rates(r[6], r[7], r[8]))
             for r in rows
         )
+
+    def chat_turns_since(self, unit: UnitOfWork, *, since: datetime) -> int:
+        conn = pg(unit).conn
+        _check_since(since)
+        row = conn.execute(CHAT_TURNS_SINCE_SQL, {"operation": OPERATION_CHAT_TURN, "since": since}).fetchone()
+        return int(row[0])
+
+    def operations_since(self, unit: UnitOfWork, billed_account_id: int, *, since: datetime) -> int:
+        conn = pg(unit).conn
+        _check_period(billed_account_id, since, since)
+        row = conn.execute(ACCOUNT_OPERATIONS_SINCE_SQL, {"account": billed_account_id, "since": since}).fetchone()
+        return int(row[0])
 
 
 # ── The twin ─────────────────────────────────────────────────────────────────
@@ -589,6 +637,22 @@ class InMemoryUsageLedgerStore:
             ))
         return _account_cost(items)
 
+    def chat_turns_since(self, unit: UnitOfWork, *, since: datetime) -> int:
+        tx = fake(unit)
+        _check_since(since)
+        return len({
+            row.operation_id for row in self._attempts.visible(tx).values()
+            if row.operation == OPERATION_CHAT_TURN and row.occurred_at >= since
+        })
+
+    def operations_since(self, unit: UnitOfWork, billed_account_id: int, *, since: datetime) -> int:
+        tx = fake(unit)
+        _check_period(billed_account_id, since, since)
+        return len({
+            row.operation_id for row in self._attempts.visible(tx).values()
+            if row.billed_account_id == billed_account_id and row.occurred_at >= since
+        })
+
 
 # ── The sink `usage_capture` writes a turn through ───────────────────────────
 
@@ -606,3 +670,61 @@ class LedgerWriter:
     def write(self, rows: Sequence[AttemptRow]) -> int:
         with self._db.transaction() as unit:
             return self._store.record_attempts(unit, rows)
+
+
+# ── The day reader `/chat` and the tool route gate on ────────────────────────
+
+
+class DayCount(NamedTuple):
+    """Both daily caps' counts for one account, read together (u2uj)."""
+
+    pilot_chat_turns: int
+    account_operations: int
+
+
+def utc_midnight(now: datetime) -> datetime:
+    """`now`'s UTC calendar day, from its start. Refuses a naive `now` by name,
+    the same refusal a bad `since` gets: there is no correct UTC midnight for an
+    instant with no timezone."""
+    if not _aware(now):
+        raise _refuse("period", "now")
+    return now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+class UsageDayReader(Protocol):
+    """Both daily caps' counts, read from the ledger."""
+
+    def chat_turns(self, *, now: datetime) -> int:
+        """The pilot day's chat half: `chat_turn` operations since `now`'s UTC
+        midnight, whatever their status."""
+        ...  # pragma: no cover - structural type
+
+    def for_account(self, billed_account_id: int, *, now: datetime) -> DayCount:
+        """One account's day, and the pilot day, read together."""
+        ...  # pragma: no cover - structural type
+
+
+class UsageDay:
+    """Both daily caps' counts (agent-forge-harness-u2uj), read from the rows
+    the ledger already holds -- no count of its own to drift out of step with
+    what was actually attempted. Built beside the `LedgerWriter` by
+    `service.app._build_stores`, with the opposite posture: the writer's
+    failure is swallowed (a lost write is an uncounted turn, a follow-up's
+    concern), a read failure raises, and the caller (`/chat`, the tool route)
+    answers it 503 rather than let the turn through uncounted."""
+
+    def __init__(self, store: UsageLedgerStore, db: TransactionalDatabase) -> None:
+        self._store = store
+        self._db = db
+
+    def chat_turns(self, *, now: datetime) -> int:
+        midnight = utc_midnight(now)
+        with self._db.transaction() as unit:
+            return self._store.chat_turns_since(unit, since=midnight)
+
+    def for_account(self, billed_account_id: int, *, now: datetime) -> DayCount:
+        midnight = utc_midnight(now)
+        with self._db.transaction() as unit:
+            pilot = self._store.chat_turns_since(unit, since=midnight)
+            account = self._store.operations_since(unit, billed_account_id, since=midnight)
+        return DayCount(pilot_chat_turns=pilot, account_operations=account)
