@@ -371,12 +371,20 @@ def test_this_module_never_deletes_a_version():
 def test_every_version_statement_names_the_campaign_in_the_same_statement():
     """SEC-2's "one query, one 404". A version of another campaign's document
     must be indistinguishable from one that does not exist, and a check that
-    happens after the fetch is a check something can skip."""
+    happens after the fetch is a check something can skip.
+
+    **`stored_bytes` is the one deliberate exception** (agent-forge-harness-
+    531x, PR-B): it is an ACCOUNT total, by design spanning every campaign the
+    owner has, so its ownership check is `c.owner_id = %(owner)s` through a
+    join rather than one campaign's id — the account-wide analogue of SEC-2,
+    not a lapse of it."""
     statements = _version_statements()
     assert statements, "this test found no version statement, so it proves nothing"
+    account_wide = [text for text in statements if "c.owner_id" in text]
+    assert account_wide, "stored_bytes's statement must still be found here"
     for text in statements:
         assert "campaign.documents" in text, text
-        assert "campaign_id = %s" in text, text
+        assert "campaign_id = %s" in text or text in account_wide, text
 
 
 def test_every_row_lock_this_module_takes_is_the_weaker_one():
@@ -933,7 +941,7 @@ def test_the_twin_and_the_postgres_store_offer_the_same_methods():
     assert surface(docs.InMemoryDocumentStore) == surface(docs.PostgresDocumentStore)
     assert surface(docs.InMemoryDocumentStore) == [
         "create", "delete", "get", "history", "hold", "link_character_sheet", "list_documents",
-        "restore", "seal", "set_archived", "sheet_for_participant", "snapshot",
+        "restore", "seal", "set_archived", "sheet_for_participant", "snapshot", "stored_bytes",
         "unlink_character_sheet", "write_fields",
     ]
 

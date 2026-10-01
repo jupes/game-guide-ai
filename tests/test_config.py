@@ -35,6 +35,8 @@ KNOBS = (
     ("RAG_ATTACHMENT_MAX_CHARS", "ATTACHMENT_MAX_CHARS", 6000),
     ("RAG_LLM_REQUEST_TIMEOUT_S", "LLM_REQUEST_TIMEOUT_S", 60.0),
     ("RAG_LLM_CONNECT_TIMEOUT_S", "LLM_CONNECT_TIMEOUT_S", 5.0),
+    ("WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX", "WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX", 100),
+    ("WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", 268_435_456),
 )
 
 # The two RAG_LLM_* knobs above are validated (config._seconds): reload must refuse an
@@ -60,6 +62,8 @@ OVERRIDES = {
     "RAG_ATTACHMENT_MAX_CHARS": ("2500", "ATTACHMENT_MAX_CHARS", 2500),
     "RAG_LLM_REQUEST_TIMEOUT_S": ("12.5", "LLM_REQUEST_TIMEOUT_S", 12.5),
     "RAG_LLM_CONNECT_TIMEOUT_S": ("2.5", "LLM_CONNECT_TIMEOUT_S", 2.5),
+    "WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX": ("5", "WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX", 5),
+    "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX": ("1000", "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", 1000),
 }
 
 
@@ -117,6 +121,17 @@ def test_a_generation_timeout_that_would_unbound_or_break_it_is_refused_on_reloa
     calls, so a wrong env-var name (M8) or a wrong reader -- e.g.
     LLM_CONNECT_TIMEOUT_S read with `_float`, which accepts "inf" (M9) --
     shows up here as either no ValueError, or one that names the wrong var."""
+    monkeypatch.setenv(var, raw)
+    with pytest.raises(ValueError, match=var):
+        importlib.reload(config)
+
+
+@pytest.mark.parametrize("var", ["WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX", "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX"])
+@pytest.mark.parametrize("raw", ["0", "-1"])
+def test_workbench_caps_below_one_fail_startup(monkeypatch, var, raw):
+    """agent-forge-harness-531x, PR-B: a per-account cap of 0 or less would
+    refuse every write from every account, which is an outage, not a limit
+    (`config._limit`)."""
     monkeypatch.setenv(var, raw)
     with pytest.raises(ValueError, match=var):
         importlib.reload(config)

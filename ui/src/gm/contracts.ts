@@ -142,7 +142,7 @@ export const KNOWN_ERROR_CODES = [
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
   'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
   'document_not_archived', 'inactive', 'cross_site', 'screen_limit', 'live_elsewhere', 'group_name_taken',
-  'group_cap_reached', 'not_in_sources',
+  'group_cap_reached', 'not_in_sources', 'account_limit_reached',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 

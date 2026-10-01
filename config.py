@@ -76,6 +76,18 @@ def _output_tokens(name: str, default: int) -> int:
     return value
 
 
+def _limit(name: str, default: int) -> int:
+    """A per-account cap, rejected at import unless at least 1 (agent-forge-harness
+    -531x): 0 or less would refuse every write from every account, which is an
+    outage, not a limit. There is no ceiling — an operator raising a cap is
+    never the unsafe direction (plan section 7: "a limit cannot be turned off,
+    only raised")."""
+    value = _int(name, default)
+    if value < 1:
+        raise ValueError(f"{name} must be a whole number of at least 1, got {value!r}")
+    return value
+
+
 SameSite = Literal["lax", "strict", "none"]
 _SAMESITE_VALUES: tuple[SameSite, ...] = ("lax", "strict", "none")
 
@@ -353,6 +365,28 @@ WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S: float = _float("WORKBENCH_WRITE_RATE_LIMIT_
 # a script is stopped within about a minute. This bounds write RATE, not
 # storage — the byte cap below is what bounds storage.
 WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT: int = _int("WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", 600)
+
+# --- Per-account storage caps (agent-forge-harness-531x, PR-B) --------------
+# The write throttle above bounds RATE; these bound STORAGE itself, so a
+# script that stays under the rate limit cannot still fill the disk by running
+# for a long time. Both are database-enforced (never per instance), and
+# neither has an owner or admin override: a limit can only be raised, never
+# switched off (plan section 7). An honest GM never approaches either.
+
+#: How many campaigns one account may hold at once. Archived and concluded
+#: campaigns count too — rows are never deleted, so excluding them would let an
+#: archive-then-create loop get around this cap and, with it, every
+#: per-campaign cap behind it (seats, groups, media). A hundred is far past
+#: what an honest GM runs (fewer than ten).
+WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX", 100)
+
+#: The account's total stored document-and-version bytes (every campaign it
+#: owns), measured as the UTF-8 length of the JSON each write stores — the one
+#: number both the twin and PostgreSQL can compute identically, with no
+#: de-TOAST read on every write (`service/document_store.py:measured_bytes`).
+#: 256 MiB: a maximum-size stat block with a few versions is about 20 MB, and
+#: honest campaigns are text-light.
+WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", 268_435_456)
 
 # --- GM tools (agent-forge-harness-1kg.4.1) -----------------------------------
 

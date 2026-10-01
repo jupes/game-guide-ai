@@ -29,10 +29,21 @@ not matches, so a page of young or still-referenced objects still moves the
 cursor on: a reconcile that walks it ends.
 
 **One door** (requirement 2.5). Every call of a store method from outside this
-module goes through `via_store`, which is where slice c puts MS-10's thread
-limiter; `service/tests/test_media_objects.py` checks every module by `ast`.
-The asset store imports nothing from here at all, so no transaction there can
-hold a connection while bytes move (requirement 3.8).
+module goes through `via_store`; `service/tests/test_media_objects.py` checks
+every module by `ast`. The asset store imports nothing from here at all, so no
+transaction there can hold a connection while bytes move (requirement 3.8).
+
+**The thread limiter** (MS-10, MS-7; slice c, `1kg.8.1.3`). The stores are
+synchronous, so they run in a dedicated limiter of `STORE_THREADS` tokens per
+instance — never on the event loop, and never on the tokens of the default
+thread limiter, which is the request pool every synchronous route (login,
+chat) runs in (F-2). The same tokens are MS-7's ceiling on byte responses. A
+byte response holds one for its whole life (`StoreLimiter.lease`) and runs each
+store call and each chunk pull on a worker thread under it (`StoreLease.run`),
+so a seventh finds none and is told to retry. Every other caller — the upload
+leg, the job handlers — borrows one inside `via_store` for the length of one
+call. Nothing waits for a token: `StoreBusy` says so at once, and `via_store`
+refuses outright to run on an event loop's thread.
 
 **Off by default** (Q-5, L-12). `MediaSettings.from_env` reads two switches, and
 the directory or bucket the chosen store needs; the running service reads them
@@ -43,19 +54,27 @@ lose bytes between instances — and is built in code only.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import secrets
 import stat as stat_mode
+import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+import anyio
+import anyio.to_thread
+
 #: Chunks of at most 256 KiB (*suggested*, MS-7): a slow phone holds a request
 #: slot, not a thread and not the file.
 CHUNK_BYTES = 256 * 1024
+#: MS-10 (*suggested*): the instance's object-store threads. MS-7: the same
+#: number is its ceiling on concurrent byte responses.
+STORE_THREADS = 6
 
 TMP_PREFIX = "tmp/"
 ASSETS_PREFIX = "assets/"
@@ -112,6 +131,23 @@ class ObjectStoreUnavailable(ObjectStoreError):
     attached."""
 
     MESSAGE = "the object store is unavailable"
+
+
+class StoreBusy(ObjectStoreError):
+    """Every one of the instance's store tokens is taken (MS-7, MS-10). A byte
+    response answers `503` with `Retry-After`, an upload `503`, and a job's
+    attempt fails and is tried again later: its handlers never give up."""
+
+    MESSAGE = "every object-store thread is busy"
+
+
+class StoreOnEventLoop(RuntimeError):
+    """A store was called on a thread that runs an event loop (MS-10). A
+    programming error, never a condition to handle: a synchronous store call
+    there would stall every request the loop serves."""
+
+    def __init__(self) -> None:
+        super().__init__("an object store is never called on the event loop")
 
 
 class PathEscapesStore(ObjectStoreUnavailable):
@@ -237,11 +273,119 @@ class ObjectStore(Protocol):
         ...  # pragma: no cover - structural type
 
 
+# ── The thread limiter (MS-10, MS-7) ─────────────────────────────────────────
+
+
+class StoreLimiter:
+    """MS-10's dedicated thread limiter: `total` tokens for the whole instance.
+
+    Counted under a lock rather than by an event loop, so it is one count for
+    the process whichever loop or thread asks, and it never waits: a caller
+    that finds no token free is told `StoreBusy` at once. A token is held in
+    one of two ways — for a byte response's whole life by a `StoreLease`, or
+    for one call by `via_store`.
+    """
+
+    def __init__(self, total: int = STORE_THREADS) -> None:
+        if isinstance(total, bool) or not isinstance(total, int) or total < 1:
+            raise ValueError("a limiter holds a positive whole number of tokens")
+        self.total = total
+        self._lock = threading.Lock()
+        self._borrowed = 0
+
+    @property
+    def borrowed(self) -> int:
+        with self._lock:
+            return self._borrowed
+
+    def take(self) -> None:
+        """One token, or `StoreBusy` — never a wait."""
+        with self._lock:
+            if self._borrowed >= self.total:
+                raise StoreBusy()
+            self._borrowed += 1
+
+    def give(self) -> None:
+        with self._lock:
+            if self._borrowed < 1:
+                raise RuntimeError("a store token was given back that was never taken")
+            self._borrowed -= 1
+
+    def lease(self) -> StoreLease:
+        """A token held until the lease is closed: one byte response's (MS-7)."""
+        self.take()
+        return StoreLease(self)
+
+
+#: The instance's one limiter. Module-level, like `job_driver.JOB_LOCK`: the
+#: bound is per process.
+STORE_LIMITER = StoreLimiter()
+
+#: The lease the current worker thread runs under, while `StoreLease.run` has
+#: it; `via_store` reads it so that a leased call takes no second token.
+_held = threading.local()
+
+
+class StoreLease:
+    """One of the limiter's tokens, held until `close()`."""
+
+    def __init__(self, limiter: StoreLimiter) -> None:
+        self._limiter = limiter
+        self._open = True
+        self._thread: anyio.CapacityLimiter | None = None
+
+    async def run[T](self, work: Callable[[], T]) -> T:
+        """`work` on a worker thread, under this lease: never on the event loop,
+        and on none of the default thread limiter's tokens (F-2). One call at a
+        time — a response pulls its chunks in order — and a cancelled caller
+        still waits for the call to finish, so the lease never ends under it."""
+        if not self._open:
+            raise RuntimeError("a closed store lease runs nothing")
+        if self._thread is None:
+            self._thread = anyio.CapacityLimiter(1)
+        return await anyio.to_thread.run_sync(self._on_thread, work, limiter=self._thread)
+
+    def _on_thread[T](self, work: Callable[[], T]) -> T:
+        _held.lease = self
+        try:
+            return work()
+        finally:
+            _held.lease = None
+
+    def close(self) -> None:
+        """Give the token back. Idempotent."""
+        if self._open:
+            self._open = False
+            self._limiter.give()
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def via_store[T](store: ObjectStore, call: Callable[[ObjectStore], T]) -> T:
     """The one door to an object store from outside this module (requirement
-    2.5). Slice c puts MS-10's thread limiter here, and with it MS-7's ceiling
-    on concurrent byte responses; until then it only hands the call over."""
-    return call(store)
+    2.5), and where MS-10's limiter holds. Never on an event loop's thread
+    (`StoreOnEventLoop`). On a thread a `StoreLease` runs, the call is that
+    lease's; anywhere else it borrows one of the instance's tokens for its
+    length, or is refused `StoreBusy` without waiting.
+
+    A stream `get_stream` returns is read by whoever pulls it: a byte response
+    pulls each chunk under its lease (`service/media_serving.py`)."""
+    if _on_event_loop():
+        raise StoreOnEventLoop()
+    if getattr(_held, "lease", None) is not None:
+        return call(store)
+    limiter = STORE_LIMITER
+    limiter.take()
+    try:
+        return call(store)
+    finally:
+        limiter.give()
 
 
 def _page(ordered: list[str], start_after: str | None, limit: int) -> tuple[list[str], str | None]:
