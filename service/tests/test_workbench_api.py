@@ -42,22 +42,25 @@ from types import ModuleType
 import httpx
 import pytest
 import starlette.exceptions
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ConfigDict
 
 import config
+from service import app as appmod
 from service import timeline, workbench_api
 from service.app import app, get_auth_store, get_service, require_session
 from service.auth_store import InMemoryAuthStore
 from service.invites import Role
+from service.media_objects import MediaSettings
 from service.security_headers import (
     CONTENT_SECURITY_POLICY,
     CROSS_ORIGIN_OPENER_POLICY,
     PERMISSIONS_POLICY,
     REFERRER_POLICY,
+    STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
 )
 from service.session import SessionData, encode_session
@@ -97,14 +100,18 @@ def _is_spa(route: APIRoute) -> bool:
 #: Every header `service.app`'s `set_security_headers` middleware adds, with
 #: the values taken from `service.security_headers` itself (never copied here),
 #: so the golden bytes below fail if the middleware drops or changes one and
-#: cannot drift from it again (agent-forge-harness-y58).
+#: cannot drift from it again (agent-forge-harness-y58). agent-forge-harness-5ir1
+#: deliberately added Strict-Transport-Security to every golden below.
 _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ("content-security-policy", CONTENT_SECURITY_POLICY),
     ("cross-origin-opener-policy", CROSS_ORIGIN_OPENER_POLICY),
     ("permissions-policy", PERMISSIONS_POLICY),
     ("referrer-policy", REFERRER_POLICY),
+    ("strict-transport-security", STRICT_TRANSPORT_SECURITY),
     ("x-content-type-options", X_CONTENT_TYPE_OPTIONS),
 )
+#: What a Workbench route adds to the goldens: 5ir1's no-store, deliberately.
+_NO_STORE = ("cache-control", "no-store")
 
 
 def _json_headers(body: bytes, *extra: tuple[str, str]) -> list[tuple[str, str]]:
@@ -179,7 +186,8 @@ def test_legacy_validation_answers_are_byte_identical(legacy_store: InMemoryAuth
         "login: missing field", "metrics: bad point", "timeline: limit=0",
     ]
     for label, response, body in cases:
-        assert _answer(response) == (422, body, _json_headers(body)), label
+        extra = (_NO_STORE,) if label.startswith("timeline") else ()  # the one Workbench route here
+        assert _answer(response) == (422, body, _json_headers(body, *extra)), label
 
 
 #: What each case below sends is refused, and FastAPI's default 422 repeated it:
@@ -390,7 +398,8 @@ def _json_bytes(payload: object) -> bytes:
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":")).encode()
 
 
-_JSON_ONLY = (("content-type", "application/json"),)
+#: Every Workbench answer's header set: its JSON type and, since 5ir1, no-store.
+_JSON_ONLY = (_NO_STORE, ("content-type", "application/json"))
 
 #: (method, path, JSON body) for every probe Workbench route, asserted by value
 #: wherever a test iterates it.
@@ -501,7 +510,7 @@ def test_the_real_workbench_routes_answer_one_401_body(legacy_store: InMemoryAut
                for method, path, body in routes for state, headers in failures.items()}
     assert len(answers) == 15
     distinct = {(status, body, tuple(headers)) for status, body, headers in answers.values()}
-    assert distinct == {(401, _NOT_SIGNED_IN, tuple(_json_headers(_NOT_SIGNED_IN)))}
+    assert distinct == {(401, _NOT_SIGNED_IN, tuple(_json_headers(_NOT_SIGNED_IN, _NO_STORE)))}
 
     legacy_store.seed_invite("inv-gm", role="dm")
     legacy_store.redeem_invite("inv-gm", "gm@example.com", "not-a-real-hash")
@@ -1048,6 +1057,45 @@ def test_the_route_census_is_complete() -> None:
     legacy, workbench = _census(app)
     assert legacy == EXPECTED_LEGACY_ROUTES
     assert workbench == EXPECTED_WORKBENCH_ROUTES
+
+
+@pytest.mark.real_auth
+def test_every_workbench_route_on_the_real_app_answers_no_store(
+    legacy_store: InMemoryAuthStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """5ir1 (release review S8) over the whole census, not a sample: every
+    Workbench route answers a caller with no cookie with `Cache-Control:
+    no-store`, once. The media capability is on, or its two routes would
+    match nothing. Positive control: a legacy answer carries none — it is
+    the route class that sends it, not the middleware."""
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+    client = TestClient(app)
+    _, workbench = _census(app)
+    assert workbench == EXPECTED_WORKBENCH_ROUTES
+    for method, path in sorted(workbench):
+        answer = client.request(method, re.sub(r"\{[^}]+\}", "x", path), json=None if method == "GET" else {})
+        assert answer.headers.get_list("cache-control") == ["no-store"], (method, path, answer.status_code)
+    legacy = client.get("/auth/me")
+    assert (legacy.status_code, legacy.headers.get("cache-control")) == (401, None)
+
+
+def test_a_workbench_route_that_sends_its_own_cache_control_keeps_it() -> None:
+    target = FastAPI()
+    install_workbench(target)
+    router = workbench_router(lambda: SessionData(user_id=1, role="dm"))
+
+    @router.get("/own")
+    def own() -> Response:
+        return Response(content=b"x", headers={"Cache-Control": "private, max-age=60"})
+
+    @router.get("/plain")
+    def plain() -> dict[str, str]:
+        return {}
+
+    target.include_router(router)
+    client = TestClient(target)
+    assert client.get("/own").headers.get_list("cache-control") == ["private, max-age=60"]
+    assert client.get("/plain").headers.get_list("cache-control") == ["no-store"]
 
 
 def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:

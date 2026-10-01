@@ -1257,8 +1257,8 @@ of the answer that mints it, and is in no body, no URL and no list.
 | `GET /campaigns/{campaign_id}/table-session` | — | `TableSessionAnswer`: the campaign's live session, else the one most recently started, else `session: null`. A session still `live` past `ends_at` reads `ended`, with `ended_at` its `ends_at`. Writes nothing |
 | `POST /campaigns/{campaign_id}/table-session` | `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; End and Rotate name their `session_id`, Start names none | `TableSessionAnswer`: the session as it stands after the command. `409 live_elsewhere` for a Start while the GM is live in another campaign; `429 throttled_user` with `retry_after_s` for a Start or a Rotate past SEC-35's per-campaign bound (End is never refused); `503 backend_unavailable`, retryable |
 | `DELETE /campaigns/{campaign_id}/table-session/screens/{screen_id}` | — | `204`, a repeat too. Another GM's screen, or none, is the one `404` |
-| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in |
-| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`, always: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49) |
+| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in; `429 throttled_user` with `retry_after_s` when a grant-shaped cookie arrives past its source's budget (below) |
+| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49). The one other answer is `429 throttled_user` with `retry_after_s`, when a grant-shaped cookie arrives past its source's budget (below); it deletes nothing |
 
 `TableSession` is the GM's view: state, **admission generation** (`gen`, which
 §15.11 keeps), when it started and ends, whether table audio is on, and
@@ -1268,7 +1268,11 @@ list carries up to 16, above SEC-48's per-session bound of four (*suggested*), s
 tuning the bound is not a contract change. The GM routes are Workbench GM routes
 (the `dm` gate, SEC-2, SEC-3); the two `/table/` routes are the table router's
 (SEC-44 to SEC-46): Fetch Metadata first, then SEC-7, then one principal — a
-live screen grant alone, else the account session.
+live screen grant alone, else the account session. A grant-shaped cookie costs
+a digest lookup before anyone is known, so each one first spends an attempt from
+the auth source budget (release review S6); past it the answer is `429
+throttled_user` with `retry_after_s`, and no lookup runs. No cookie, or one that
+is not a grant, spends nothing.
 
 ## The realtime family
 
