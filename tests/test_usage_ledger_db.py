@@ -400,6 +400,29 @@ def test_the_chat_day_counts_each_turn_once_whatever_its_status(world: World) ->
     assert chat_turns_since(world) == 2
 
 
+def test_an_operation_whose_every_attempt_failed_still_counts(world: World) -> None:
+    """Turn A's only attempt (an embedding) errored with no tokens -- a
+    timeout before any answer was drafted. Turn B's only attempt succeeded.
+    The tool invocation's only attempt errored too. All three reached a
+    provider, so all three spend their day: 2 chat turns and 3 operations
+    billed to ACCOUNT, whatever each one's status (agent-forge-harness-u2uj,
+    H-1) -- not the 1 chat turn and 2 operations a `status = 'ok'` filter
+    would count."""
+    record(
+        world,
+        attempt(attempt_index=0, purpose="embedding", status="error", input_tokens=None, output_tokens=None),
+        replace(
+            attempt(attempt_index=0, purpose="answer", status="ok"), operation_id=OTHER_OP,
+        ),
+        replace(
+            attempt(operation="tool_invocation", attempt_index=0, status="error", billed_account_id=ACCOUNT),
+            operation_id="3" * 32,
+        ),
+    )
+    assert chat_turns_since(world) == 2
+    assert operations_since(world, ACCOUNT) == 3
+
+
 def test_the_chat_day_counts_no_tool_or_edit_operation(world: World) -> None:
     record(
         world,
@@ -449,6 +472,9 @@ def test_the_chat_day_refuses_a_naive_since(world: World) -> None:
     assert str(refused.value) == "the usage ledger refused a period: since"
 
 
+# justification: `value` is deliberately one of several differently-typed
+# invalid inputs (an int, a bool, a naive datetime), matching the file's other
+# refusal-parametrized tests below.
 @pytest.mark.parametrize(("key", "value"), [
     ("billed_account_id", 0), ("billed_account_id", True), ("since", datetime(2026, 10, 1)),
 ], ids=["billed_account_id=0", "billed_account_id=True", "since=naive"])
@@ -465,6 +491,11 @@ def test_an_accounts_day_refuses_an_invalid_period(world: World, key: str, value
 
 @needs_db
 def test_the_chat_day_reads_the_operation_time_index(dsn: str) -> None:
+    """Not just that the index is named (a full index scan would name it too,
+    with the whole predicate as a `Filter`): `Index Cond` proves it is a RANGE
+    scan on `operation =` and `occurred_at >=`, so a rewrite that wraps either
+    column in a function (`lower(operation)`, `date_trunc('day', occurred_at)`)
+    is caught even though the plan would still mention the index."""
     with connect(dsn, autocommit=False) as conn:
         conn.execute("SET LOCAL enable_seqscan = off")
         plan = "\n".join(r[0] for r in conn.execute(
@@ -472,10 +503,15 @@ def test_the_chat_day_reads_the_operation_time_index(dsn: str) -> None:
         ).fetchall())
         conn.rollback()
     assert "provider_attempts_operation_time_idx" in plan, plan
+    assert "Index Cond" in plan, plan
+    assert "operation =" in plan, plan
+    assert "occurred_at >=" in plan, plan
 
 
 @needs_db
 def test_an_accounts_day_reads_the_account_time_index(dsn: str) -> None:
+    """See the pilot test above: `Index Cond` plus the actual columns, not just
+    the index's name, so a `date_trunc`/`lower`-style rewrite is caught."""
     with connect(dsn, autocommit=False) as conn:
         conn.execute("SET LOCAL enable_seqscan = off")
         plan = "\n".join(r[0] for r in conn.execute(
@@ -483,6 +519,9 @@ def test_an_accounts_day_reads_the_account_time_index(dsn: str) -> None:
         ).fetchall())
         conn.rollback()
     assert "provider_attempts_account_time_idx" in plan, plan
+    assert "Index Cond" in plan, plan
+    assert "billed_account_id =" in plan, plan
+    assert "occurred_at >=" in plan, plan
 
 
 # ── Refusals: the same words in both worlds, and no value in them ────────────

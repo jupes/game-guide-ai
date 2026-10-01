@@ -253,6 +253,8 @@ def _check_period(billed_account_id: Any, since: Any, until: Any) -> None:
             raise _refuse("period", key)
 
 
+# justification: validators accept untrusted input by design (the module's
+# convention -- see check_attempt and _check_period above).
 def _check_since(since: Any) -> None:
     if not _aware(since):
         raise _refuse("period", "since")

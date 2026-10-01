@@ -507,6 +507,8 @@ class _CountingTxDatabase:
     inner: InMemoryDatabase
     opened: int = 0
 
+    # justification: the yielded unit is whatever InMemoryDatabase.transaction
+    # yields; this counting wrapper never inspects it.
     @contextmanager
     def transaction(self) -> Iterator[Any]:
         self.opened += 1

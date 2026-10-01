@@ -330,6 +330,33 @@ def test_a_turn_that_fails_after_a_provider_attempt_spends_the_pilot_day(
     assert control_second.status_code != 429
 
 
+def test_a_turn_whose_embedding_times_out_spends_the_pilot_day(
+    ledger: _Ledger, usage_day: UsageDay, no_backoff: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn whose EMBEDDING attempt times out still spends the pilot day: the
+    ledger counts an operation with an attempt at a provider, whatever its
+    status -- including a turn that never reaches the LLM at all because the
+    embedding call is where it failed (agent-forge-harness-u2uj, H-1)."""
+    monkeypatch.setattr(config, "CHAT_DAILY_CAP", 1)
+    failing_embeddings = _FakeEmbeddingsClient(error=_timed_out())
+
+    first = _post(
+        _client(_service(_ScriptedLLM(["unused"]), embed_client=failing_embeddings)),
+        mode="sage", conversation_id="c-1",
+    )
+    assert first.status_code == 503, first.text
+    rows = ledger.rows()
+    assert rows, "the failed embedding wrote at least one row"
+    assert {r.status for r in rows} == {"error"}
+
+    second = _post(
+        _client(_service(_ScriptedLLM(["unused"]), embed_client=failing_embeddings)),
+        mode="sage", conversation_id="c-2",
+    )
+    assert second.status_code == 429
+    assert second.headers["x-chat-throttled"] == "daily"
+
+
 def test_a_failed_turn_spends_its_own_accounts_day_and_nobody_elses(
     ledger: _Ledger, usage_day: UsageDay, no_backoff: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
