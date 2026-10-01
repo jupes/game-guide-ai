@@ -151,5 +151,5 @@ def test_the_spa_fallback_is_not_an_api_prefix(tmp_path: Path) -> None:
 
     install_spa(app, tmp_path)
     served = {path for path, _ in api_routes(app)}
-    assert served == {"/healthz", "/", "/workspace", "/profile"}  # the SPA routes are really there
+    assert served == {"/healthz", "/", "/workspace", "/profile", "/tavern"}  # the SPA routes are really there
     assert _prefixes_of(app) == {"healthz"}
