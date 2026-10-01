@@ -102,8 +102,10 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute, iter_route_contexts
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
+from starlette.types import Message, Receive, Scope, Send
 
 from . import ratelimit
 from .session import SessionData
@@ -143,6 +145,10 @@ INACTIVE_DETAIL = _refusal(ErrorCode.INACTIVE, "There's no live table here.")
 #: SEC-45's Fetch Metadata refusal on a table route. It depends on nothing but
 #: those headers; the sentence is SEC-7's, because the cause is the same.
 CROSS_SITE_DETAIL = _refusal(ErrorCode.CROSS_SITE, "That request didn't come from this application.")
+#: Every Workbench answer's `Cache-Control` (agent-forge-harness-5ir1, release
+#: review S8): a campaign's private content must not stay in a shared
+#: device's browser cache. A route that sends its own keeps it.
+NO_STORE = "no-store"
 
 
 class WorkbenchRoute(APIRoute):
@@ -155,9 +161,22 @@ class WorkbenchRoute(APIRoute):
     exception that deletes a cookie, and nothing else of it. Only the table
     route class sets it — a table answer deletes a screen-grant cookie that is
     no longer live (SEC-44) — so every GM and account route's 401 stays exactly
-    one body and no header."""
+    one body, with no header of the exception's.
+
+    Every answer a Workbench route builds — its own, a refusal, a 422 —
+    carries `Cache-Control: no-store` unless the route set one (5ir1)."""
 
     forwards_cookie_deletion: ClassVar[bool] = False
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def sending(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                if "cache-control" not in headers:
+                    headers["cache-control"] = NO_STORE
+            await send(message)
+
+        await super().handle(scope, receive, sending)
 
 
 def not_found() -> NoReturn:

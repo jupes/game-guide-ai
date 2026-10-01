@@ -30,7 +30,7 @@ import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,11 +45,14 @@ from service.usage_capture import AttemptRow
 from service.usage_ledger import (
     ATTEMPT_COLUMNS,
     SEED_PRICE_REVISIONS,
+    DayCount,
     InMemoryUsageLedgerStore,
     LedgerWriter,
     PostgresUsageLedgerStore,
     StoredAttempt,
+    UsageDay,
     UsageLedgerStore,
+    utc_midnight,
 )
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "sql" / "migrations"
@@ -58,9 +61,14 @@ LEDGER_SQL = LEDGER_SQL_PATH.read_text(encoding="utf-8")
 #: The statements alone: `--` comments stripped, whitespace collapsed.
 STATEMENTS = " ".join(re.sub(r"--[^\n]*", "", LEDGER_SQL).split())
 
+[DAY_INDEX_SQL_PATH] = sorted(MIGRATIONS.glob("*_usage_day_index.sql"))
+DAY_INDEX_SQL = DAY_INDEX_SQL_PATH.read_text(encoding="utf-8")
+DAY_INDEX_STATEMENTS = " ".join(re.sub(r"--[^\n]*", "", DAY_INDEX_SQL).split())
+
 #: The whole surface of the store (L-10). No update, no delete, no search.
 DOCUMENTED_METHODS = {
     "record_attempts", "add_price_revision", "price_revisions", "attempts_for_operation", "account_cost",
+    "chat_turns_since", "operations_since",
 }
 
 #: Enabled aliases that may lack a seeded price, each for a stated reason. The
@@ -130,6 +138,24 @@ def test_the_campaign_id_check_is_the_registrys_own_regex() -> None:
 def test_the_store_module_issues_no_update_or_delete() -> None:
     source = inspect.getsource(usage_ledger)
     assert not re.search(r"\b(UPDATE|DELETE)\b", source)
+
+
+# ── The day index migration (T9, agent-forge-harness-u2uj) ───────────────────
+
+
+def test_the_day_index_migration_is_one_create_index() -> None:
+    """A text pin of the exact statement: no number, no IF NOT EXISTS, no
+    transaction control -- a wrong index definition (e.g. missing a column,
+    or indexing the wrong table) fails this."""
+    number = DAY_INDEX_SQL_PATH.name.split("_", 1)[0]
+    assert number not in DAY_INDEX_SQL
+    assert "IF NOT EXISTS" not in DAY_INDEX_STATEMENTS.upper()
+    assert not re.search(r"(^|;)\s*(BEGIN|COMMIT|END|ROLLBACK|START TRANSACTION)\b", DAY_INDEX_STATEMENTS, re.I)
+    statements = [s.strip() for s in DAY_INDEX_STATEMENTS.split(";") if s.strip()]
+    assert statements == [
+        "CREATE INDEX provider_attempts_operation_time_idx ON metering.provider_attempts (operation, occurred_at)"
+    ]
+    assert DAY_INDEX_SQL_PATH.name in {m.filename for m in discover()}
 
 
 # ── The surface ──────────────────────────────────────────────────────────────
@@ -423,12 +449,14 @@ class _CountingDatabase:
             yield unit
 
 
-def _row(index: int) -> AttemptRow:
+def _row(
+    index: int, *, operation_id: str = OP, operation: str = "chat_turn", billed_account_id: int = 1,
+) -> AttemptRow:
     return AttemptRow(
-        operation_id=OP, attempt_index=index, occurred_at=datetime(2026, 10, 1, tzinfo=UTC),
-        operation="chat_turn", purpose="answer", mode="sage", alias="gpt-4o-mini", provider="openai",
+        operation_id=operation_id, attempt_index=index, occurred_at=datetime(2026, 10, 1, tzinfo=UTC),
+        operation=operation, purpose="answer", mode="sage", alias="gpt-4o-mini", provider="openai",
         retry_index=index, status="ok", input_tokens=1, cached_input_tokens=None, output_tokens=1,
-        reasoning_tokens=None, billed_account_id=1, actor_kind="account", campaign_id=None,
+        reasoning_tokens=None, billed_account_id=billed_account_id, actor_kind="account", campaign_id=None,
     )
 
 
@@ -448,3 +476,74 @@ def test_a_store_refuses_the_other_worlds_unit() -> None:
         PostgresUsageLedgerStore().record_attempts(unit, [_row(0)])
     with pytest.raises(TypeError):
         InMemoryUsageLedgerStore(InMemoryDatabase()).record_attempts(object(), [_row(0)])  # type: ignore[arg-type]
+
+
+# ── The day reader (T8, agent-forge-harness-u2uj) ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("now", "expected"),
+    [
+        (datetime(2026, 10, 1, 3, 0, tzinfo=timezone(timedelta(hours=5))), datetime(2026, 9, 30, tzinfo=UTC)),
+        (datetime(2026, 10, 1, 0, 0, tzinfo=UTC), datetime(2026, 10, 1, tzinfo=UTC)),
+        (datetime(2026, 9, 30, 23, 59, 59, 999999, tzinfo=UTC), datetime(2026, 9, 30, tzinfo=UTC)),
+    ],
+)
+def test_utc_midnight_is_the_utc_days_start_for_any_offset(now: datetime, expected: datetime) -> None:
+    assert utc_midnight(now) == expected
+
+
+def test_utc_midnight_refuses_a_naive_now() -> None:
+    with pytest.raises(usage_ledger.LedgerRefused) as refused:
+        utc_midnight(datetime(2026, 10, 1))
+    assert str(refused.value) == "the usage ledger refused a period: now"
+
+
+@dataclass
+class _CountingTxDatabase:
+    """Counts how many transactions were opened, so a torn read (two
+    transactions where the contract promises one) fails the test."""
+
+    inner: InMemoryDatabase
+    opened: int = 0
+
+    # justification: the yielded unit is whatever InMemoryDatabase.transaction
+    # yields; this counting wrapper never inspects it.
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        self.opened += 1
+        with self.inner.transaction() as unit:
+            yield unit
+
+
+def test_for_account_reads_both_counts_in_one_transaction() -> None:
+    now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    inner = InMemoryDatabase()
+    store = InMemoryUsageLedgerStore(inner)
+    with inner.transaction() as unit:
+        store.record_attempts(unit, [
+            _row(0, operation_id="0" * 32, operation="chat_turn", billed_account_id=1),
+            _row(0, operation_id="1" * 32, operation="tool_invocation", billed_account_id=1),
+            _row(0, operation_id="2" * 32, operation="chat_turn", billed_account_id=2),
+        ])
+    counting = _CountingTxDatabase(inner)
+    day = UsageDay(store, counting)
+
+    result = day.for_account(1, now=now)
+
+    assert counting.opened == 1, "for_account must read both counts in one transaction"
+    assert result == DayCount(pilot_chat_turns=2, account_operations=2)
+
+
+def test_chat_turns_reads_the_pilot_half_alone() -> None:
+    now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    inner = InMemoryDatabase()
+    store = InMemoryUsageLedgerStore(inner)
+    with inner.transaction() as unit:
+        store.record_attempts(unit, [
+            _row(0, operation_id="0" * 32, operation="chat_turn", billed_account_id=1),
+            _row(0, operation_id="1" * 32, operation="tool_invocation", billed_account_id=1),
+        ])
+    day = UsageDay(store, inner)
+
+    assert day.chat_turns(now=now) == 1

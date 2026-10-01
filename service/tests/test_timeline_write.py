@@ -505,7 +505,7 @@ def test_chat_gains_two_dependencies_and_one_call_and_nothing_else() -> None:
     handler = tree.body[0]
     assert isinstance(handler, ast.FunctionDef)
     assert [a.arg for a in handler.args.args] == [
-        "req", "request", "svc", "store", "metrics", "session", "timeline", "tdb",
+        "req", "request", "svc", "store", "metrics", "session", "timeline", "tdb", "day",
     ]
     [attempt] = [node for node in handler.body if isinstance(node, ast.Try)]
     *_, user_row, assistant_row, record, answer = attempt.body
@@ -525,14 +525,19 @@ def test_chat_gains_two_dependencies_and_one_call_and_nothing_else() -> None:
         "the timeline is named somewhere other than the one call"
     )
 
-    # F2: no other TEXT names it either (mutant W6). `timeline`/`tdb` are the
-    # last two parameters and share no other tokens with the rest of the
-    # signature, so their combined span — name through default, for both —
-    # runs from the first parameter's start to the second's default's end.
-    timeline_param, tdb_param = handler.args.args[-2], handler.args.args[-1]
-    assert (timeline_param.arg, tdb_param.arg) == ("timeline", "tdb")
+    # F2: no other TEXT names it either (mutant W6). `timeline`/`tdb` are two
+    # adjacent parameters (agent-forge-harness-u2uj added `day` after them, so
+    # they are no longer necessarily the LAST two) and share no other tokens
+    # with the rest of the signature, so their combined span — name through
+    # default, for both — runs from the first parameter's start to the
+    # second's default's end. Found by name, not position, so an unrelated
+    # parameter added after `tdb` cannot silently widen this span.
+    args = handler.args.args
+    timeline_param, tdb_param = next(a for a in args if a.arg == "timeline"), next(a for a in args if a.arg == "tdb")
+    assert args.index(tdb_param) == args.index(timeline_param) + 1, "timeline and tdb must stay adjacent"
+    defaulted = dict(zip(args[-len(handler.args.defaults):], handler.args.defaults, strict=True))
     allowed = [
-        (_span(source, timeline_param)[0], _span(source, handler.args.defaults[-1])[1]),
+        (_span(source, timeline_param)[0], _span(source, defaulted[tdb_param])[1]),
         _span(source, record),
     ]
     lowered = source.lower()

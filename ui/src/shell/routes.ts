@@ -35,6 +35,7 @@ export const ROUTES: readonly RouteRow[] = [
   { path: '/', screen: 'landing', coldLoad: 'restore' },
   { path: '/workspace', screen: 'workspace', coldLoad: 'home' },
   { path: '/profile', screen: 'profile', coldLoad: 'restore' },
+  { path: '/tavern', screen: 'tavern', coldLoad: 'restore' },
 ]
 
 /** The row for an exact pathname, or `null` if there is none. */

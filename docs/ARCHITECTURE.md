@@ -882,7 +882,7 @@ The running service reads them once, at startup, through `startup_settings`,
 which adds two rules: the capability cannot be on with no store, and `gcs`
 needs a build that carries the client (asked without importing it). Both are
 refused by name, so startup fails loudly, database or no database. Every object-store call outside `service/media_objects.py` goes through
-`via_store`, where slice c puts the thread limiter. The store's health signal
+`via_store`, where the thread limiter holds (below). The store's health signal
 for `1kg.9.2` is the read-only `reachable()`.
 
 **The Cloud Storage store** (`service/media_gcs.py`) keeps the same contract,
@@ -919,7 +919,7 @@ asset store is GM-side and system-side only.
 Two Workbench routes on `workbench_router`, each a `MediaRoute` whose `matches`
 answers `Match.NONE` while the capability is off, so the router goes on exactly
 as for a path that does not exist, in every topology (`SchedulerRoute`'s
-precedent; no catch-all). Serving the bytes and deleting an asset are slice c's.
+precedent; no catch-all). Serving the bytes and deleting an asset are below.
 
 | Route | Answers |
 |---|---|
@@ -951,6 +951,53 @@ with `client_max_body_size 20m`, `proxy_request_buffering off` and
 `/campaigns` request keeps the prefix location's settings. Production has no
 nginx; Cloud Run's settings, ffmpeg and Pillow in both images, and the bucket are
 `1kg.9.5`'s. CI installs ffmpeg for the tests (`.github/workflows/ci.yml`).
+
+### Serving and deleting (`service/asset_serving_api.py`, `service/media_serving.py`)
+
+Two more `MediaRoute`s on `workbench_router`, dark the same way. They are the
+GM's alone: a table client never sees an `asset_id`, and its reads are
+`1kg.7.x`'s. No API route begins with `/assets/`, where the built UI's bundle
+lives (RV-1).
+
+| Route | Answers |
+|---|---|
+| `GET /campaigns/{campaign_id}/assets/{asset_id}` | a `ready` asset's bytes: `200`, `206` for one byte range, `416` with `Content-Range: bytes */<size>` for a range past the end. A position of any length means its value (one longer than the size in digits is compared, never converted), so no numeral makes a `500`. Another unit, a syntax error, several ranges and any `If-Range` are ignored and the whole object answered (RFC 9110 section 14; no validator is ever issued, so no `If-Range` can match). `503` with `Retry-After` when the instance's store tokens are all taken |
+| `DELETE /campaigns/{campaign_id}/assets/{asset_id}` | `204`. One transaction writes the tombstone, releases the reservation, enqueues `asset.delete` last and records `asset.deleted` (detail: the asset id); the job is tried after the response. A deleted asset is missing, so a second delete is the `404` |
+
+**A read, in order.** Ownership and `ready` in one statement (`resolve_ready`;
+missing, another GM's, not yet ready, failed and deleted are one `404`), in a
+transaction that commits before any byte moves; then the range; then one of the
+instance's store tokens for the response's whole life; then the stream, opened
+and pulled 256 KiB at a time on worker threads under that token. An object that
+vanished between the query and the read is the `404` too: only a deletion takes
+one away.
+
+**The headers** (SEC-19): the type the server recorded, `nosniff`,
+`Content-Security-Policy: default-src 'none'; sandbox` sent by the route itself
+(the application's middleware only fills in what a response has not set),
+`Content-Disposition: inline` with no filename, `Cache-Control: no-store`,
+`Accept-Ranges: bytes`, and no `ETag` or `Last-Modified`. No
+`Cross-Origin-Resource-Policy`: that is undecided for non-table pages (threat
+model TA-6, `ifq`).
+
+**The thread limiter** (MS-10, MS-7; `service/media_objects.py`). The stores are
+synchronous, so they run in a dedicated limiter of six tokens per instance
+(*suggested*), counted under a lock rather than by an event loop, never waited
+for. A byte response holds one token for its whole life and runs its store call
+and every chunk pull on a worker thread under it — never on the event loop, and
+on none of the default limiter's tokens, which are the request pool login and
+chat run in (F-2, SEC-35) — so a seventh concurrent response is refused.
+`via_store` refuses to run on an event loop's thread at all, and every other
+caller (the upload leg, the job handlers) borrows a token there for one call:
+when all six are taken an upload answers `503` and a job attempt fails and is
+retried later. A stream an upload leg pulls outside `via_store` is not yet
+counted (`agent-forge-harness-f8l1`).
+
+**The re-check seam** (requirement 5.6, SEC-16). A byte response may be given an
+async re-check, asked before each chunk once 1 MB has gone since the last
+answer; `False` ends the stream. The GM's route passes none — its authorisation
+is the query that found the key — and the table side's is `1kg.7.x`'s, which may
+use `media_serving` without importing the asset store.
 
 ## Running it
 
@@ -1353,19 +1400,22 @@ else `failed attempt_expired`. An attempt's deadline is 150 s from its start,
 and every provider call an executor makes is bounded by what is left of it.
 
 **One clock.** Every time the service writes or compares is the route's clock,
-passed into SQL; no statement calls `now()`. The pilot day's chat half is
-`calls_today()`'s own database day, so the two agree except within seconds of
-UTC midnight.
+passed into SQL; no statement calls `now()`. The pilot day's chat half is the
+ledger's chat turns since the route clock's UTC midnight (`UsageDay.chat_turns`,
+agent-forge-harness-u2uj), so the two agree except within seconds of UTC
+midnight.
 
 **Cost guards.** The X-5 cap is two in-flight tool invocations per GM across
 every campaign and instance, counted in PostgreSQL under the advisory lock;
 `/chat` turns are not counted. The hourly window is `/chat`'s own per-user
-window, so a GM who spends it on tools is throttled on `/chat` too. The pilot
-day counts today's chat turns plus every GM's tool attempts against
-`CHAT_DAILY_CAP`, while `/chat`'s own daily check is unchanged and does not
-count tools. Two residuals follow, acceptable only because E-8 forbids enabling
-any tool before the owner chooses the limits: once a tool is enabled, the
-pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
+window, so a GM who spends it on tools is throttled on `/chat` too. `/chat`
+checks the per-account day, then the pilot day, both from
+`metering.provider_attempts`; the pilot day counts today's chat turns plus
+every GM's tool attempts against `CHAT_DAILY_CAP`. The tool route does not
+check the per-account cap at all -- a deliberate follow-up, not an oversight
+(agent-forge-harness-u2uj). Two residuals follow, acceptable only because E-8
+forbids enabling any tool before the owner chooses the limits: once a tool is
+enabled, the pilot's daily total can reach twice `CHAT_DAILY_CAP`; and admissions from
 different GMs at the edge can overshoot, because the day check is serialised
 per GM only. Each provider attempt is recorded in the cost ledger under the
 operation `tool_invocation`, with the attempt row's `operation_id`.

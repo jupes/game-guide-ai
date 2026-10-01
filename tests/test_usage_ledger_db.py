@@ -44,7 +44,9 @@ from service.db import Database, InMemoryDatabase, PoolSettings
 from service.usage_capture import AttemptRow
 from service.usage_ledger import (
     ACCOUNT_COST_SQL,
+    ACCOUNT_OPERATIONS_SINCE_SQL,
     ATTEMPT_COLUMNS,
+    CHAT_TURNS_SINCE_SQL,
     SEED_PRICE_REVISIONS,
     AccountCost,
     InMemoryUsageLedgerStore,
@@ -362,6 +364,164 @@ def test_account_cost_sums_one_account_over_a_half_open_period(world: World) -> 
         unpriced_attempts=0, repriced_attempts=0,
     )
     assert cost(world, OTHER_ACCOUNT, since=since, until=until).attempts == 1
+
+
+# ── The daily caps' counts (agent-forge-harness-u2uj) ─────────────────────────
+
+
+def chat_turns_since(world: World, since: datetime = SINCE) -> int:
+    with world.db.transaction() as unit:
+        return int(world.store.chat_turns_since(unit, since=since))
+
+
+def operations_since(world: World, account: int = ACCOUNT, since: datetime = SINCE) -> int:
+    with world.db.transaction() as unit:
+        return int(world.store.operations_since(unit, account, since=since))
+
+
+def test_the_chat_day_counts_each_turn_once_whatever_its_status(world: World) -> None:
+    """Turn A: embedding ok, an answer that errored, then one that succeeded.
+    Turn B: embedding ok, then an answer that errored with no tokens (a
+    timeout). Both turns reached a provider, so both spent the day -- 2, not
+    the 5 rows or the 1 turn that finished cleanly."""
+    record(
+        world,
+        attempt(attempt_index=0, purpose="embedding", status="ok"),
+        attempt(attempt_index=1, purpose="answer", status="error"),
+        attempt(attempt_index=2, purpose="answer", status="ok"),
+        replace(
+            attempt(attempt_index=0, purpose="embedding", status="ok"), operation_id=OTHER_OP,
+        ),
+        replace(
+            attempt(attempt_index=1, purpose="answer", status="error", input_tokens=None, output_tokens=None),
+            operation_id=OTHER_OP,
+        ),
+    )
+    assert chat_turns_since(world) == 2
+
+
+def test_an_operation_whose_every_attempt_failed_still_counts(world: World) -> None:
+    """Turn A's only attempt (an embedding) errored with no tokens -- a
+    timeout before any answer was drafted. Turn B's only attempt succeeded.
+    The tool invocation's only attempt errored too. All three reached a
+    provider, so all three spend their day: 2 chat turns and 3 operations
+    billed to ACCOUNT, whatever each one's status (agent-forge-harness-u2uj,
+    H-1) -- not the 1 chat turn and 2 operations a `status = 'ok'` filter
+    would count."""
+    record(
+        world,
+        attempt(attempt_index=0, purpose="embedding", status="error", input_tokens=None, output_tokens=None),
+        replace(
+            attempt(attempt_index=0, purpose="answer", status="ok"), operation_id=OTHER_OP,
+        ),
+        replace(
+            attempt(operation="tool_invocation", attempt_index=0, status="error", billed_account_id=ACCOUNT),
+            operation_id="3" * 32,
+        ),
+    )
+    assert chat_turns_since(world) == 2
+    assert operations_since(world, ACCOUNT) == 3
+
+
+def test_the_chat_day_counts_no_tool_or_edit_operation(world: World) -> None:
+    record(
+        world,
+        attempt(operation="chat_turn"),
+        replace(attempt(operation="tool_invocation"), operation_id=OTHER_OP),
+        replace(attempt(operation="document_edit"), operation_id="1" * 32),
+    )
+    assert chat_turns_since(world) == 1
+
+
+def test_the_day_starts_at_exactly_since(world: World) -> None:
+    """Both methods: a row at exactly `since` counts, one a microsecond before
+    does not."""
+    record(
+        world,
+        attempt(attempt_index=0, occurred_at=SINCE),
+        replace(attempt(attempt_index=0, occurred_at=SINCE - MICRO), operation_id=OTHER_OP),
+    )
+    assert chat_turns_since(world, since=SINCE) == 1
+    assert operations_since(world, ACCOUNT, since=SINCE) == 1
+
+
+def test_an_accounts_day_counts_its_own_operations_of_every_kind(world: World) -> None:
+    record(
+        world,
+        attempt(operation="chat_turn", attempt_index=0),
+        replace(attempt(operation="tool_invocation", attempt_index=0), operation_id=OTHER_OP),
+        replace(attempt(operation="document_edit", attempt_index=0), operation_id="1" * 32),
+        replace(
+            attempt(operation="document_edit", attempt_index=1, billed_account_id=ACCOUNT), operation_id="1" * 32,
+        ),
+        replace(
+            attempt(attempt_index=0, billed_account_id=OTHER_ACCOUNT), operation_id="2" * 32,
+        ),
+        replace(
+            attempt(attempt_index=1, billed_account_id=OTHER_ACCOUNT), operation_id="2" * 32,
+        ),
+    )
+    assert operations_since(world, ACCOUNT) == 3
+    assert operations_since(world, OTHER_ACCOUNT) == 1
+
+
+def test_the_chat_day_refuses_a_naive_since(world: World) -> None:
+    record(world, attempt())
+    with pytest.raises(LedgerRefused) as refused, world.db.transaction() as unit:
+        world.store.chat_turns_since(unit, since=datetime(2026, 10, 1))
+    assert str(refused.value) == "the usage ledger refused a period: since"
+
+
+# justification: `value` is deliberately one of several differently-typed
+# invalid inputs (an int, a bool, a naive datetime), matching the file's other
+# refusal-parametrized tests below.
+@pytest.mark.parametrize(("key", "value"), [
+    ("billed_account_id", 0), ("billed_account_id", True), ("since", datetime(2026, 10, 1)),
+], ids=["billed_account_id=0", "billed_account_id=True", "since=naive"])
+def test_an_accounts_day_refuses_an_invalid_period(world: World, key: str, value: Any) -> None:
+    record(world, attempt())
+    arguments: dict[str, Any] = {"billed_account_id": ACCOUNT, "since": SINCE, key: value}
+
+    with pytest.raises(LedgerRefused) as refused, world.db.transaction() as unit:
+        world.store.operations_since(unit, arguments["billed_account_id"], since=arguments["since"])
+
+    assert str(refused.value) == f"the usage ledger refused a period: {key}"
+    assert repr(value) not in str(refused.value)
+
+
+@needs_db
+def test_the_chat_day_reads_the_operation_time_index(dsn: str) -> None:
+    """Not just that the index is named (a full index scan would name it too,
+    with the whole predicate as a `Filter`): `Index Cond` proves it is a RANGE
+    scan on `operation =` and `occurred_at >=`, so a rewrite that wraps either
+    column in a function (`lower(operation)`, `date_trunc('day', occurred_at)`)
+    is caught even though the plan would still mention the index."""
+    with connect(dsn, autocommit=False) as conn:
+        conn.execute("SET LOCAL enable_seqscan = off")
+        plan = "\n".join(r[0] for r in conn.execute(
+            "EXPLAIN " + CHAT_TURNS_SINCE_SQL, {"operation": "chat_turn", "since": SINCE},
+        ).fetchall())
+        conn.rollback()
+    assert "provider_attempts_operation_time_idx" in plan, plan
+    assert "Index Cond" in plan, plan
+    assert "operation =" in plan, plan
+    assert "occurred_at >=" in plan, plan
+
+
+@needs_db
+def test_an_accounts_day_reads_the_account_time_index(dsn: str) -> None:
+    """See the pilot test above: `Index Cond` plus the actual columns, not just
+    the index's name, so a `date_trunc`/`lower`-style rewrite is caught."""
+    with connect(dsn, autocommit=False) as conn:
+        conn.execute("SET LOCAL enable_seqscan = off")
+        plan = "\n".join(r[0] for r in conn.execute(
+            "EXPLAIN " + ACCOUNT_OPERATIONS_SINCE_SQL, {"account": ACCOUNT, "since": SINCE},
+        ).fetchall())
+        conn.rollback()
+    assert "provider_attempts_account_time_idx" in plan, plan
+    assert "Index Cond" in plan, plan
+    assert "billed_account_id =" in plan, plan
+    assert "occurred_at >=" in plan, plan
 
 
 # ── Refusals: the same words in both worlds, and no value in them ────────────

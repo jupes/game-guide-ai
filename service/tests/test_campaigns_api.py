@@ -26,6 +26,7 @@ from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from httpx import Response
 
+import config
 from service import app as appmod
 from service import campaigns_api
 from service.app import app, get_auth_store, get_timeline_database, require_session
@@ -44,7 +45,7 @@ from service.seat_offer_store import OFFER_LIFETIME, THROTTLE_LIMIT, InMemorySea
 from service.session import SessionData
 from service.table_session_store import InMemoryTableSessionStore, no_slots
 from service.workbench_api import NOT_FOUND_DETAIL, REAUTH_FAILED_DETAIL
-from service.workbench_contracts import Campaign, ErrorBody, Seat, SeatPage, SeatRemoveRequest
+from service.workbench_contracts import Campaign, ErrorBody, ErrorCode, Seat, SeatPage, SeatRemoveRequest
 
 GM_A, GM_B, PLAYER = 1, 2, 3
 PASSWORD = {GM_A: "correct horse battery", GM_B: "another good passphrase"}
@@ -223,6 +224,46 @@ def test_a_created_campaign_is_the_callers_and_duplicate_names_make_two(client: 
         "concluded_at", "tone", "game_system", "avatar_icon", "avatar_tone", "badge", "seat_count",
         "last_activity_at", "last_played_at", "dormant",
     }
+
+
+def test_the_campaign_cap_answers_409_account_limit_reached_and_creates_nothing(
+    client: TestClient, world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """agent-forge-harness-531x, PR-B. Row counts before and after prove the
+    refusal happens before any write, not merely that the response looks
+    right."""
+    monkeypatch.setattr(config, "WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX", 2)
+    world.campaign(GM_A, "One")
+    world.campaign(GM_A, "Two")
+
+    refused = client.post("/campaigns", json={"schema_version": 1, "name": "Three"})
+
+    assert refused.status_code == 409, refused.text
+    body = refused.json()
+    assert body["detail"]["code"] == ErrorCode.ACCOUNT_LIMIT_REACHED.value
+    assert body["detail"]["retryable"] is False
+    assert "location" not in {k.lower() for k in refused.headers}
+    listed = client.get("/campaigns").json()
+    assert len(listed["items"]) == 2, "a refused create must write nothing"
+
+
+def test_the_campaign_cap_counts_archived_campaigns_and_is_per_account(
+    client: TestClient, world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An archive-then-create loop, or switching campaigns, cannot get around
+    the cap; a different account's campaigns never count against this one."""
+    monkeypatch.setattr(config, "WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX", 1)
+    world.campaign(GM_B, "B's campaign")  # a different account, at its own cap
+    only = world.campaign(GM_A, "Only")
+    with world.db.transaction() as unit:
+        assert world.stores.campaigns.set_archived(unit, only, owner_id=GM_A, archived=True) is True
+
+    refused = client.post("/campaigns", json={"schema_version": 1, "name": "One Too Many"})
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == ErrorCode.ACCOUNT_LIMIT_REACHED.value
+    listed = client.get("/campaigns", params={"include_archived": "true"}).json()
+    assert len(listed["items"]) == 1
 
 
 def test_a_card_carries_its_facts_on_every_answer(client: TestClient, world: _World) -> None:
@@ -716,9 +757,10 @@ def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) 
     # 1kg.2.2's ten, bead cfx's conclude and reopen, 1kg.5.2's ten
     # document paths nested under a campaign, 1kg.2.3's two table-session
     # paths (agent-forge-harness-1kg.2.10), whose answers carry no secret either,
-    # 1kg.4.1's three tool-invocation paths nested under a campaign, and btb's
-    # five group paths (their answers name seats by id, never an account).
-    assert len(family) == 32
+    # 1kg.4.1's three tool-invocation paths nested under a campaign, btb's
+    # five group paths (their answers name seats by id, never an account), and
+    # q156's three character-sheet link paths (also nested under a campaign).
+    assert len(family) == 35
     schemas = document["components"]["schemas"]
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
                 "PlayerSeatPage"}

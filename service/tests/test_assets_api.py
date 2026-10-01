@@ -407,7 +407,8 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert appmod._media_enabled() is True
     media = [route for path, route in api_routes(app) if "/assets" in path]
-    assert len(media) == 2 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
+    # Two upload routes, and 1kg.8.1.3's read and delete (`asset_serving_api`).
+    assert len(media) == 4 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
     assert not [path for path, _ in api_routes(app) if ":path}" in path]
     app.openapi_schema = None
     assert not [path for path in app.openapi()["paths"] if "/assets" in path], "no announcement either"
@@ -1007,6 +1008,8 @@ def test_ci_installs_ffmpeg_before_the_suite_runs() -> None:
     """Open question 4, answered (a): the python-tests job installs the tools,
     so the audio tests above run in CI, where their fixture refuses to skip."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    job = workflow.split("\n  python-tests:\n", 1)[1].split("\n  ui-tests:\n", 1)[0]
-    install = job.index("apt-get install -y --no-install-recommends ffmpeg")
+    job = workflow.split("\n  python-tests:\n", 1)[1].split("\n  python-db-tests:\n", 1)[0]
+    install = job.index("apt-get install -y --no-install-recommends")
+    install_line = job[install:].split("\n", 1)[0]
+    assert re.search(r"\sffmpeg(?:\s|$)", install_line), install_line
     assert install < job.index("python -m pytest -q --cov")

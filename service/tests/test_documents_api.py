@@ -52,6 +52,7 @@ from service.document_store import (
     StaleTypeVersion,
     UnknownWriteRevision,
     _version_key,
+    measured_bytes,
 )
 from service.document_wire import encode_history_cursor, encode_library_cursor
 from service.hashing import HashingCapacityError, hash_password
@@ -73,6 +74,7 @@ from service.workbench_contracts import (
     DocumentTypeId,
     DocumentVersionSnapshot,
     ErrorBody,
+    ErrorCode,
     LibraryPage,
 )
 
@@ -416,6 +418,126 @@ def test_create_refusals_fail_before_any_transaction(client: TestClient, world: 
     assert (newer.status_code, newer.json()["detail"]["code"], newer.json()["detail"]["field"]) == (
         422, "unsupported_schema_version", "type_version")
     assert len(world.db.units) == opened, "no refusal opened a transaction"
+
+
+def test_a_document_create_past_the_byte_cap_answers_409_and_writes_nothing(
+    client: TestClient, world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """agent-forge-harness-531x, PR-B: the account's stored-byte cap. The
+    library check proves nothing was written, not merely that the response
+    looks refused."""
+    campaign = world.campaign()
+    data = {"name": "A letter", "body": "x" * 500}
+    growth = 2 * measured_bytes(data)
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", growth - 1)
+
+    refused = _create(client, campaign, "handout", data)
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == ErrorCode.ACCOUNT_LIMIT_REACHED.value
+    assert refused.json()["detail"]["retryable"] is False
+    assert _library(client, campaign, "documents").json()["items"] == []
+
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", growth)  # exactly at the cap: admitted
+    admitted = _create(client, campaign, "handout", data)
+    assert admitted.status_code == 201, admitted.text
+
+
+def test_a_patch_past_the_byte_cap_answers_409_and_writes_nothing(
+    client: TestClient, world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign, "handout", {"name": "A letter", "body": "short"})
+    grown_body = "y" * 500
+    old_bytes = measured_bytes({"name": "A letter", "body": "short"})
+    new_bytes = measured_bytes({"name": "A letter", "body": grown_body})
+    growth = 2 * (new_bytes - old_bytes)  # document + the one open version, both updated in place
+    with world.db.transaction() as unit:
+        current = world.stores.documents.stored_bytes(unit, GM_A)
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", current + growth - 1)
+
+    refused = _patch(client, campaign, document, 1, {"body": grown_body}, doc_type="handout")
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == ErrorCode.ACCOUNT_LIMIT_REACHED.value
+    assert world.record(campaign, document).data["body"] == "short", "a refused patch must write nothing"
+
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", current + growth)
+    admitted = _patch(client, campaign, document, 1, {"body": grown_body}, doc_type="handout")
+    assert admitted.status_code == 200, admitted.text
+
+
+def test_a_trimming_patch_at_the_cap_is_admitted(
+    client: TestClient, world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write that does not grow storage is always admitted, at any cap — a
+    GM at the cap can still trim (agent-forge-harness-531x)."""
+    campaign = world.campaign()
+    document = world.document(campaign, "handout", {"name": "A letter", "body": "a longer starting body"})
+    with world.db.transaction() as unit:
+        current = world.stores.documents.stored_bytes(unit, GM_A)
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", current - 1)  # already OVER the cap
+
+    trimmed = _patch(client, campaign, document, 1, {"body": "x"}, doc_type="handout")
+
+    assert trimmed.status_code == 200, trimmed.text
+
+
+def test_a_restore_past_the_byte_cap_answers_409_and_writes_nothing(
+    client: TestClient, world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign, "handout", {"name": "A letter", "body": "a" * 500})
+    # Idle past SEAL_IDLE_S: this write seals version 1 (still "a"*500) and
+    # opens version 2 with the small body, so the CURRENT content shrinks
+    # while an OLDER, bigger version stays on record to restore back to.
+    with world.db.transaction() as unit:
+        world.stores.documents.write_fields(
+            unit, campaign, document, fields={"body": "small"}, author=Author.GM, base_write_revision=None,
+            now=T0 + timedelta(seconds=SEAL_IDLE_S + 1),
+        )
+    with world.db.transaction() as unit:
+        current = world.stores.documents.stored_bytes(unit, GM_A)
+    big_bytes = measured_bytes({"name": "A letter", "body": "a" * 500})
+    small_bytes = measured_bytes(world.record(campaign, document).data)
+    growth = 2 * big_bytes - small_bytes
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", current + growth - 1)
+    world.now[0] = T0 + timedelta(seconds=2 * SEAL_IDLE_S)
+
+    refused = _restore(client, campaign, document, 1)
+
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == ErrorCode.ACCOUNT_LIMIT_REACHED.value
+    assert world.record(campaign, document).data["body"] == "small", "a refused restore must write nothing"
+
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", current + growth)
+    admitted = _restore(client, campaign, document, 1)
+    assert admitted.status_code == 200, admitted.text
+
+
+def test_archiving_through_the_lifecycle_route_does_not_lift_the_byte_cap_pr232_r1_h1(
+    client: TestClient, world: _World, life: _Life, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #232 review pr232-531xb-r1, finding H1, at the HTTP layer: archiving
+    a document through the real lifecycle route must not make the account's
+    byte total look smaller than it is, so a create at the cap is still 409
+    after the archive."""
+    campaign = world.campaign()
+    document = world.document(campaign, "handout", {"name": "A letter", "body": "x" * 500})
+    with world.db.transaction() as unit:
+        before = world.stores.documents.stored_bytes(unit, GM_A)
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", before)  # exactly at the cap
+
+    archived = _archive(client, campaign, document)
+    assert archived.status_code == 204, archived.text
+    with world.db.transaction() as unit:
+        after_archive = world.stores.documents.stored_bytes(unit, GM_A)
+    assert after_archive == before, "archiving must not shrink the counted total"
+
+    refused = _create(client, campaign, "handout", {"name": "Another letter", "body": "y"})
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"]["code"] == ErrorCode.ACCOUNT_LIMIT_REACHED.value
+    assert _library(client, campaign, "documents").json()["items"] == [], "the refused create must write nothing"
 
 
 # ── A-5: read ────────────────────────────────────────────────────────────────
@@ -916,7 +1038,8 @@ def test_no_private_text_reaches_a_refusal_or_a_log_line(
 
 def test_the_openapi_of_the_document_routes_names_no_owner() -> None:
     paths = {path: item for path, item in app.openapi()["paths"].items() if "/documents" in path or "/library" in path}
-    assert len(paths) == 10
+    # 1kg.5.2's ten, plus q156's three: link, unlink and the read.
+    assert len(paths) == 13
     text = json.dumps(paths)
     assert "owner_id" not in text and "password" not in text
 

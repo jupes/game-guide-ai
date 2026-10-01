@@ -1,0 +1,67 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`legacy markup (T2-6) > GM with no campaign renders the sidebar exactly as before this PR 1`] = `
+"button "auto_storiesSage" aria-pressed=false
+button "auto_awesomeSpell" aria-pressed=false
+button "gavelRules" aria-pressed=false
+button "checkGM" aria-pressed=true
+button "Choose a campaign"
+paragraph "Conversations"
+button "New conversation" aria-pressed=false
+button "A legacy GM question about the heist" aria-pressed=false
+button "Rename A legacy GM question about the heist" aria-pressed=false
+button "Another legacy GM question" aria-pressed=false
+button "Rename Another legacy GM question" aria-pressed=false
+button "Open user menu""
+`;
+
+exports[`legacy markup (T2-6) > every other channel renders the sidebar exactly as before this PR, a campaign selected or not > GM after a clear 1`] = `
+"button "auto_storiesSage" aria-pressed=false
+button "auto_awesomeSpell" aria-pressed=false
+button "gavelRules" aria-pressed=false
+button "checkGM" aria-pressed=true
+button "Choose a campaign"
+paragraph "Conversations"
+button "New conversation" aria-pressed=false
+button "A legacy GM question about the heist" aria-pressed=false
+button "Rename A legacy GM question about the heist" aria-pressed=false
+button "Another legacy GM question" aria-pressed=false
+button "Rename Another legacy GM question" aria-pressed=false
+button "Open user menu""
+`;
+
+exports[`legacy markup (T2-6) > every other channel renders the sidebar exactly as before this PR, a campaign selected or not > Rules 1`] = `
+"button "auto_storiesSage" aria-pressed=false
+button "auto_awesomeSpell" aria-pressed=false
+button "checkRules" aria-pressed=true
+button "castleGM" aria-pressed=false
+paragraph "Conversations"
+button "New conversation" aria-pressed=false
+button "How does cover work" aria-pressed=false
+button "Rename How does cover work" aria-pressed=false
+button "Open user menu""
+`;
+
+exports[`legacy markup (T2-6) > every other channel renders the sidebar exactly as before this PR, a campaign selected or not > Sage 1`] = `
+"button "checkSage" aria-pressed=true
+button "auto_awesomeSpell" aria-pressed=false
+button "gavelRules" aria-pressed=false
+button "castleGM" aria-pressed=false
+paragraph "Conversations"
+button "New conversation" aria-pressed=false
+button "A Sage question about grappling" aria-pressed=false
+button "Rename A Sage question about grappling" aria-pressed=false
+button "Open user menu""
+`;
+
+exports[`legacy markup (T2-6) > every other channel renders the sidebar exactly as before this PR, a campaign selected or not > Spell 1`] = `
+"button "auto_storiesSage" aria-pressed=false
+button "checkSpell" aria-pressed=true
+button "gavelRules" aria-pressed=false
+button "castleGM" aria-pressed=false
+paragraph "Conversations"
+button "New conversation" aria-pressed=false
+button "Fireball at higher levels" aria-pressed=false
+button "Rename Fireball at higher levels" aria-pressed=false
+button "Open user menu""
+`;

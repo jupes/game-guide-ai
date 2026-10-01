@@ -155,13 +155,30 @@ a generic failure.
 | `group_name_taken` | 409 | no | a group name another live group of the campaign already has, up to case (`btb`). The name is never echoed |
 | `group_cap_reached` | 409 | no | the 51st live group of a campaign (`btb`, SEC-35) |
 | `not_in_sources` | — | no | the rules tool's corpus did not ground the brief (`1kg.4.3`); seen on an invocation, never as a response status. Its message is `/chat`'s refusal sentence, and the lane offers *Edit brief* |
+| `link_taken` | 409 | no | a character-sheet link to a seat when the sheet is linked to another seat, or the seat already has a sheet (`q156`, AUD-15, AUD-13). Never a re-point: unlink, then link. Names neither id; only the campaign's owner can reach it |
+| `account_limit_reached` | 409 | no | the account's campaign count or stored document bytes is at its limit (`agent-forge-harness-531x`, PR-B). Names no number; only the account itself can reach it |
 
-**Every state-changing Workbench route** may additionally answer `429
-throttled_user` — a per-account write budget (`agent-forge-harness-531x`),
+**Every state-changing Workbench route EXCEPT two** may additionally answer
+`429 throttled_user` — a per-account write budget (`agent-forge-harness-531x`),
 shared across every campaign, tab and route the account touches, guarding
 against a script that writes without bound. It carries `retry_after_s` and a
 matching `Retry-After` header, exactly as the existing per-user throttles do.
-No UI change: `throttled_user` is already a known code.
+No UI change: `throttled_user` is already a known code. The two exemptions:
+the library search (`POST /campaigns/{campaign_id}/library` reads only, and
+answers no body a write would) and `POST /table/leave` (the screen principal's
+own revoke, SEC-49) — `service/tests/test_workbench_write_throttle.py`'s pin
+asserts this exempt set is exactly what a walk of every non-GET Workbench
+route finds unthrottled, so a stale exemption fails CI too.
+
+**Two per-account STORAGE caps sit on top of the write throttle**
+(`agent-forge-harness-531x`, PR-B): `POST /campaigns` (the account's campaign
+count — archived and concluded campaigns count too) and the document family's
+create, patch and restore (the account's total document-and-version bytes,
+across every campaign it owns). All four answer `409 account_limit_reached`
+before anything is written; a write that would not grow stored bytes — a
+trim, at or over the cap — is always admitted, and delete is never capped. A
+document-creating GM tool (`npc`, `encounter`) answers the same code, from its
+own admission check, before any provider is called.
 
 Legacy routes still answer with a string `detail`, and FastAPI's own validation
 failures with a list. `readErrorBody` in `contracts.ts` reads all three, so the
@@ -192,6 +209,7 @@ names it starts fresh rather than reading another caller's status or result
 | Restore a document's version | none needed | restoring what the document already equals changes nothing and creates no version, and a restore that changes content always appends one sealed version |
 | Archive, unarchive a document | none needed | the state the document is already in answers `204` and changes nothing: no narrowing, no revision advance, no audit row — and, for unarchive, no lock |
 | Delete a document | none needed | a deleted document is a missing one, so a repeat is the one `404`; a client treats a `404` after a delete it sent as done |
+| Link, unlink a character sheet (`q156`) | none needed | a sheet already linked to that seat answers `204` and changes nothing; unlinking an unlinked sheet answers `204` with no narrowing, no revision advance and no audit row (it still takes the lock briefly, so a busy lock answers the retryable `503`) |
 | Seal a document's open version | none needed | a document with no open version is answered as it is: nothing is sealed and nothing advances |
 | Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
 | Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |
@@ -270,7 +288,7 @@ on both sides.
 | Card payloads | **done**: `stat_block` (reusing the `/chat` stat-block contract), `loot`, `names`, `rules` and `hooks` (`1kg.4.3`) | One kind per card tool; see *Card payloads* below. The four were added before v1 was declared complete and while no card tool is enabled in any deployment, so no producer and consumer had met: not a version bump |
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
-| Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, and `conflict`, `document_unsupported` and `document_not_archived` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
+| Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, `CharacterSheetLink` (`q156`), and `conflict`, `document_unsupported`, `document_not_archived` and `link_taken` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | **done** | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
@@ -780,6 +798,9 @@ one 401, the `dm` gate and the one 404.
 | `POST …/documents/{document_id}/archive` | none; one sent is not read | `204` |
 | `POST …/documents/{document_id}/unarchive` | none; one sent is not read | `204` |
 | `POST …/documents/{document_id}/delete` | `DocumentDeleteRequest` | `204` |
+| `POST …/documents/{document_id}/link/{participant_id}` | none; one sent is not read | `204` |
+| `POST …/documents/{document_id}/unlink` | none; one sent is not read | `204` |
+| `GET …/documents/{document_id}/link` | — | `200 CharacterSheetLink` |
 
 There is no list route beside the library and no `DELETE` method: a delete is a
 body-carrying `POST`, as a seat's Remove is.
@@ -855,6 +876,26 @@ signing in** — 10 per account in any 5 minutes, right or wrong — so the
 eleventh delete in five minutes is `429 throttled_user` with `retry_after_s`,
 and the account's sign-in waits with it. A delete dialog says so rather than
 retrying. The document goes with its whole history; its audit rows stay.
+
+**Character-sheet link** (`q156`). A character sheet links to at most one
+seat, and a seat to at most one sheet. **Link** is a locked widening: the
+campaign lock first, then the document (a missing or foreign one, or one that
+is not a `character-sheet`, or a missing/foreign/removed seat, is the one
+404/422 in that order), then the decision — already linked to that seat is a
+`204` no-op, linked to another seat or a seat that already has a sheet is
+`409 link_taken` (never a re-point: unlink, then link). A real change advances
+the revision and writes `participant.linked`. **Unlink** is a fact-changing
+narrowing like archive and delete, in the same two steps: step one, without
+the lock, narrows the sheet's copies (the table's and every member's) as
+`character_unlinked` and commits; step two, under the lock, clears the link,
+narrows again for a session started in between, advances the revision and
+writes `participant.unlinked`. Unlinking an unlinked sheet is a `204` no-op at
+every step, never refused for type. The link survives a seat's removal: a
+removed seat's sheet stays linked until an explicit unlink, and `GET
+.../link` answers `seat_active: false` for it rather than dropping the
+`participant_id`. No document route, including this one, consults the
+campaign's archived or concluded state. The read takes no lock, advances
+nothing and writes no row.
 
 ### AI edits
 
@@ -1257,8 +1298,8 @@ of the answer that mints it, and is in no body, no URL and no list.
 | `GET /campaigns/{campaign_id}/table-session` | — | `TableSessionAnswer`: the campaign's live session, else the one most recently started, else `session: null`. A session still `live` past `ends_at` reads `ended`, with `ended_at` its `ends_at`. Writes nothing |
 | `POST /campaigns/{campaign_id}/table-session` | `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; End and Rotate name their `session_id`, Start names none | `TableSessionAnswer`: the session as it stands after the command. `409 live_elsewhere` for a Start while the GM is live in another campaign; `429 throttled_user` with `retry_after_s` for a Start or a Rotate past SEC-35's per-campaign bound (End is never refused); `503 backend_unavailable`, retryable |
 | `DELETE /campaigns/{campaign_id}/table-session/screens/{screen_id}` | — | `204`, a repeat too. Another GM's screen, or none, is the one `404` |
-| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in |
-| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`, always: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49) |
+| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in; `429 throttled_user` with `retry_after_s` when a grant-shaped cookie arrives past its source's budget (below) |
+| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49). The one other answer is `429 throttled_user` with `retry_after_s`, when a grant-shaped cookie arrives past its source's budget (below); it deletes nothing |
 
 `TableSession` is the GM's view: state, **admission generation** (`gen`, which
 §15.11 keeps), when it started and ends, whether table audio is on, and
@@ -1268,7 +1309,11 @@ list carries up to 16, above SEC-48's per-session bound of four (*suggested*), s
 tuning the bound is not a contract change. The GM routes are Workbench GM routes
 (the `dm` gate, SEC-2, SEC-3); the two `/table/` routes are the table router's
 (SEC-44 to SEC-46): Fetch Metadata first, then SEC-7, then one principal — a
-live screen grant alone, else the account session.
+live screen grant alone, else the account session. A grant-shaped cookie costs
+a digest lookup before anyone is known, so each one first spends an attempt from
+the auth source budget (release review S6); past it the answer is `429
+throttled_user` with `retry_after_s`, and no lookup runs. No cookie, or one that
+is not a grant, spends nothing.
 
 ## The realtime family
 

@@ -22,6 +22,7 @@ Run from the repo root:
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -48,7 +49,7 @@ from service.history import InMemoryMessageStore
 from service.participant_store import InMemoryParticipantStore
 from service.ratelimit import RateLimited, SlidingWindowLimiter
 from service.seat_offer_store import InMemorySeatOfferStore
-from service.session import SessionData
+from service.session import SessionData, encode_session
 from service.table_session_store import InMemoryTableSessionStore, no_slots
 from service.workbench_api import (
     WRITE_THROTTLED_MESSAGE,
@@ -437,6 +438,34 @@ def test_mint_throttle_spends_only_for_an_account_principal(monkeypatch: pytest.
     ratelimit.check_workbench_write(GM_B)  # a different, untouched account still has its own budget
 
 
+def test_a_screen_mint_is_throttled_on_the_account(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """N2 (PR-A review pr221-531x-r1): the mint throttle's wiring was pinned
+    (the route pin) and its spend behaviour was unit-tested directly
+    (`test_mint_throttle_spends_only_for_an_account_principal`), but no test
+    hit the real `POST /table/screen` route over HTTP. This spends the
+    account's whole budget on ordinary campaign writes, then proves the mint
+    route itself answers 429 once it is gone — the throttle fires as a router
+    dependency before the handler runs, so no live table session is needed to
+    observe it.
+
+    `table_api`'s session check is called directly, never through
+    `Depends(require_session)` (its own docstring), so `_as`'s dependency
+    override does not reach it here — a real signed cookie is required, as
+    `service/tests/test_table_api.py`'s own fixture mints one."""
+    secret = "table-throttle-test-secret-long-enough-for-the-floor"
+    monkeypatch.setattr(config, "SESSION_SECRET", secret)
+    token = encode_session(SessionData(user_id=GM_A, role="dm"), secret)  # type: ignore[arg-type]
+
+    for i in range(BUDGET):
+        assert _create(client, f"Campaign {i}").status_code == 201
+
+    client.cookies.set(config.SESSION_COOKIE_NAME, token)
+    refused = client.post("/table/screen", json={"schema_version": 1, "campaign_id": "cmp_" + "a" * 22})
+
+    assert refused.status_code == 429
+    assert refused.json()["detail"]["code"] == ErrorCode.THROTTLED_USER.value
+
+
 # ── Config: a bad limit fails at startup ─────────────────────────────────────
 
 
@@ -454,3 +483,45 @@ def test_a_bad_workbench_write_window_fails_startup() -> None:
             config.WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT, 0.0,
             "WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", "WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S",
         )
+
+
+def test_workbench_write_throttle_defaults_are_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M2 (PR-A review pr221-531x-r1): the two tests above prove only that an
+    invalid limit or window refuses at startup — neither proves what an ABSENT
+    one reads as. With no env set, `_int("WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT",
+    600)` -> `10**12` and `_float("..._WINDOW_S", 3600.0)` -> `0.001` both
+    survived mutation: either ships a throttle that is, in effect, switched
+    off. Reload (`tests/test_config.py`'s pattern) and pin the numbers
+    themselves."""
+    monkeypatch.delenv("WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", raising=False)
+    monkeypatch.delenv("WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S", raising=False)
+    cfg = importlib.reload(config)
+    assert cfg.WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT == 600
+    assert cfg.WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S == 3600.0
+
+
+def test_reset_all_refills_the_real_workbench_write_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """L2 (PR-A review pr221-531x-r1): every throttle test above monkeypatches
+    a fresh limiter, so none of them proves test isolation for a file that
+    spends on the real 600/h shape. This file's own `_small_budget` autouse
+    fixture already swaps in a 3-write limiter for every test — including
+    this one — so a limiter is rebuilt here with the account's documented
+    real numbers (`ratelimit._build`, the exact call `ratelimit.py` makes at
+    import) and installed in `workbench_write_limiter`'s place, which
+    `check_workbench_write` and `reset_all` both resolve by that module-level
+    name at call time. Spend one, `reset_all()`, and the full budget must be
+    available again — mutant M17 (dropping `workbench_write_limiter.reset()`
+    from `reset_all`) fails this."""
+    limit = config.WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT
+    monkeypatch.setattr(
+        ratelimit, "workbench_write_limiter",
+        ratelimit._build(
+            limit, config.WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S,
+            "WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", "WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S",
+        ),
+    )
+    user_id = 9_004_231  # an id no other test in this file uses
+    ratelimit.check_workbench_write(user_id)
+    ratelimit.reset_all()
+    for _ in range(limit):
+        ratelimit.check_workbench_write(user_id)

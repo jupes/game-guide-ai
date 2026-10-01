@@ -87,7 +87,7 @@ from .campaign_store import (
     pg,
     shared_rows,
 )
-from .db import InMemoryDatabase, InMemoryTransaction, UnitOfWork
+from .db import AdvisoryLock, InMemoryDatabase, InMemoryTransaction, UnitOfWork
 from .participant_store import Participant
 from .workbench_contracts import (
     DOC_TYPE_VERSION,
@@ -244,6 +244,56 @@ class NotLinkable(CampaignStoreError):
     def __init__(self, doc_type: str) -> None:
         self.type = doc_type
         super().__init__(f"a {doc_type} document is not a character sheet and links to no seat")
+
+
+class StorageQuotaReached(CampaignStoreError):
+    """The write would push the account's stored document-and-version bytes
+    past its quota (agent-forge-harness-531x, PR-B).
+
+    **Not a `ValueError`**: `documents_api._guarded` maps a bare `ValueError`
+    to a 422, and this is a 409. The message is fixed and carries no number
+    (SEC-20); the constructor takes nothing, so no caller can put one in."""
+
+
+# ── Per-account storage caps (agent-forge-harness-531x, PR-B) ───────────────
+
+
+def measured_bytes(content: Mapping[str, Any]) -> int:
+    """How many bytes one document's or version's `data` costs toward the
+    account's storage cap: the UTF-8 length of exactly the JSON text both
+    `create`, `write_fields` and `restore` already send as the `data`
+    parameter (`json.dumps`, no special separators).
+
+    Both worlds call this SAME Python function on the SAME in-memory value, so
+    a write's growth is identical in the twin and in PostgreSQL to the byte —
+    there is no TOAST or compression to reconcile, because growth is computed
+    from this function alone, never from `pg_column_size` or `octet_length` on
+    a value neither world has written yet (the no-migration alternative that
+    plan section 3b rejected: de-TOASTing and re-summing every row on every
+    write is a DB-CPU amplifier at exactly the accounts the cap exists for)."""
+    return len(json.dumps(content).encode("utf-8"))
+
+
+@dataclass(frozen=True)
+class ByteQuota:
+    """The account's stored-byte ceiling, carried into a mutator so its
+    default `None` behaves exactly as every existing caller and test already
+    does (agent-forge-harness-531x, PR-B)."""
+
+    owner_id: int
+    max_bytes: int
+
+
+def _require_account_lock(twin: InMemoryTransaction, quota: ByteQuota) -> None:
+    """The twin's half of the account lock's contract: catches a dropped lock
+    that no fake can otherwise prove (PostgreSQL's half is the two-connection
+    race test in `tests/test_account_quotas_db.py`). The caller — one of
+    `documents_api`'s three write routes — takes `AdvisoryLock.ACCOUNT_STORAGE`
+    itself, immediately after ownership and before this store is called, so a
+    write that reaches here quota'd but unlocked is a programming error, not a
+    race: it fails loudly rather than under-counting silently."""
+    if (AdvisoryLock.ACCOUNT_STORAGE, str(quota.owner_id)) not in twin.locks:
+        raise RuntimeError("a quota'd document write must hold the account's storage lock first")
 
 
 # ── The fold, and the two keys derived from field text ───────────────────────
@@ -705,6 +755,7 @@ class DocumentStore(Protocol):
         command_id: str | None = None,
         summary: str = "",
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         """Mint a document and its version 1 — open when `author` is `gm`,
         sealed when `assistant`.
@@ -724,6 +775,15 @@ class DocumentStore(Protocol):
         `(campaign_id, command_id)` **returns the document already made**, and
         `documents_command_uidx` is what makes that race-safe. Which requests
         carry a command id, and what a replay answers, stay `1kg.5.2`'s.
+
+        **`quota`** (agent-forge-harness-531x, PR-B): `None` (every existing
+        caller — `persist_generated`'s T2 path included) behaves exactly as
+        before. Given one, the caller has already taken
+        `AdvisoryLock.ACCOUNT_STORAGE` for `quota.owner_id` (the twin refuses
+        with `RuntimeError` when it has not); this then refuses with
+        `StorageQuotaReached`, before any statement runs, when the document
+        plus its version 1 would push the account's `stored_bytes` past
+        `quota.max_bytes`.
         """
         ...  # pragma: no cover - structural type
 
@@ -778,6 +838,7 @@ class DocumentStore(Protocol):
         base_write_revision: int | None,
         summary: str = "",
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         """Merge `fields` over the document's current `data` under the lock,
         re-validate the merged document, advance the write revision, and write
@@ -803,6 +864,16 @@ class DocumentStore(Protocol):
         **An archived document is still writable** (lead ruling 5.1#1): LIB-16
         keeps it open under a Restore banner and never calls it read-only. The
         route decides, and says so once.
+
+        **`quota`** (agent-forge-harness-531x, PR-B): `None` behaves exactly as
+        before. Given one, the caller has already taken
+        `AdvisoryLock.ACCOUNT_STORAGE` for `quota.owner_id`; this refuses with
+        `StorageQuotaReached`, before any statement runs, when the write's
+        **growth** — the merged document replacing the stored one, plus
+        either a brand new version or the open version rewritten in place,
+        whichever this write does — would push `stored_bytes` past
+        `quota.max_bytes`. A write that does not grow storage is always
+        admitted: trimming, at or over the cap, is never refused.
         """
         ...  # pragma: no cover - structural type
 
@@ -882,6 +953,22 @@ class DocumentStore(Protocol):
         """
         ...  # pragma: no cover - structural type
 
+    def stored_bytes(self, unit: UnitOfWork, owner_id: int) -> int:
+        """The account's total document-and-version bytes, `measured_bytes`
+        summed over every document and every version of every campaign
+        `owner_id` owns — across campaigns, which is the whole point of an
+        ACCOUNT cap (agent-forge-harness-531x, PR-B).
+
+        It takes no lock: every quota'd write takes
+        `AdvisoryLock.ACCOUNT_STORAGE` itself before calling this, so two
+        writes of one account never race here, and a plain read (this store's
+        callers never refuse on staleness alone) needs none. A document
+        written before migration 0021 has no stored `data_bytes` and falls
+        back to its JSON text's own length, which is what `measured_bytes`
+        would have measured had the column existed then.
+        """
+        ...  # pragma: no cover - structural type
+
     def restore(
         self,
         unit: UnitOfWork,
@@ -890,6 +977,7 @@ class DocumentStore(Protocol):
         *,
         version_number: int,
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         """Restore a **version** (CANVAS-26) — not an archived document, which
         is `set_archived(archived=False)`.
@@ -914,6 +1002,15 @@ class DocumentStore(Protocol):
         as a whole document with required keys enforced; seal; append; rewrite
         the document. There is no `author` parameter: a restore is the GM's.
         Neither kind of restore brings back a reveal (LIB-16).
+
+        **`quota`** (agent-forge-harness-531x, PR-B): `None` behaves exactly as
+        before. Given one, the caller has already taken
+        `AdvisoryLock.ACCOUNT_STORAGE` for `quota.owner_id`; this refuses with
+        `StorageQuotaReached`, before any statement runs, when the restore's
+        growth — the document rewritten to the chosen content, plus the new
+        version that always carries it — would push `stored_bytes` past
+        `quota.max_bytes`. The no-op case above still writes nothing and is
+        never refused.
         """
         ...  # pragma: no cover - structural type
 
@@ -983,10 +1080,10 @@ class DocumentStore(Protocol):
         **It changes the link and nothing else.** No timestamp (so no `now`),
         no write revision, no version — and no campaign lock and no revision
         advance, for `set_archived`'s reason. Linking widens what a seat may
-        be shown, so the route that calls it (`1kg.2.2` for the Participants
-        panel, `1kg.5.2` for the document side) takes the campaign lock first
-        and advances the revision (RQ-4, RQ-10), and writes the
-        `participant.linked` audit row that names this document (SEC-38).
+        be shown, so the route that calls it (`service/document_lifecycle_api.py`,
+        q156) takes the campaign lock first and advances the revision (RQ-4,
+        RQ-10), and writes the `participant.linked` audit row that names this
+        document (SEC-38).
         """
         ...  # pragma: no cover - structural type
 
@@ -1005,8 +1102,9 @@ class DocumentStore(Protocol):
         the campaign lock; its second clears the link under the exclusive
         campaign lock, scans again and advances the revision, in the request,
         answering "not applied yet" when the lock cannot be had in time (RC-15).
-        All of that is the route's (`1kg.2.2`, `1kg.5.2`). This primitive holds
-        the document row, clears one column and writes no timestamp.
+        All of that is the route's (`service/document_lifecycle_api.py`, q156).
+        This primitive holds the document row, clears one column and writes no
+        timestamp.
         """
         ...  # pragma: no cover - structural type
 
@@ -1032,9 +1130,11 @@ _D_COLUMNS = (
 )
 #: The same list without `linked_participant_id`, which `create` never sets:
 #: the character-sheet link is made by its own primitive (1kg.5.1 slice B).
+#: `data_bytes` (migration 0021) is last so every statement that names this
+#: constant keeps its existing column positions.
 _D_INSERT = (
     "id, campaign_id, type, type_version, data, write_revision, field_revisions, "
-    "name_key, search_key, created_command_id, created_at, updated_at, archived_at"
+    "name_key, search_key, created_command_id, created_at, updated_at, archived_at, data_bytes"
 )
 _V_COLUMNS = (
     "v.document_id, v.number, v.author, v.summary, v.changed_fields, v.restored_from, "
@@ -1215,6 +1315,22 @@ class PostgresDocumentStore:
             for row in rows
         ]
 
+    def stored_bytes(self, unit: UnitOfWork, owner_id: int) -> int:
+        # `coalesce(d.data_bytes, octet_length(d.data::text))`: a row written
+        # before 0021 has no stored measure and falls back to its JSON text's
+        # own length — the de-TOASTing read the migration exists to avoid,
+        # paid only for rows old enough to have no better answer.
+        row = pg(unit).conn.execute(
+            "SELECT (SELECT coalesce(sum(coalesce(d.data_bytes, octet_length(d.data::text))), 0) "
+            "FROM campaign.documents d JOIN campaign.campaigns c ON c.id = d.campaign_id "
+            "WHERE c.owner_id = %(owner)s) "
+            "+ (SELECT coalesce(sum(coalesce(v.data_bytes, octet_length(v.data::text))), 0) "
+            "FROM campaign.document_versions v JOIN campaign.documents d ON d.id = v.document_id "
+            "JOIN campaign.campaigns c ON c.id = d.campaign_id WHERE c.owner_id = %(owner)s)",
+            {"owner": owner_id},
+        ).fetchone()
+        return int(row[0])
+
     # ── Mutators ─────────────────────────────────────────────────────────────
 
     def hold(
@@ -1253,15 +1369,38 @@ class PostgresDocumentStore:
         command_id: str | None = None,
         summary: str = "",
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         kind, writer, content, moment = _minted(doc_type, type_version, data, author, now, summary)
+        if quota is not None and command_id is not None:
+            # A replay of a command id that already made a document writes
+            # nothing (the `ON CONFLICT ... DO NOTHING` below), so it must
+            # never be refused for growth it will not cause. Checked only on
+            # the quota'd path: every other caller keeps the one-statement
+            # happy path it had before.
+            existing = pg(unit).conn.execute(
+                f"SELECT {_D_COLUMNS} FROM campaign.documents "
+                f"WHERE campaign_id = %s AND created_command_id = %s",
+                (campaign_id, command_id),
+            ).fetchone()
+            if existing is not None:
+                return self._with_current(unit, campaign_id, existing)
+        content_bytes = measured_bytes(content)
+        if quota is not None:
+            # The account lock is the CALLER's (documents_api, immediately
+            # after ownership and before this call) — there is no twin-style
+            # programmatic proof that it was taken in PostgreSQL, which is why
+            # the race test in tests/test_account_quotas_db.py exists.
+            growth = 2 * content_bytes  # the document, plus its version 1
+            if growth > 0 and self.stored_bytes(unit, quota.owner_id) + growth > quota.max_bytes:
+                raise StorageQuotaReached()
         # INSERT ... SELECT ... WHERE EXISTS rather than letting the foreign key
         # raise: a ForeignKeyViolation aborts the whole transaction and arrives
         # carrying the driver's text, so an ordinary wrong id would cost the
         # caller every other write it had composed.
         row = pg(unit).conn.execute(
             f"INSERT INTO campaign.documents ({_D_INSERT}) "
-            f"SELECT %s, %s, %s, %s, %s::jsonb, 1, %s::jsonb, %s, %s, %s, %s, %s, NULL "
+            f"SELECT %s, %s, %s, %s, %s::jsonb, 1, %s::jsonb, %s, %s, %s, %s, %s, NULL, %s "
             f"WHERE EXISTS (SELECT 1 FROM campaign.campaigns WHERE id = %s) "
             f"ON CONFLICT (campaign_id, created_command_id) WHERE created_command_id IS NOT NULL "
             f"DO NOTHING RETURNING {_D_COLUMNS}",
@@ -1277,6 +1416,7 @@ class PostgresDocumentStore:
                 command_id,
                 moment,
                 moment,
+                content_bytes,
                 campaign_id,
             ),
         ).fetchone()
@@ -1285,8 +1425,8 @@ class PostgresDocumentStore:
         pg(unit).conn.execute(
             "INSERT INTO campaign.document_versions "
             "(document_id, number, author, summary, changed_fields, restored_from, data, "
-            "created_at, updated_at, sealed_at) "
-            "SELECT d.id, 1, %s, %s, %s::jsonb, NULL, %s::jsonb, %s, %s, %s "
+            "created_at, updated_at, sealed_at, data_bytes) "
+            "SELECT d.id, 1, %s, %s, %s::jsonb, NULL, %s::jsonb, %s, %s, %s, %s "
             "FROM campaign.documents d WHERE d.id = %s AND d.campaign_id = %s",
             (
                 writer.value,
@@ -1296,6 +1436,7 @@ class PostgresDocumentStore:
                 moment,
                 moment,
                 None if writer is Author.GM else moment,
+                content_bytes,
                 row[0],
                 campaign_id,
             ),
@@ -1330,6 +1471,7 @@ class PostgresDocumentStore:
         base_write_revision: int | None,
         summary: str = "",
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         check_summary(summary)
         record = self.hold(unit, campaign_id, document_id)
@@ -1339,10 +1481,24 @@ class PostgresDocumentStore:
         if plan is None:
             return record
         moment, revision = plan
+        # The open-version read and the seal decision move ABOVE the documents
+        # UPDATE (only reads move; the write statements' order is unchanged) so
+        # a quota'd write can measure the OLD document and OLD open-version
+        # bytes before either is overwritten.
+        open_row = self._open_version(unit, campaign_id, document_id)
+        seals_first = open_row is not None and _seals_first(_version(open_row), writer, moment)
+        new_doc_bytes = measured_bytes(merged)
+        if quota is not None:
+            version_growth = new_doc_bytes if (open_row is None or seals_first) else (
+                new_doc_bytes - measured_bytes(open_row[9])
+            )
+            growth = (new_doc_bytes - measured_bytes(record.data)) + version_growth
+            if growth > 0 and self.stored_bytes(unit, quota.owner_id) + growth > quota.max_bytes:
+                raise StorageQuotaReached()
         pg(unit).conn.execute(
             "UPDATE campaign.documents SET data = %s::jsonb, write_revision = %s, "
-            "field_revisions = %s::jsonb, name_key = %s, search_key = %s, updated_at = %s "
-            "WHERE id = %s AND campaign_id = %s",
+            "field_revisions = %s::jsonb, name_key = %s, search_key = %s, updated_at = %s, "
+            "data_bytes = %s WHERE id = %s AND campaign_id = %s",
             (
                 json.dumps(merged),
                 revision,
@@ -1350,12 +1506,12 @@ class PostgresDocumentStore:
                 name_key(str(merged.get("name", ""))),
                 search_key(merged),
                 moment,
+                new_doc_bytes,
                 document_id,
                 campaign_id,
             ),
         )
-        open_row = self._open_version(unit, campaign_id, document_id)
-        if open_row is not None and _seals_first(_version(open_row), writer, moment):
+        if seals_first:
             self._seal_open(unit, campaign_id, document_id, moment)
             open_row = None
         number = next_version_number(record.version, open_row is None)
@@ -1364,8 +1520,8 @@ class PostgresDocumentStore:
             pg(unit).conn.execute(
                 "INSERT INTO campaign.document_versions "
                 "(document_id, number, author, summary, changed_fields, restored_from, data, "
-                "created_at, updated_at, sealed_at) "
-                "SELECT d.id, %s, %s, %s, %s::jsonb, NULL, %s::jsonb, %s, %s, %s "
+                "created_at, updated_at, sealed_at, data_bytes) "
+                "SELECT d.id, %s, %s, %s, %s::jsonb, NULL, %s::jsonb, %s, %s, %s, %s "
                 "FROM campaign.documents d WHERE d.id = %s AND d.campaign_id = %s",
                 (
                     number,
@@ -1376,6 +1532,7 @@ class PostgresDocumentStore:
                     moment,
                     moment,
                     None if writer is Author.GM else moment,
+                    new_doc_bytes,
                     document_id,
                     campaign_id,
                 ),
@@ -1383,7 +1540,7 @@ class PostgresDocumentStore:
         else:
             pg(unit).conn.execute(
                 "UPDATE campaign.document_versions v SET data = %s::jsonb, "
-                "changed_fields = %s::jsonb, summary = %s, updated_at = %s "
+                "changed_fields = %s::jsonb, summary = %s, updated_at = %s, data_bytes = %s "
                 "FROM campaign.documents d "
                 "WHERE v.document_id = d.id AND d.id = %s AND d.campaign_id = %s "
                 "AND v.sealed_at IS NULL",
@@ -1392,6 +1549,7 @@ class PostgresDocumentStore:
                     json.dumps(list(changed)),
                     summary or record.version.summary,
                     moment,
+                    new_doc_bytes,
                     document_id,
                     campaign_id,
                 ),
@@ -1433,6 +1591,7 @@ class PostgresDocumentStore:
         *,
         version_number: int,
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         record = self.hold(unit, campaign_id, document_id)
         if record is None:
@@ -1443,13 +1602,21 @@ class PostgresDocumentStore:
         if plan is None:
             return record
         content, changed, moment, revision = plan
+        content_bytes = measured_bytes(content)
+        if quota is not None:
+            # A restore always seals the open version and appends a new one:
+            # the document is rewritten to `content`, and the new version
+            # carries `content` too.
+            growth = 2 * content_bytes - measured_bytes(record.data)
+            if growth > 0 and self.stored_bytes(unit, quota.owner_id) + growth > quota.max_bytes:
+                raise StorageQuotaReached()
         number = next_version_number(record.version, True)
         self._seal_open(unit, campaign_id, document_id, moment)
         pg(unit).conn.execute(
             "INSERT INTO campaign.document_versions "
             "(document_id, number, author, summary, changed_fields, restored_from, data, "
-            "created_at, updated_at, sealed_at) "
-            "SELECT d.id, %s, %s, '', %s::jsonb, %s, %s::jsonb, %s, %s, %s "
+            "created_at, updated_at, sealed_at, data_bytes) "
+            "SELECT d.id, %s, %s, '', %s::jsonb, %s, %s::jsonb, %s, %s, %s, %s "
             "FROM campaign.documents d WHERE d.id = %s AND d.campaign_id = %s",
             (
                 number,
@@ -1460,14 +1627,15 @@ class PostgresDocumentStore:
                 moment,
                 moment,
                 moment,
+                content_bytes,
                 document_id,
                 campaign_id,
             ),
         )
         pg(unit).conn.execute(
             "UPDATE campaign.documents SET data = %s::jsonb, write_revision = %s, "
-            "field_revisions = %s::jsonb, name_key = %s, search_key = %s, updated_at = %s "
-            "WHERE id = %s AND campaign_id = %s",
+            "field_revisions = %s::jsonb, name_key = %s, search_key = %s, updated_at = %s, "
+            "data_bytes = %s WHERE id = %s AND campaign_id = %s",
             (
                 json.dumps(content),
                 revision,
@@ -1475,6 +1643,7 @@ class PostgresDocumentStore:
                 name_key(str(content.get("name", ""))),
                 search_key(content),
                 moment,
+                content_bytes,
                 document_id,
                 campaign_id,
             ),
@@ -1940,6 +2109,17 @@ class InMemoryDocumentStore:
             for row in _in_library_order(rows, order)[:page]
         ]
 
+    def stored_bytes(self, unit: UnitOfWork, owner_id: int) -> int:
+        twin = fake(unit)
+        owned = {cid for cid, c in self._campaigns.visible(twin).items() if c.owner_id == owner_id}
+        live = {doc_id: row for doc_id, row in self._live(twin).items() if row.campaign_id in owned}
+        total = sum(measured_bytes(row.data) for row in live.values())
+        total += sum(
+            measured_bytes(v.data) for v in self._versions.visible(twin).values()
+            if v.version.document_id in live
+        )
+        return total
+
     # ── Mutators ─────────────────────────────────────────────────────────────
 
     def hold(
@@ -1968,6 +2148,7 @@ class InMemoryDocumentStore:
         command_id: str | None = None,
         summary: str = "",
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         twin = fake(unit)
         kind, writer, content, moment = _minted(doc_type, type_version, data, author, now, summary)
@@ -1977,6 +2158,11 @@ class InMemoryDocumentStore:
             for row in self._live(twin).values():
                 if row.campaign_id == campaign_id and row.created_command_id == command_id:
                     return self._with_current(twin, row)
+        if quota is not None:
+            _require_account_lock(twin, quota)
+            growth = 2 * measured_bytes(content)  # the document, plus its version 1
+            if growth > 0 and self.stored_bytes(unit, quota.owner_id) + growth > quota.max_bytes:
+                raise StorageQuotaReached()
         row = _DocumentRow(
             id=ident.new_id(ident.DOCUMENT),
             campaign_id=campaign_id,
@@ -2045,6 +2231,7 @@ class InMemoryDocumentStore:
         base_write_revision: int | None,
         summary: str = "",
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         check_summary(summary)
         twin = fake(unit)
@@ -2055,6 +2242,20 @@ class InMemoryDocumentStore:
         if plan is None:
             return record
         moment, revision = plan
+        # Read the open version and decide sealing BEFORE the document row is
+        # replaced, so a quota'd write can measure the OLD document and OLD
+        # open-version bytes (Postgres implementation, same reason).
+        open_row = self._open_version(twin, document_id)
+        seals_first = open_row is not None and _seals_first(open_row.version, writer, moment)
+        new_doc_bytes = measured_bytes(merged)
+        if quota is not None:
+            _require_account_lock(twin, quota)
+            version_growth = new_doc_bytes if (open_row is None or seals_first) else (
+                new_doc_bytes - measured_bytes(open_row.data)
+            )
+            growth = (new_doc_bytes - measured_bytes(record.data)) + version_growth
+            if growth > 0 and self.stored_bytes(unit, quota.owner_id) + growth > quota.max_bytes:
+                raise StorageQuotaReached()
         row = self._live(twin)[document_id]
         self._documents.replace(
             twin,
@@ -2076,8 +2277,7 @@ class InMemoryDocumentStore:
                 archived_at=row.archived_at,
             ),
         )
-        open_row = self._open_version(twin, document_id)
-        if open_row is not None and _seals_first(open_row.version, writer, moment):
+        if seals_first:
             self._seal_open(twin, document_id, moment)
             open_row = None
         number = next_version_number(record.version, open_row is None)
@@ -2183,6 +2383,7 @@ class InMemoryDocumentStore:
         *,
         version_number: int,
         now: datetime | None = None,
+        quota: ByteQuota | None = None,
     ) -> DocumentRecord:
         twin = fake(unit)
         record = self.hold(unit, campaign_id, document_id)
@@ -2194,6 +2395,12 @@ class InMemoryDocumentStore:
         if plan is None:
             return record
         content, changed, moment, revision = plan
+        if quota is not None:
+            _require_account_lock(twin, quota)
+            # A restore always seals the open version and appends a new one.
+            growth = 2 * measured_bytes(content) - measured_bytes(record.data)
+            if growth > 0 and self.stored_bytes(unit, quota.owner_id) + growth > quota.max_bytes:
+                raise StorageQuotaReached()
         number = next_version_number(record.version, True)
         self._seal_open(twin, document_id, moment)
         self._append(

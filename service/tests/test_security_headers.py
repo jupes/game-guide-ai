@@ -32,16 +32,20 @@ from service.security_headers import (
     CROSS_ORIGIN_OPENER_POLICY,
     PERMISSIONS_POLICY,
     REFERRER_POLICY,
+    STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
 )
 
 # y58 — the four headers this bead added, keyed by the response header name
-# `TestClient` hands back (lower-cased, like the CSP checks above already do).
+# `TestClient` hands back (lower-cased, like the CSP checks above already do),
+# and agent-forge-harness-5ir1's Strict-Transport-Security, held to the same
+# four response shapes and the same `setdefault` rule.
 NEW_HEADERS = {
     "x-content-type-options": X_CONTENT_TYPE_OPTIONS,
     "referrer-policy": REFERRER_POLICY,
     "cross-origin-opener-policy": CROSS_ORIGIN_OPENER_POLICY,
     "permissions-policy": PERMISSIONS_POLICY,
+    "strict-transport-security": STRICT_TRANSPORT_SECURITY,
 }
 
 # The 401 case needs the REAL guard: service/tests/conftest.py's autouse
@@ -143,6 +147,10 @@ _ROUTE_OWNED_VALUES = [
     # alternative; a marker is what makes "the route's own value survived"
     # observable at all.
     pytest.param("X-Content-Type-Options", "y58-route-owned-marker", id="xcto-marker"),
+    # 5ir1: the owner's preload decision would ship on a route before it ships here.
+    pytest.param(
+        "Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload", id="hsts-preload-route"
+    ),
 ]
 
 
@@ -248,3 +256,21 @@ def test_permissions_policy_denies_exactly_camera_microphone_geolocation_and_pay
 
 def test_permissions_policy_string_is_pinned_character_for_character() -> None:
     assert PERMISSIONS_POLICY == "camera=(), microphone=(), geolocation=(), payment=()"
+
+
+# ── 5ir1's Strict-Transport-Security: what it MEANS, not merely what it equals ──
+
+
+def test_strict_transport_security_is_at_least_a_year_and_covers_subdomains() -> None:
+    """Release review S9: a year is the least that outlives a custom domain's
+    first visit by long enough to matter, and `includeSubDomains` is part of
+    the decision. `preload` is the owner's to add, not this header's."""
+    directives = [part.strip() for part in STRICT_TRANSPORT_SECURITY.split(";")]
+    max_age = [d for d in directives if d.lower().startswith("max-age=")]
+    assert len(max_age) == 1 and int(max_age[0].split("=", 1)[1]) >= 365 * 24 * 60 * 60
+    assert "includeSubDomains" in directives
+    assert "preload" not in {d.lower() for d in directives}
+
+
+def test_strict_transport_security_string_is_pinned_character_for_character() -> None:
+    assert STRICT_TRANSPORT_SECURITY == "max-age=31536000; includeSubDomains"

@@ -16,7 +16,7 @@ import { scrubReservedFragmentKeys } from './inviteToken'
  * Renders nothing.
  */
 export function UrlNavigation(): null {
-  const { screen, navIntent, backToLanding, backToWorkspace, openProfile } = useAppNav()
+  const { screen, navIntent, backToLanding, backToWorkspace, openProfile, openTavern } = useAppNav()
 
   // Boot-only: scrub a single-use credential (R7) out of the fragment no
   // matter which path we cold-loaded at. The PATH needs no equivalent
@@ -65,11 +65,12 @@ export function UrlNavigation(): null {
       const nextScreen = row?.screen ?? 'landing'
       if (nextScreen === 'workspace') backToWorkspace()
       else if (nextScreen === 'profile') openProfile()
+      else if (nextScreen === 'tavern') openTavern?.()
       else backToLanding()
     }
     window.addEventListener('popstate', onPopState)
     return () => window.removeEventListener('popstate', onPopState)
-  }, [backToWorkspace, openProfile, backToLanding])
+  }, [backToWorkspace, openProfile, openTavern, backToLanding])
 
   return null
 }

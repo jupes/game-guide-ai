@@ -119,6 +119,16 @@ class AdvisoryLock(IntEnum):
     #: transaction holding it can never take a campaign lock afterwards
     #: (`lock_campaign` refuses with `CampaignLockOrder`).
     WORKBENCH_IN_FLIGHT = 4
+    #: Per account, around the campaign count and the document byte total
+    #: (agent-forge-harness-531x, PR-B). Taken before any row lock of the
+    #: write it guards (campaign create; document create, patch and restore).
+    #: Never taken by a transaction that has taken, or will take, a campaign
+    #: lock (`lock_campaign`) — `documents_api` and `campaign_store.create`
+    #: never do, so there is nothing to order against there. Ordering:
+    #: `WORKBENCH_IN_FLIGHT -> ACCOUNT_STORAGE` is allowed; the reverse never
+    #: happens, because no path that holds this lock ever admits a tool
+    #: attempt.
+    ACCOUNT_STORAGE = 5
 
 
 def advisory_key(key: str) -> int:
