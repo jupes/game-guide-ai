@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { routeForPath, pathForScreen, startScreen } from './routes'
+import { ROUTES, routeForPath, pathForScreen, startScreen } from './routes'
 import { readFragmentToken } from './inviteToken'
 
 describe('routeForPath', () => {
@@ -89,5 +89,27 @@ describe('readFragmentToken', () => {
 
   it('refuses a string starting with "?" for any key', () => {
     expect(readFragmentToken('?token=abc123', 'token')).toBeNull()
+  })
+})
+
+// lvs7 pr-b -- Sign in with Google adds server paths under /auth/google/*. The
+// callback lands on `/` or `/profile` (a `?google=` code), so the SPA needs no
+// new route; a client route under /auth would shadow a server one.
+describe('the /auth server prefix is not a client route (lvs7)', () => {
+  it('no client route lives under /auth', () => {
+    for (const row of ROUTES) {
+      expect(row.path.startsWith('/auth'), row.path).toBe(false)
+    }
+  })
+
+  it('the Google paths resolve to no client route and fall back to landing', () => {
+    for (const path of ['/auth/google/start', '/auth/google/callback', '/auth/google/link', '/auth/google/available']) {
+      expect(routeForPath(path), path).toBeNull()
+      expect(startScreen(path).screen).toBe('landing')
+    }
+  })
+
+  it('the set of client routes is unchanged', () => {
+    expect(ROUTES.map((row) => row.path)).toEqual(['/', '/workspace', '/profile', '/tavern'])
   })
 })

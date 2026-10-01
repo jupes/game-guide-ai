@@ -119,3 +119,41 @@ describe('shell text tokens meet WCAG AA (4.5:1)', () => {
     }
   }
 })
+
+/**
+ * Sign in with Google (lvs7 pr-b). The button's colours are Google's published
+ * ones, carried as `--aether-google-btn-*` tokens (the third-party brand block
+ * in tokens/colors.css) so no component stylesheet hard-codes a hex. Light app
+ * theme -> Google's light button; dark app theme -> Google's dark button. The
+ * label is normal text (14px / 500): 4.5:1. The 1px outline is the control's
+ * only visible edge on a surface close to the fill, so it is held to the 3:1 a
+ * non-text component needs (WCAG 1.4.11).
+ */
+describe('Sign in with Google button meets WCAG AA in both themes', () => {
+  const css = readFileSync(COLORS_CSS, 'utf8')
+  const themes: [string, Tokens, string, string, string][] = [
+    ['light', parseBlock(css, /:root\s*\{([^}]*)\}/), '#ffffff', '#747775', '#1f1f1f'],
+    ['dark', parseBlock(css, /\[data-theme="dark"\]\s*\{([^}]*)\}/), '#131314', '#8e918f', '#e3e3e3'],
+  ]
+
+  for (const [themeName, tokens, fill, edge, text] of themes) {
+    it(`${themeName}: carries Google's published fill, outline and label colours`, () => {
+      expect(tokens['--aether-google-btn-bg']?.toLowerCase()).toBe(fill)
+      expect(tokens['--aether-google-btn-border']?.toLowerCase()).toBe(edge)
+      expect(tokens['--aether-google-btn-text']?.toLowerCase()).toBe(text)
+    })
+
+    it(`${themeName}: label on the button fill`, () => {
+      const ratio = contrastRatio(tokens['--aether-google-btn-text'], tokens['--aether-google-btn-bg'])
+      expect(ratio, `label = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA_NORMAL)
+    })
+
+    it(`${themeName}: outline against the fill, and against the app surface`, () => {
+      const outline = tokens['--aether-google-btn-border']
+      const onFill = contrastRatio(outline, tokens['--aether-google-btn-bg'])
+      expect(onFill, `outline on fill = ${onFill.toFixed(2)}:1`).toBeGreaterThanOrEqual(3)
+      const onSurface = contrastRatio(outline, tokens['--md-sys-color-surface'])
+      expect(onSurface, `outline on surface = ${onSurface.toFixed(2)}:1`).toBeGreaterThanOrEqual(3)
+    })
+  }
+})

@@ -1,0 +1,61 @@
+/* ── GoogleSignInButton (lvs7) ────────────────────────────────────────────────
+   Google's published button, light on the light theme and dark on the dark one
+   (the colours are the --aether-google-btn-* tokens; see tokens/colors.css).
+   Geometry per developers.google.com/identity/branding-guidelines: 12px | logo
+   | 10px | label | 12px, 14/20 medium, 1px inside outline. The font stack names
+   Google Sans but loads NO web font (font-src stays as it is). The 44px floor is
+   the app's touch target (--aether-touch-min). */
+
+.google-btn {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: 0 12px;
+  border: 1px solid var(--aether-google-btn-border);
+  border-radius: 4px;
+  background-color: var(--aether-google-btn-bg);
+  color: var(--aether-google-btn-text);
+  font-family: 'Google Sans', Roboto, system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.google-btn__logo {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+.google-btn__label {
+  min-width: 0;
+  text-align: center;
+}
+
+/* Hover and press are a tint of the label colour over the fill, so they follow
+   both Google themes without a second set of colours. */
+.google-btn:hover {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--aether-google-btn-text) 8%, transparent),
+    color-mix(in srgb, var(--aether-google-btn-text) 8%, transparent)
+  );
+}
+
+.google-btn:active {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--aether-google-btn-text) 12%, transparent),
+    color-mix(in srgb, var(--aether-google-btn-text) 12%, transparent)
+  );
+}
+
+/* Visible in both themes: the app's focus ring, outside the outline. */
+.google-btn:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}

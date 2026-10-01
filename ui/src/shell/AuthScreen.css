@@ -71,3 +71,26 @@
     width: 100%;
   }
 }
+
+/* ── Sign in with Google (lvs7) ──────────────────────────────────────────────
+   The Google control sits above the email form with an "or" between them. The
+   card is a flex column with its own gap, so the divider needs no margin. */
+.auth-screen__google {
+  margin: 0;
+}
+
+.auth-screen__or {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-3);
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.875rem;
+}
+
+.auth-screen__or::before,
+.auth-screen__or::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
