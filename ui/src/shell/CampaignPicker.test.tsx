@@ -108,6 +108,8 @@ describe('the picker states (§12.2, T2-8, T2-9)', () => {
     expect(document.querySelectorAll('[role="status"], [aria-live]')).toHaveLength(1)
     expect(screen.getByText('Loading campaigns…', { selector: 'p:not([role])' })).toBeInTheDocument()
     expect(document.querySelectorAll('.campaign-picker__skeleton')).toHaveLength(2)
+    // §11: the skeleton is never read out; the visible line says it (vtb9, pr201-mr1 M-1).
+    expect(document.querySelector('.campaign-picker__skeleton')?.parentElement).toHaveAttribute('aria-hidden', 'true')
     act(() => m.server.calls[0].reply({ status: 200, body: page([campaign('cmp_A', { badge: 'live' }), campaign('cmp_B', { concluded_at: '2026-09-20T00:00:00Z' })]) }))
     const list = await screen.findByRole('list', { name: 'Your campaigns' })
     expect(Array.from(list.querySelectorAll('button'), (b) => b.textContent)).toEqual(['Name of cmp_A LIVE', 'Name of cmp_B Concluded'])
@@ -206,6 +208,20 @@ describe('a provider mounted for an account already signed in', () => {
     await m.switchTo('ada@example.com', 'dm')
     expect(await screen.findByRole('button', { name: 'Name of cmp_A' })).toBeInTheDocument()
     expect(m.server.lines()).toEqual(['GET /campaigns', 'GET /campaigns'])
+  })
+
+  it('the same email losing campaigns keeps no draft and no announcement, and regaining them announces the re-read (vtb9, pr201-mr1 L-1)', async () => {
+    const m = await mount((call) => (call.method === 'POST' ? { status: 201, body: campaign('cmp_new') } : { status: 200, body: page([]) }))
+    await userEvent.type(await screen.findByLabelText('Campaign name'), 'The Drowned Crown{Enter}')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Campaign created'))
+    await userEvent.type(screen.getByLabelText('Campaign name'), 'A draft kept too long')
+    await m.switchTo('ada@example.com', 'player')
+    await waitFor(() => expect(screen.getByLabelText('Campaign name')).toHaveValue(''))
+    expect(screen.getByRole('status')).toHaveTextContent('')
+    await m.switchTo('ada@example.com', 'dm')
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Campaigns loaded'))
+    m.stop()
+    expect(m.announced.slice(-2)).toEqual(['Loading campaigns…', 'Campaigns loaded'])
   })
 })
 

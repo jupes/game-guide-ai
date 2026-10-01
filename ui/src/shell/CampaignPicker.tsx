@@ -16,8 +16,9 @@
  *   moves to the heading (§11).
  * - Create is sent only by a press, never retried by the client (a create has
  *   no idempotency key), and the provider is single-flight besides.
- * - All local state -- the typed name included -- belongs to one account: the
- *   picker is keyed by the user id (critic 21).
+ * - All local state -- the typed name and the last announcement included --
+ *   belongs to one account: the picker is keyed as the provider is, by whether
+ *   the account can use campaigns and its user id (critic 21; vtb9).
  */
 
 import * as React from 'react'
@@ -107,7 +108,8 @@ export interface CampaignPickerProps {
 
 export function CampaignPicker(props: CampaignPickerProps): React.JSX.Element {
   const userId = React.useContext(CurrentUserContext)?.user.id ?? 'guest'
-  return <Picker key={userId} {...props} />
+  const { enabled } = useCampaign()
+  return <Picker key={`${enabled}:${userId}`} {...props} />
 }
 
 function Picker({ onSelected }: CampaignPickerProps): React.JSX.Element {

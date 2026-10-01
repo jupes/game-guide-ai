@@ -505,6 +505,13 @@ class ErrorCode(str, Enum):
     #: names neither id. Not ``already_linked``, which is a conversation's
     #: campaign link.
     LINK_TAKEN = "link_taken"
+    #: The account's campaign count or stored document bytes is at its limit
+    #: (agent-forge-harness-531x, PR-B): ``409``, not retryable, message fixed
+    #: and number-free. A new code rather than widening ``cap_reached``, whose
+    #: documented meaning is X-5's retryable in-flight cap and which
+    #: ``ui/src/gm/pendingWork.ts`` already reads that way — changing what it
+    #: means would need a version bump; a new code does not.
+    ACCOUNT_LIMIT_REACHED = "account_limit_reached"
 
 
 # ── Registry facts the validators need (pinned by registry.json) ─────────────

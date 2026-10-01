@@ -1926,6 +1926,15 @@ describe('the groups family (btb)', () => {
     expect(isKnownErrorCode('group_taken')).toBe(false)
   })
 
+  it('knows the account-limit code (agent-forge-harness-531x, PR-B) and still reads an unknown code as generic', () => {
+    const code = 'account_limit_reached'
+    expect(isKnownErrorCode(code)).toBe(true)
+    expect(readErrorBody({ detail: { code, message: 'Fixed.', retryable: false } })).toEqual({
+      kind: 'workbench',
+      info: { code, message: 'Fixed.', retryable: false },
+    })
+  })
+
   it('takes a key minted by crypto.randomUUID, and refuses a create without one', () => {
     const create = (command_id?: string) =>
       GroupCreateRequestSchema.safeParse({ schema_version: 1, ...(command_id ? { command_id } : {}), name: 'Scouts' })

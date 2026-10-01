@@ -74,15 +74,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
+import config
+
 from . import campaign_identity as ident
 from .campaign_store import CampaignStore, MissingParent, PostgresCampaignStore
 from .conversations_api import read_body
-from .db import TransactionalDatabase, UnitOfWork
+from .db import AdvisoryLock, TransactionalDatabase, UnitOfWork
 from .document_store import (
+    ByteQuota,
     DocumentStore,
     FieldConflict,
     PostgresDocumentStore,
     StaleTypeVersion,
+    StorageQuotaReached,
     UnknownCursor,
     UnknownWriteRevision,
 )
@@ -126,6 +130,8 @@ log = logging.getLogger(__name__)
 UNAVAILABLE_MESSAGE = "Documents are briefly unavailable. Try again."
 CONFLICT_MESSAGE = "This document changed elsewhere."
 UNSUPPORTED_MESSAGE = "This document can't be used by this version of Aetheril."
+#: agent-forge-harness-531x, PR-B. Names no number (SEC-20).
+STORAGE_CAP_MESSAGE = "This account's document storage is full. Archive and delete documents to make room."
 
 #: The client's page sizes: CANVAS-27's twenty versions, LIB-23's twenty-five
 #: rows. Both stop at the contract's fifty, which is a refusal, never a clamp.
@@ -253,6 +259,8 @@ def _guarded[T](
     except MissingParent:
         gone = missing is None
         failure = None if gone else _invalid(missing)
+    except StorageQuotaReached:
+        failure = _refusal(409, ErrorCode.ACCOUNT_LIMIT_REACHED, STORAGE_CAP_MESSAGE)
     except ValueError:
         failure = _unsupported() if invalid_content_is_unsupported else _invalid(None)
     except psycopg.Error as exc:
@@ -351,15 +359,22 @@ def create_document(
 ) -> Document:
     """A new document by the GM, version 1 open. A repeat of its `command_id`
     in this campaign answers the document that key already made, as it is now,
-    whatever the repeat's body says."""
+    whatever the repeat's body says.
+
+    Refused with `account_limit_reached` (409) when the document plus its
+    version 1 would push the account's stored bytes past its cap
+    (agent-forge-harness-531x) — a true replay of `command_id` never is,
+    because it writes nothing."""
     data = stored_json(request.data)
 
     def work() -> Document:
         with db.transaction() as unit:
             _owned(stores, unit, campaign_id, owner_id)
+            unit.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
             made = stores.documents.create(
                 unit, campaign_id, doc_type=request.type, type_version=request.type_version, data=data,
                 author=Author.GM, command_id=request.command_id, now=now,
+                quota=ByteQuota(owner_id, config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX),
             )
             return to_document(made)
 
@@ -400,11 +415,17 @@ def patch_document(
     patch that already landed answers the document and writes nothing. The
     store rebases the rest over the current data and re-validates the merged
     whole before the commit (CANVAS-19, SEC-33).
+
+    Refused with `account_limit_reached` (409) when the merged document's
+    growth would push the account's stored bytes past its cap
+    (agent-forge-harness-531x) — a no-op patch (nothing effective to write)
+    never is.
     """
 
     def work() -> Document:
         with db.transaction() as unit:
             _owned(stores, unit, campaign_id, owner_id)
+            unit.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
             record = stores.documents.hold(unit, campaign_id, document_id)
             if record is None:
                 not_found()
@@ -418,6 +439,7 @@ def patch_document(
             written = stores.documents.write_fields(
                 unit, campaign_id, document_id, fields=changes, author=Author.GM,
                 base_write_revision=request.base_write_revision, now=now,
+                quota=ByteQuota(owner_id, config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX),
             )
             return to_document(written)
 
@@ -480,16 +502,24 @@ def restore_document(
     """CANVAS-26: additive, and a no-op when the document already equals the
     chosen version. A stored document this build cannot write over is refused
     before `restore` runs: a restore replaces the whole of `data`, so a key
-    this build does not declare would otherwise be dropped without a word."""
+    this build does not declare would otherwise be dropped without a word.
+
+    Refused with `account_limit_reached` (409) when restoring would push the
+    account's stored bytes past its cap (agent-forge-harness-531x) — the
+    equal-content no-op above never is."""
 
     def work() -> Document:
         with db.transaction() as unit:
             _owned(stores, unit, campaign_id, owner_id)
+            unit.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
             record = stores.documents.hold(unit, campaign_id, document_id)
             if record is None:
                 not_found()
             writable(record)
-            restored = stores.documents.restore(unit, campaign_id, document_id, version_number=version_number, now=now)
+            restored = stores.documents.restore(
+                unit, campaign_id, document_id, version_number=version_number, now=now,
+                quota=ByteQuota(owner_id, config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX),
+            )
             return to_document(restored)
 
     return _guarded(work, missing="version_number", invalid_content_is_unsupported=True)

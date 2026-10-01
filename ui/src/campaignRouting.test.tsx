@@ -47,6 +47,8 @@ function boot(url: string, options: BootOptions = {}) {
     const one = /^\/campaigns\/(cmp_\w+)$/.exec(call.url)
     if (one !== null) call.reply(200, campaignBody(one[1]))
     else if (call.url === '/conversations/cnv_1') call.reply(200, THREAD)
+    // PR-2: a campaign's first GM send creates its thread before /chat.
+    else if (call.method === 'POST' && call.url === '/conversations') call.reply(201, { ...THREAD, conversation_id: 'cnv_new', campaign_id: 'cmp_B' })
     else call.reply(call.url === '/chat' ? 503 : 404)
   }))
   vi.spyOn(api, 'getMe').mockResolvedValue(options.signedOut === true

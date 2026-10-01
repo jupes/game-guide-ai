@@ -596,5 +596,8 @@ def test_n14_the_module_imports_only_the_standard_library_and_the_allowed_servic
     service = {name.lstrip(".").split(".")[0] for name in imported if name.startswith(".")}
     outside = {name.split(".")[0] for name in imported if not name.startswith(".")}
     assert service <= ALLOWED_SERVICE_MODULES, service - ALLOWED_SERVICE_MODULES
-    assert outside - {"__future__"} <= sys.stdlib_module_names, outside - set(sys.stdlib_module_names)
+    # `config` (agent-forge-harness-531x, PR-B): the repo-root config module every
+    # other service file already imports the same way (`document_generation.py`'s
+    # own `ALLOWED_IMPORTS` carries the identical exception) — not a provider path.
+    assert outside - {"__future__", "config"} <= sys.stdlib_module_names, outside - set(sys.stdlib_module_names)
     assert "tool_invocations" in service and "logging" in outside, "the positive control: the walk found both kinds"

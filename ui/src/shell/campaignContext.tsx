@@ -40,6 +40,7 @@ import {
   getConversation,
   listCampaigns,
 } from './campaignApi'
+import { CampaignThreadsContext, ThreadStore } from './campaignThreads'
 import { CurrentUserContext, type UserRole } from './currentUser'
 import { pathForScreen } from './routes'
 import {
@@ -136,7 +137,7 @@ interface Snapshot {
   readonly scope: CampaignScope | null
   /** A `conversation` id whose I-6 check has not finished: its key stays meanwhile. */
   readonly pendingThread: string | null
-  /** Threads known to belong to `scope` (restored here; PR-2 adds created and listed ones). */
+  /** Threads known to belong to `scope`: restored, listed or created. */
   readonly threads: readonly string[]
   /** Every campaign thread id seen on this page, whatever its scope or account. */
   readonly campaignThreads: readonly string[]
@@ -196,6 +197,22 @@ class CampaignStore {
   private creating: Promise<CreateOutcome> | null = null
   private created: Campaign | null = null
   private transitional: { base: Snapshot; account: string; value: Snapshot } | null = null
+  /** The scope's GM threads (PR-2, critic 8), kept here so every consumer shares them. */
+  readonly threadStore = new ThreadStore({
+    fetcher: () => this.fetcher(),
+    isCurrentScope: (key) => this.isCurrentScope(key),
+    claim: (key, ids) => {
+      if (this.snap.scope?.key !== key) return
+      const threads = ids.reduce(withThread, this.snap.threads)
+      const campaignThreads = ids.reduce(withThread, this.snap.campaignThreads)
+      if (threads !== this.snap.threads || campaignThreads !== this.snap.campaignThreads) {
+        this.set({ ...this.snap, threads, campaignThreads })
+      }
+    },
+    unavailable: (key) => {
+      if (this.snap.scope?.key === key) this.select({ selection: UNAVAILABLE, scope: null, pendingThread: null, threads: [] })
+    },
+  })
 
   constructor(restore: CampaignRestore | null, fetchImpl: typeof fetch | undefined, win: Window, account: string, enabled: boolean) {
     this.restore = restore
@@ -276,6 +293,7 @@ class CampaignStore {
 
   syncNav(nav: Nav): void {
     this.nav = nav
+    this.threadStore.opened(nav.conversationId)
     if (nav.mode !== 'gm') this.dropCampaignConversation()
   }
 
@@ -291,6 +309,7 @@ class CampaignStore {
       this.created = null
       for (const controller of this.controllers) controller.abort()
       this.controllers.clear()
+      this.threadStore.reset()
       this.set(this.fresh(account, enabled, this.snap.campaignThreads))
       this.dropCampaignConversation()
     }
@@ -594,11 +613,15 @@ class CampaignStore {
 }
 
 /** The id AppNav consumers see: a campaign thread only in its own campaign's GM
- * channel, otherwise `null` (critic 7). */
+ * channel, otherwise `null` (critic 7); and in a campaign's GM channel nothing
+ * but that campaign's threads, so a campaign turn never lands in a legacy
+ * conversation (critic 5: GM chat is legacy only with no campaign at all). */
 function visibleConversation(nav: AppNavState, snap: Snapshot): string | null {
   const id = nav.conversationId
-  if (id === null || !snap.campaignThreads.includes(id)) return id
-  return nav.mode === 'gm' && snap.selection.kind === 'selected' && snap.threads.includes(id) ? id : null
+  if (id === null) return null
+  const campaignGm = nav.mode === 'gm' && snap.selection.kind !== 'none'
+  if (!snap.campaignThreads.includes(id)) return campaignGm ? null : id
+  return campaignGm && snap.selection.kind === 'selected' && snap.threads.includes(id) ? id : null
 }
 
 // ── Context ──────────────────────────────────────────────────────────────────
@@ -682,10 +705,13 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
     () => (visibleId === nav.conversationId ? nav : { ...nav, conversationId: visibleId }),
     [nav, visibleId],
   )
+  const threads = React.useMemo(() => ({ store: store.threadStore, scope: snap.scope }), [store, snap.scope])
 
   return (
     <AppNavContext.Provider value={scopedNav}>
-      <CampaignContext.Provider value={value}>{children}</CampaignContext.Provider>
+      <CampaignContext.Provider value={value}>
+        <CampaignThreadsContext.Provider value={threads}>{children}</CampaignThreadsContext.Provider>
+      </CampaignContext.Provider>
     </AppNavContext.Provider>
   )
 }

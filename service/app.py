@@ -38,6 +38,7 @@ from ingestion.retrieval import EmbeddingUnavailableError
 
 from . import (
     asset_jobs,
+    asset_serving_api,
     assets_api,
     body_limit,
     campaigns_api,
@@ -122,6 +123,7 @@ from .security_headers import (
     CROSS_ORIGIN_OPENER_POLICY,
     PERMISSIONS_POLICY,
     REFERRER_POLICY,
+    STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
 )
 from .session import SessionData, decode_session, encode_session
@@ -804,7 +806,8 @@ app.add_middleware(body_limit.BodyLimitMiddleware, media_enabled=lambda: _media_
 @app.middleware("http")
 async def set_security_headers(request: Request, call_next):
     """Send the security headers this app owns on every response it produces
-    (va8, and agent-forge-harness-y58 for the four added after it).
+    (va8, agent-forge-harness-y58 for the four added after it, and
+    agent-forge-harness-5ir1 for Strict-Transport-Security).
 
     A separate middleware rather than two lines inside `capture_chat_metrics`:
     that one returns early for every path that is not `/chat`, so folding the
@@ -834,6 +837,7 @@ async def set_security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", REFERRER_POLICY)
     response.headers.setdefault("Cross-Origin-Opener-Policy", CROSS_ORIGIN_OPENER_POLICY)
     response.headers.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
+    response.headers.setdefault("Strict-Transport-Security", STRICT_TRANSPORT_SECURITY)
     return response
 
 
@@ -1904,6 +1908,9 @@ app.include_router(seats_api.build_router(require_session, get_timeline_database
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
 app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
 app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
+app.include_router(
+    asset_serving_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled, _job_driver)
+)
 app.include_router(table_session_api.build_router(WORKBENCH_GM, get_table_sessions, _job_driver, start_gate))
 app.include_router(table_api.build_router(require_session, get_auth_store, _clear_session_cookie, get_table_sessions))
 app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_message_store))

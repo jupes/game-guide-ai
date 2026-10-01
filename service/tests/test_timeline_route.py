@@ -40,7 +40,7 @@ from service.db import InMemoryDatabase
 from service.history import InMemoryMessageStore
 from service.models import ChatMode, ChatResponse, Source
 from service.session import SessionData
-from service.tests.test_workbench_api import _answer, _json_headers
+from service.tests.test_workbench_api import _NO_STORE, _answer, _json_headers
 from service.timeline_store import InMemoryTimelineStore, new_entry_id
 from service.workbench_api import NOT_FOUND_DETAIL, WorkbenchRoute, api_route_dependants
 from service.workbench_contracts import CONTRACT_VERSION, TimelinePage
@@ -875,8 +875,8 @@ def test_every_answer_but_the_401_and_the_404_is_the_legacy_routes_byte_for_byte
     finally:
         app.dependency_overrides[get_timeline_store] = lambda: world.timeline
     assert [label for label, *_ in cases] == ["limit", "cursor", "player", "no store", "database down"]
-    for label, response, status, body in cases:
-        assert _answer(response) == (status, body, _json_headers(body)), label
+    for label, response, status, body in cases:  # plus no-store, deliberately (5ir1)
+        assert _answer(response) == (status, body, _json_headers(body, _NO_STORE)), label
     page = _timeline(client)
     assert (page.status_code, [e["prompt"] for e in page.json()["items"]]) == (200, ["q"])
 

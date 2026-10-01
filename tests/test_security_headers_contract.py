@@ -30,6 +30,7 @@ from service.security_headers import (
     CROSS_ORIGIN_OPENER_POLICY,
     PERMISSIONS_POLICY,
     REFERRER_POLICY,
+    STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
 )
 
@@ -41,12 +42,15 @@ _DECLARATION = re.compile(r'add_header\s+Content-Security-Policy\s+"([^"]*)"\s+a
 # y58 — the same drift guard as `_DECLARATION` above, generalised to the four
 # headers this bead added. Built from the header name rather than one regex
 # per header (`declarations_of` below): a fifth copy-pasted regex is exactly
-# the kind of drift this file exists to catch.
+# the kind of drift this file exists to catch. agent-forge-harness-5ir1 added
+# Strict-Transport-Security to the same guard, so it is counted, read and
+# placed exactly as the four are.
 _NEW_HEADERS = {
     "X-Content-Type-Options": X_CONTENT_TYPE_OPTIONS,
     "Referrer-Policy": REFERRER_POLICY,
     "Cross-Origin-Opener-Policy": CROSS_ORIGIN_OPENER_POLICY,
     "Permissions-Policy": PERMISSIONS_POLICY,
+    "Strict-Transport-Security": STRICT_TRANSPORT_SECURITY,
 }
 
 # `location` is still matched as a DIRECTIVE — anchored at the start of a line —
