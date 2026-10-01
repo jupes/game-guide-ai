@@ -552,10 +552,14 @@ def test_unlink_survives_the_seats_removal(client: TestClient, world: World) -> 
 
 
 def test_unlink_404s_across_tenants_before_any_narrowing(client: TestClient, world: World) -> None:
-    """T8. Kills: step one narrowing before the document is shown to exist."""
+    """T8. Kills: step one without ownership (a stranger narrows a linked
+    sheet's live copies and takes the lock); step one narrowing before the
+    document read."""
     campaign = world.campaign(owner=GM_A)
     other = world.campaign()
     sheet = world.document(campaign)
+    seat = world.seat(campaign)
+    assert _link(client, campaign, sheet, seat).status_code == 204
     session = world.session(campaign)
     before_epoch = world.epoch(session.id)
     foreign_sheet = world.document(other)
@@ -563,10 +567,17 @@ def test_unlink_404s_across_tenants_before_any_narrowing(client: TestClient, wor
             _unlink(client, campaign, MISSING_DOC).json()) == (404, NOT_FOUND)
     assert (_unlink(client, campaign, foreign_sheet).status_code,
             _unlink(client, campaign, foreign_sheet).json()) == (404, NOT_FOUND)
-    _as(GM_B)
-    assert _unlink(client, campaign, sheet).json() == NOT_FOUND
-    _as(GM_A)
     assert world.epoch(session.id) == before_epoch
+    before_rev = world.revision(campaign)
+    opened = len(world.db.units)
+    _as(GM_B)
+    cross = _unlink(client, campaign, sheet)
+    assert (cross.status_code, cross.json()) == (404, NOT_FOUND)
+    _as(GM_A)
+    assert all(not unit.campaign_locks for unit in world.db.units[opened:]), "a stranger never reaches the lock"
+    assert world.epoch(session.id) == before_epoch, "a stranger never narrows another GM's table"
+    assert world.revision(campaign) == before_rev
+    assert world.record(campaign, sheet).linked_participant_id == seat
 
 
 def test_unlink_busy_in_step_two_is_not_applied_yet(client: TestClient, world: World) -> None:

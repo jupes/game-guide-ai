@@ -63,8 +63,12 @@ def _database(dsn: str, settings: CampaignLockSettings = QUICK) -> Database:
 @dataclass
 class World:
     kind: str
+    # justification: the twin world holds an InMemoryDatabase and the postgres world a
+    # Database; the fixtures only share their duck-typed transaction surface.
     db: Any
     stores: LifecycleStores
+    # justification: the in-memory and PostgreSQL participant stores share no
+    # declared base type; both worlds call the same methods on it.
     participants: Any
     owner: int
     stranger: int
@@ -517,9 +521,9 @@ def test_an_audit_failure_rolls_back_the_link_and_the_advance(
 @needs_db
 def test_the_ledger_row_in_postgresql_carries_ids_only(dsn: str) -> None:
     """D6: `object_kind='participant'`, `detail` keys exactly
-    `{participant_id, document_id}`, and a private-looking alias never
-    appears in any column. Kills: detail widening; a fourth column added to
-    the row."""
+    `{participant_id, document_id}`, and `detail` carries ids only (a
+    private-looking alias never appears in it). Kills: detail widening; a
+    fourth column added to the row."""
     world = _pg_world(dsn)
     campaign = _campaign(world, world.owner)
     sheet = _document(world, campaign, "character-sheet")
