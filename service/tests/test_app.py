@@ -13,10 +13,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from service import usage_capture
-from service.app import app, get_message_store, get_service
+from service.app import app, get_message_store, get_service, get_usage_day
 from service.history import InMemoryMessageStore
 from service.model_catalog import DEFAULT_ALIAS, public_model_id
 from service.models import Abilities, ChatMode, ChatResponse, Source, StatBlockContent
+from service.usage_ledger import DayCount
 from service.workbench_contracts import CHAT_TEXT_MAX_CHARS
 
 
@@ -519,14 +520,33 @@ class _RecordingStore:
         return _recorded
 
 
+class _RecordingDay:
+    """Records the name of every method the daily-cap gate calls
+    (agent-forge-harness-u2uj); answers as though nothing has been spent."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def chat_turns(self, *, now: object) -> int:
+        self.calls.append("chat_turns")
+        return 0
+
+    def for_account(self, billed_account_id: int, *, now: object) -> DayCount:
+        self.calls.append("for_account")
+        return DayCount(pilot_chat_turns=0, account_operations=0)
+
+
 def test_chat_prompt_over_limit_touches_no_store_write_and_opens_no_usage_operation(
     monkeypatch,
 ):
     """The gate runs before the conversation claim, the strategy bind and the
     usage-capture operation: an over-limit turn writes nothing and records
-    nothing. The one store call it may make is the daily-cap read, which runs
-    ahead of the gate by design."""
+    nothing. The daily cap now reads the usage ledger's day reader rather than
+    the message store (agent-forge-harness-u2uj), so the message store sees no
+    call at all; the one read the gate makes is the ledger's, which runs ahead
+    of the length gate by design."""
     store = _RecordingStore()
+    day = _RecordingDay()
     begun: list[str] = []
     real_begin = usage_capture.begin_operation
 
@@ -537,6 +557,7 @@ def test_chat_prompt_over_limit_touches_no_store_write_and_opens_no_usage_operat
     monkeypatch.setattr(usage_capture, "begin_operation", _recording_begin)
     app.dependency_overrides[get_service] = lambda: _FakeService(_GROUNDED)
     app.dependency_overrides[get_message_store] = lambda: store
+    app.dependency_overrides[get_usage_day] = lambda: day
     c = TestClient(app)
     try:
         # Control: a within-limit turn reaches every recorder, so the empty
@@ -548,10 +569,43 @@ def test_chat_prompt_over_limit_touches_no_store_write_and_opens_no_usage_operat
         assert begun == ["sage"]
 
         store.calls.clear()
+        day.calls.clear()
         begun.clear()
         r = c.post("/chat", json={"prompt": "a" * (CHAT_TEXT_MAX_CHARS + 1)})
         assert r.status_code == 422
-        assert store.calls == ["calls_today"]
+        assert store.calls == [], "no chat.messages scan any more"
+        assert day.calls == ["for_account"]
         assert begun == []
     finally:
         app.dependency_overrides.clear()
+
+
+def test_build_stores_registers_the_ledger_day_reader_beside_the_writer():
+    """agent-forge-harness-u2uj: `_build_stores` must register `usage_day`
+    alongside `ledger`, sharing one `PostgresUsageLedgerStore`, or the caps are
+    silently off in production (`get_usage_day` would answer `None` forever)."""
+    from service import app as appmod
+    from service.tests.test_auth_guard import _depends_on
+    from service.usage_ledger import LedgerWriter, PostgresUsageLedgerStore, UsageDay
+    from service.workbench_api import api_route_dependants
+
+    saved = dict(appmod._state)
+    try:
+        appmod._build_stores(appmod.Database("postgresql://nobody@127.0.0.1:1/none"))
+        day = appmod.get_usage_day()
+        writer = appmod._state["ledger"]
+        assert isinstance(day, UsageDay)
+        assert isinstance(writer, LedgerWriter)
+        # justification: reaching into both objects' private store to prove they
+        # share it is the only way to pin "beside", never each its own.
+        assert day._store is writer._store  # noqa: SLF001
+        assert isinstance(day._store, PostgresUsageLedgerStore)  # noqa: SLF001
+    finally:
+        appmod._state.clear()
+        appmod._state.update(saved)
+
+    _path, _route, dependant = next(
+        row for row in api_route_dependants(appmod.app)
+        if row[0] == "/campaigns/{campaign_id}/tool-invocations" and "POST" in (row[1].methods or set())
+    )
+    assert _depends_on(dependant, appmod.get_usage_day)

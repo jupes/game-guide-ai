@@ -36,6 +36,7 @@ import openai
 import psycopg
 import pytest
 
+import config
 from service import app as appmod
 from service import generate as generate_module
 from service import usage_capture
@@ -62,6 +63,7 @@ from service.usage_ledger import (
     LedgerWriter,
     PostgresUsageLedgerStore,
     StoredAttempt,
+    UsageDay,
 )
 
 _REQUEST = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
@@ -147,6 +149,16 @@ def ledger(monkeypatch: pytest.MonkeyPatch) -> _Ledger:
     world = _Ledger()
     monkeypatch.setitem(appmod._state, "ledger", _Writer(world))
     return world
+
+
+@pytest.fixture
+def usage_day(ledger: _Ledger, monkeypatch: pytest.MonkeyPatch) -> UsageDay:
+    """The daily caps' reader (agent-forge-harness-u2uj), over the SAME twin
+    `ledger` writes into -- a turn that spends the ledger is a turn the caps
+    see, with no gap between the write and the read."""
+    day = UsageDay(ledger.store, ledger)
+    monkeypatch.setitem(appmod._state, "usage_day", day)
+    return day
 
 
 @pytest.fixture
@@ -280,6 +292,118 @@ def test_a_provider_rate_limit_is_still_a_429_and_its_attempts_are_written(
         (r["purpose"], r["retry_index"], r["status"]) for r in first_turn
     ], "one row per attempt the log line witnessed"
     assert rows[-1].status == "error"
+
+
+# ---------------------------------------------------------------------------
+# The daily caps, from the ledger a real turn just wrote (agent-forge-harness-u2uj)
+# ---------------------------------------------------------------------------
+
+def _timed_out() -> openai.APITimeoutError:
+    return openai.APITimeoutError(request=_REQUEST)
+
+
+def test_a_turn_that_fails_after_a_provider_attempt_spends_the_pilot_day(
+    ledger: _Ledger, usage_day: UsageDay, no_backoff: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn that reaches a provider and then fails still counts: `chat()`
+    reads the pilot day from `metering.provider_attempts`, never from
+    `chat.messages`, so the old `calls_today()` count (which this turn never
+    reaches -- it 502s before persistence) would have missed it entirely."""
+    monkeypatch.setattr(config, "CHAT_DAILY_CAP", 1)
+
+    first = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-1")
+    assert first.status_code == 502, first.text
+    assert ledger.rows(), "the failed turn wrote at least one row"
+
+    second = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-2")
+    assert second.status_code == 429
+    assert second.headers["x-chat-throttled"] == "daily"
+
+    # Positive control: the identical two turns, but the day reader answers
+    # from an EMPTY twin -- without it, a bug that always refuses could not
+    # be told apart from this test correctly proving the ledger is read.
+    empty = _Ledger()
+    monkeypatch.setitem(appmod._state, "usage_day", UsageDay(empty.store, empty))
+    control_first = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-3")
+    assert control_first.status_code == 502
+    control_second = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-4")
+    assert control_second.status_code != 429
+
+
+def test_a_turn_whose_embedding_times_out_spends_the_pilot_day(
+    ledger: _Ledger, usage_day: UsageDay, no_backoff: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn whose EMBEDDING attempt times out still spends the pilot day: the
+    ledger counts an operation with an attempt at a provider, whatever its
+    status -- including a turn that never reaches the LLM at all because the
+    embedding call is where it failed (agent-forge-harness-u2uj, H-1)."""
+    monkeypatch.setattr(config, "CHAT_DAILY_CAP", 1)
+    failing_embeddings = _FakeEmbeddingsClient(error=_timed_out())
+
+    first = _post(
+        _client(_service(_ScriptedLLM(["unused"]), embed_client=failing_embeddings)),
+        mode="sage", conversation_id="c-1",
+    )
+    assert first.status_code == 503, first.text
+    rows = ledger.rows()
+    assert rows, "the failed embedding wrote at least one row"
+    assert {r.status for r in rows} == {"error"}
+
+    second = _post(
+        _client(_service(_ScriptedLLM(["unused"]), embed_client=failing_embeddings)),
+        mode="sage", conversation_id="c-2",
+    )
+    assert second.status_code == 429
+    assert second.headers["x-chat-throttled"] == "daily"
+
+
+def test_a_failed_turn_spends_its_own_accounts_day_and_nobody_elses(
+    ledger: _Ledger, usage_day: UsageDay, no_backoff: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from service.app import ACCOUNT_CAP_DETAIL
+
+    monkeypatch.setattr(config, "CHAT_ACCOUNT_DAILY_CAP", 1)
+    monkeypatch.setattr(config, "CHAT_DAILY_CAP", 500)
+
+    first = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-1")
+    assert first.status_code == 502, first.text
+
+    second = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-2")
+    assert second.status_code == 429
+    assert second.headers["x-chat-throttled"] == "account"
+    assert second.json() == {"detail": ACCOUNT_CAP_DETAIL}
+    assert "retry-after" not in second.headers
+
+    app.dependency_overrides[require_session] = lambda: SessionData(user_id=2, role="player")
+    third = _post(_client(_service(_ScriptedLLM([_NO_MARKERS_ANSWER]))), mode="rules", conversation_id="c-3")
+    assert third.status_code == 200, third.text
+
+
+def test_a_cap_refusal_names_no_model(
+    ledger: _Ledger, usage_day: UsageDay, no_backoff: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-9: neither the account nor the pilot refusal names a model, an alias
+    or a provider, in the body or in any header value."""
+    from service.model_catalog import CATALOG, DEFAULT_ALIAS, get_profile
+
+    profile = get_profile(DEFAULT_ALIAS)
+    assert profile is not None
+    words = {"openai", DEFAULT_ALIAS, profile.display_name, profile.api_model, *CATALOG}
+
+    monkeypatch.setattr(config, "CHAT_ACCOUNT_DAILY_CAP", 1)
+    _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-1")
+    account_refusal = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-2")
+    assert account_refusal.status_code == 429 and account_refusal.headers["x-chat-throttled"] == "account"
+
+    monkeypatch.setattr(config, "CHAT_ACCOUNT_DAILY_CAP", 500)
+    monkeypatch.setattr(config, "CHAT_DAILY_CAP", 0)
+    daily_refusal = _post(_client(_service(_ScriptedLLM([_timed_out()]))), mode="sage", conversation_id="c-3")
+    assert daily_refusal.status_code == 429 and daily_refusal.headers["x-chat-throttled"] == "daily"
+
+    for response in (account_refusal, daily_refusal):
+        haystack = response.text + "\n" + "\n".join(f"{k}: {v}" for k, v in response.headers.items())
+        for word in words:
+            assert word.lower() not in haystack.lower(), word
 
 
 # ---------------------------------------------------------------------------

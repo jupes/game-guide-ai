@@ -33,7 +33,15 @@ from pydantic import TypeAdapter, ValidationError
 
 import config
 from service import ratelimit, tool_invocations, tool_invocations_api, tracing, usage_capture, workbench_api
-from service.app import app, get_auth_store, get_message_store, get_service, get_timeline_database, require_session
+from service.app import (
+    app,
+    get_auth_store,
+    get_message_store,
+    get_service,
+    get_timeline_database,
+    get_usage_day,
+    require_session,
+)
 from service.auth_store import InMemoryAuthStore
 from service.campaign_store import InMemoryCampaignStore, shared_rows
 from service.conversation_store import InMemoryConversationStore
@@ -55,6 +63,7 @@ from service.tool_invocations import (
     InvocationTarget,
     ToolSettings,
 )
+from service.usage_ledger import InMemoryUsageLedgerStore, UsageDay
 from service.workbench_api import FORBIDDEN_ORIGIN_DETAIL, FORBIDDEN_ROLE_DETAIL, NOT_FOUND_DETAIL
 from service.workbench_contracts import BRIEF_MAX_CHARS, ErrorCode, ToolId, ToolInvocation, validation_error_body
 from service.workbench_load import InMemoryWorkbenchLoad
@@ -120,12 +129,19 @@ class FakeLLM:
 
 
 class Sink:
-    def __init__(self) -> None:
+    """Collects every write, and also stores each row for real in the ledger
+    twin (agent-forge-harness-u2uj), so the day reader built over the same
+    twin sees exactly what a turn or an attempt spent."""
+
+    def __init__(self, store: InMemoryUsageLedgerStore, db: InMemoryDatabase) -> None:
+        self._store = store
+        self._db = db
         self.rows: list[Any] = []
 
     def write(self, rows: Any) -> int:
         self.rows.extend(rows)
-        return len(rows)
+        with self._db.transaction() as unit:
+            return self._store.record_attempts(unit, rows)
 
 
 @dataclass(frozen=True)
@@ -143,6 +159,7 @@ class World:
     executors: dict[ToolId, Recording]
     llm: FakeLLM
     sink: Sink
+    usage_day: UsageDay
     settings: ToolSettings = field(default_factory=lambda: ToolSettings(frozenset({ToolId.NPC, ToolId.RECAP})))
     now: list[datetime] = field(default_factory=lambda: [T0])
 
@@ -186,7 +203,11 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
         InMemoryToolInvocationStore(db), InMemoryCampaignStore(db), InMemoryConversationStore(db),
         InMemoryTimelineStore(db, messages=messages), InMemoryWorkbenchLoad(db),
     )
-    made = World(db, messages, stores, {tool: Recording(tool) for tool in ToolId}, FakeLLM(), Sink())
+    ledger_store = InMemoryUsageLedgerStore(db)
+    made = World(
+        db, messages, stores, {tool: Recording(tool) for tool in ToolId}, FakeLLM(), Sink(ledger_store, db),
+        UsageDay(ledger_store, db),
+    )
     factory = ProviderClientFactory(client_builders={DEFAULT_ALIAS: made.llm})
     overrides: dict[Callable[..., Any], Callable[..., Any]] = {
         tool_invocations_api.get_invocation_stores: lambda: made.stores,
@@ -196,6 +217,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> Iterator[World]:
         tool_invocations_api.get_provider_factory: lambda: factory,
         get_timeline_database: lambda: made.db,
         get_message_store: lambda: made.messages,
+        get_usage_day: lambda: made.usage_day,
     }
     app.dependency_overrides.update(overrides)
     monkeypatch.setattr(usage_capture, "_ledger_provider", lambda: made.sink)
@@ -1176,20 +1198,21 @@ def test_f6_a_chat_turn_still_records_a_chat_turn_under_a_fresh_id(world: World)
         usage_capture.end_operation(token)
 
 
-@pytest.mark.parametrize("fault", ["calls_today", "database", "lock_timeout", "no_db", "no_messages"])
+@pytest.mark.parametrize("fault", ["day_count", "database", "lock_timeout", "no_db", "no_usage_day"])
 def test_f7_an_outage_before_any_attempt_is_a_503_and_creates_nothing(world: World, client: TestClient,
                                                                      fault: str) -> None:
-    """M-F10: the day count fails closed."""
+    """M-F10: the day count fails closed (agent-forge-harness-u2uj: from the
+    usage ledger's day reader, not the message store)."""
     table = world.table()
-    if fault == "calls_today":
-        world.messages.calls_today = _raise_now(RuntimeError())  # type: ignore[method-assign]
+    if fault == "day_count":
+        world.usage_day.chat_turns = _raise_now(RuntimeError())  # type: ignore[method-assign]
     elif fault in {"database", "lock_timeout"}:
         error = psycopg.OperationalError() if fault == "database" else psycopg.errors.LockNotAvailable()
         world.stores.invocations.hold_in_flight_lock = _raise_now(error)  # type: ignore[method-assign]
     elif fault == "no_db":
         app.dependency_overrides[get_timeline_database] = lambda: None
     else:
-        app.dependency_overrides[get_message_store] = lambda: None
+        app.dependency_overrides[get_usage_day] = lambda: None
     response = post(client, table)
     assert response.status_code == 503
     assert _error(response) == {"code": "backend_unavailable", "retryable": True,
@@ -1395,7 +1418,7 @@ def test_a7_the_brief_never_leaves_through_any_answer_or_log(world: World, clien
     answers.append(post(client, table, invocation_id="inv_route_000000000007", brief=CANARY))  # 429 user
     world.archive(table)
     answers.append(post(client, table, invocation_id="inv_route_000000000008", brief=CANARY))  # 409 archived
-    world.messages.calls_today = _raise_now(RuntimeError(CANARY))  # type: ignore[method-assign]
+    world.usage_day.chat_turns = _raise_now(RuntimeError(CANARY))  # type: ignore[method-assign]
     answers.append(post(client, table, invocation_id="inv_route_000000000009", brief=CANARY))  # 503
     assert sorted({r.status_code for r in answers}) == [200, 404, 409, 422, 429, 503]
     for response in answers:
@@ -1454,6 +1477,16 @@ def _canary_validation_error() -> ValidationError:
 class _ChatService:
     def answer(self, prompt: str, mode: str = "sage", conversation_id: str | None = None,
                attachment_context: Any = None, attachment_label: Any = None) -> ChatResponse:
+        # agent-forge-harness-u2uj: the pilot day now counts from the ledger, so
+        # a chat turn must record at least one attempt to be seen by it -- as a
+        # real turn always does (the embedding call alone spends it). Without
+        # this, f4's "tools alone never close chat" control would write zero
+        # ledger rows and prove nothing about the pilot day counting chat too.
+        operation = usage_capture.current_operation()
+        if operation is not None:
+            usage_capture.AttemptRecorder(
+                operation, purpose=usage_capture.PURPOSE_ANSWER, alias=DEFAULT_ALIAS,
+            ).record(alias=DEFAULT_ALIAS, result=None, error=None)
         return ChatResponse(answer="ok", sources=[], answerable=True, mode=ChatMode(mode),
                             conversation_id=conversation_id)
 

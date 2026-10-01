@@ -337,11 +337,19 @@ CHAT_RATE_LIMIT_WINDOW_S: float = _float("CHAT_RATE_LIMIT_WINDOW_S", 3600.0)  # 
 # 20 an hour is a question every three minutes sustained for an hour — beyond
 # any real reading session, and it stops a runaway loop within a minute.
 CHAT_RATE_LIMIT_PER_USER: int = _int("CHAT_RATE_LIMIT_PER_USER", 20)
-# The pilot-wide ceiling, counted from rows already in chat.messages rather
-# than a counter of its own — durable, shared across instances, and it
-# survives the scale-to-zero that would reset an in-process daily count
-# exactly when testers come back after a break. Resets at UTC midnight.
+# The pilot-wide ceiling, counted from metering.provider_attempts: every turn
+# that reached a provider, answered or failed (agent-forge-harness-u2uj).
+# Durable, shared across instances, and it survives the scale-to-zero that
+# would reset an in-process daily count exactly when testers come back after a
+# break. Resets at UTC midnight.
 CHAT_DAILY_CAP: int = _int("CHAT_DAILY_CAP", 500)
+
+# Per account (agent-forge-harness-u2uj): every operation billed to one account
+# since UTC midnight -- chat turns, tool attempts and AI edits -- counted from
+# the same ledger, so one account cannot spend the pilot's day and a
+# failed-but-billed turn still counts. Checked before the pilot-wide cap. 0 (or
+# less) refuses every turn: an operator lowers it, never disables it.
+CHAT_ACCOUNT_DAILY_CAP: int = _int("CHAT_ACCOUNT_DAILY_CAP", 100)
 
 # --- Workbench write throttle (agent-forge-harness-531x) -------------------
 # Every Workbench mutation (campaigns, documents, versions, timeline, groups,
