@@ -1080,10 +1080,10 @@ class DocumentStore(Protocol):
         **It changes the link and nothing else.** No timestamp (so no `now`),
         no write revision, no version — and no campaign lock and no revision
         advance, for `set_archived`'s reason. Linking widens what a seat may
-        be shown, so the route that calls it (`1kg.2.2` for the Participants
-        panel, `1kg.5.2` for the document side) takes the campaign lock first
-        and advances the revision (RQ-4, RQ-10), and writes the
-        `participant.linked` audit row that names this document (SEC-38).
+        be shown, so the route that calls it (`service/document_lifecycle_api.py`,
+        q156) takes the campaign lock first and advances the revision (RQ-4,
+        RQ-10), and writes the `participant.linked` audit row that names this
+        document (SEC-38).
         """
         ...  # pragma: no cover - structural type
 
@@ -1102,8 +1102,9 @@ class DocumentStore(Protocol):
         the campaign lock; its second clears the link under the exclusive
         campaign lock, scans again and advances the revision, in the request,
         answering "not applied yet" when the lock cannot be had in time (RC-15).
-        All of that is the route's (`1kg.2.2`, `1kg.5.2`). This primitive holds
-        the document row, clears one column and writes no timestamp.
+        All of that is the route's (`service/document_lifecycle_api.py`, q156).
+        This primitive holds the document row, clears one column and writes no
+        timestamp.
         """
         ...  # pragma: no cover - structural type
 

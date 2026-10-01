@@ -131,6 +131,14 @@ PROTECTED_ROUTES: list[Route] = [
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/delete",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/delete",
      {"schema_version": 1, "password": "password123"}),
+    # q156: the character-sheet link.
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/link/{participant_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/link/prt_aaaaaaaaaaaaaaaaaaaaaa",
+     None),
+    ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unlink",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/unlink", None),
+    ("GET", "/campaigns/{campaign_id}/documents/{document_id}/link",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa/link", None),
     # 1kg.8.1.2, live for this module only (the `store` fixture switches media on).
     ("POST", "/campaigns/{campaign_id}/assets", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets",
      {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",

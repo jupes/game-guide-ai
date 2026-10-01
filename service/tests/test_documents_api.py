@@ -1038,7 +1038,8 @@ def test_no_private_text_reaches_a_refusal_or_a_log_line(
 
 def test_the_openapi_of_the_document_routes_names_no_owner() -> None:
     paths = {path: item for path, item in app.openapi()["paths"].items() if "/documents" in path or "/library" in path}
-    assert len(paths) == 10
+    # 1kg.5.2's ten, plus q156's three: link, unlink and the read.
+    assert len(paths) == 13
     text = json.dumps(paths)
     assert "owner_id" not in text and "password" not in text
 

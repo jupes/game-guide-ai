@@ -81,6 +81,7 @@ import {
   GROUP_NAME_MAX_CHARS,
   GroupCreateRequestSchema,
   GroupPatchRequestSchema,
+  CharacterSheetLinkSchema,
   SEAT_ALIAS_MAX_CHARS,
   SEAT_STATUSES,
   SeatCreateRequestSchema,
@@ -1950,5 +1951,34 @@ describe('the groups family (btb)', () => {
       expect(request(` ${dice.repeat(GROUP_NAME_MAX_CHARS)} `).success).toBe(true)
       expect(request(dice.repeat(GROUP_NAME_MAX_CHARS + 1)).success).toBe(false)
     }
+  })
+})
+
+describe('the character-sheet link (q156)', () => {
+  it('knows the link_taken code, and still reads an unknown code as generic', () => {
+    expect(isKnownErrorCode('link_taken')).toBe(true)
+    expect(readErrorBody({ detail: { code: 'link_taken', message: 'Fixed.', retryable: false } })).toEqual({
+      kind: 'workbench',
+      info: { code: 'link_taken', message: 'Fixed.', retryable: false },
+    })
+  })
+
+  it('refuses seat_active without a live seat, and accepts every other shape', () => {
+    const base = { schema_version: 1, document_id: 'doc_aaaaaaaaaaaaaaaaaaaaaa' }
+    expect(CharacterSheetLinkSchema.safeParse({ ...base, participant_id: null, seat_active: false }).success)
+      .toBe(true)
+    expect(
+      CharacterSheetLinkSchema.safeParse({ ...base, participant_id: 'prt_aaaaaaaaaaaaaaaaaaaaaa', seat_active: true })
+        .success,
+    ).toBe(true)
+    expect(
+      CharacterSheetLinkSchema.safeParse({
+        ...base,
+        participant_id: 'prt_aaaaaaaaaaaaaaaaaaaaaa',
+        seat_active: false,
+      }).success,
+    ).toBe(true)
+    expect(CharacterSheetLinkSchema.safeParse({ ...base, participant_id: null, seat_active: true }).success)
+      .toBe(false)
   })
 })

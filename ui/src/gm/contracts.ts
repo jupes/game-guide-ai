@@ -142,7 +142,7 @@ export const KNOWN_ERROR_CODES = [
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
   'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',
   'document_not_archived', 'inactive', 'cross_site', 'screen_limit', 'live_elsewhere', 'group_name_taken',
-  'group_cap_reached', 'not_in_sources', 'account_limit_reached',
+  'group_cap_reached', 'not_in_sources', 'link_taken', 'account_limit_reached',
 ] as const
 export type KnownErrorCode = (typeof KNOWN_ERROR_CODES)[number]
 
@@ -2778,6 +2778,23 @@ export const GroupPatchRequestSchema = refusingProtoKeys(
 )
 export type GroupPatchRequest = z.infer<typeof GroupPatchRequestSchema>
 
+/** `GET /campaigns/{id}/documents/{id}/link` (q156): the seat a character sheet
+ * is linked to, or null. The link survives the seat's removal (AUD-16), so
+ * `participant_id` may name a removed seat; `seat_active` says whether it is
+ * live. GM-only, never on a table channel. Ids only: no alias, no document
+ * content. */
+export const CharacterSheetLinkSchema = z
+  .object({
+    schema_version: z.literal(CONTRACT_VERSION),
+    document_id: OpaqueIdSchema,
+    participant_id: OpaqueIdSchema.nullable(),
+    seat_active: z.boolean(),
+  })
+  .refine((v) => v.participant_id !== null || !v.seat_active, {
+    message: 'an unlinked sheet has no active seat',
+  })
+export type CharacterSheetLink = z.infer<typeof CharacterSheetLinkSchema>
+
 /** Name → schema, in the order `contracts/workbench/v1/schemas.json` lists them. */
 export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   Timestamp: TimestampSchema,
@@ -2852,6 +2869,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   GroupPage: GroupPageSchema,
   GroupCreateRequest: GroupCreateRequestSchema,
   GroupPatchRequest: GroupPatchRequestSchema,
+  CharacterSheetLink: CharacterSheetLinkSchema,
 }
 
 // ── Forward-version behaviour ────────────────────────────────────────────────

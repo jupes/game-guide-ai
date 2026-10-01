@@ -15,9 +15,10 @@ without a migration. Nor is there one writer for the thirty-one that are here:
 the session and screen rows are written by `service/table_sessions.py`
 (`1kg.2.3`), the campaign's Conclude and Reopen by the tavern's route (bead cfx),
 `asset.deleted` by the media bead's delete route (`1kg.8.1.3`), reveal's three
-by `1kg.7.1`'s reveal service, a document's archive, unarchive and delete by
-`service/document_lifecycle_api.py` (`1kg.5.2`), the five `group.*` rows by
-`btb`'s group routes (`service/groups_api.py`), the rest by `1kg.2.2`'s
+by `1kg.7.1`'s reveal service, a document's archive, unarchive and delete, and
+`participant.linked` and `participant.unlinked`, by
+`service/document_lifecycle_api.py` (`1kg.5.2`, q156), the five `group.*` rows
+by `btb`'s group routes (`service/groups_api.py`), the rest by `1kg.2.2`'s
 campaign and seat routes.
 The reason is ownership, not use.
 
