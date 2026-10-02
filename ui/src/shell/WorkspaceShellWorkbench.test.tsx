@@ -16,7 +16,8 @@ import userEvent from '@testing-library/user-event'
 import { ThemeProvider } from '../ds/theme'
 import { installMatchMediaWidth, type MatchMediaWidthStub } from '../testing/matchMediaWidth'
 import {
-  flush, live, mountSelected, mountWorkbench, run, type MountOptions, type Route, defaultWorkbenchRoute,
+  flush, libraryRoute, live, mountSelected, mountWorkbench, run, type MountOptions, type Route, defaultWorkbenchRoute,
+  type LibraryRow,
 } from '../testing/workbenchHarness'
 import { ConversationStoreProvider } from './ConversationStoreContext'
 import { MemoryConversationStore } from './conversationStore'
@@ -430,6 +431,110 @@ describe('the loss guard dialog and announcer at the shell root (C-11)', () => {
   })
 })
 
+const ROWS: Readonly<Record<string, readonly LibraryRow[]>> = {
+  npcs: [{ id: 'doc_a', type: 'npc', title: 'Ondrey' }],
+}
+
+/** A wire tool entry whose result is a document link (the shape `/timeline` serves). */
+const TOOL_ENTRY = {
+  schema_version: 1,
+  entry_kind: 'tool',
+  entry_id: 'ent_77aa12bd',
+  created_at: '2026-09-16T19:35:00Z',
+  brief: 'a ferryman',
+  invocation: {
+    schema_version: 1,
+    invocation_id: 'inv_0a1b2c3d4e5f6a7b',
+    tool_id: 'npc',
+    status: 'done',
+    attempt: 1,
+    cancel_requested: false,
+    created_at: '2026-09-16T19:35:00Z',
+    updated_at: '2026-09-16T19:35:20Z',
+    result: {
+      result_kind: 'document',
+      tool_id: 'npc',
+      prose: 'A ferryman who remembers every debt.',
+      suggestions: [],
+      document: { document_id: 'doc_a', type: 'npc', title: 'Ondrey the Ferryman', library_category: 'npcs' },
+    },
+    error: null,
+  },
+}
+
+const THREAD = {
+  schema_version: 1, conversation_id: 'cnv_1', campaign_id: 'cmp_A', title: null, started_mode: 'gm',
+  created_at: '2026-09-16T19:20:11Z', updated_at: null, archived_at: null,
+}
+
+const withThread = (rows: Readonly<Record<string, readonly LibraryRow[]>>): Route => (call) => {
+  if (call.url === '/conversations/cnv_1') return { status: 200, body: THREAD }
+  if (call.url.startsWith('/conversations/cnv_1/timeline')) {
+    return { status: 200, body: { schema_version: 1, conversation_id: 'cnv_1', items: [TOOL_ENTRY], next_cursor: null } }
+  }
+  return libraryRoute(rows)(call)
+}
+
+describe('the documents list in the shell (I-2) and where focus lands on close (C-3, CANVAS-32)', () => {
+  it('the rail’s Campaign documents button opens the drawer and lands on the documents list', async () => {
+    const user = userEvent.setup()
+    await mountShell(900, { route: libraryRoute(ROWS) })
+    await user.click(screen.getByRole('button', { name: 'Campaign documents' }))
+    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Campaign documents' })).toHaveFocus()
+    // The same drawer, the same single list: nothing was fetched twice for it.
+  })
+
+  it('the rail has no Campaign documents button for a player, or in Sage', async () => {
+    const user = userEvent.setup()
+    await mountShell(900, { route: libraryRoute(ROWS) })
+    expect(screen.getByRole('button', { name: 'Campaign documents' })).toBeInTheDocument()
+    await user.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'Sage' }))
+    expect(screen.queryByRole('button', { name: 'Campaign documents' })).toBeNull()
+  })
+
+  it('1280: a sidebar row opens the document, and closing it returns focus to that very row', async () => {
+    const user = userEvent.setup()
+    await mountShell(1280, { route: libraryRoute(ROWS) })
+    const row = await screen.findByRole('button', { name: /Ondrey/ })
+    await user.click(row)
+    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
+    await waitFor(() => expect(canvasHeading()).toHaveFocus())
+    expect(root()).toHaveAttribute('data-nav', 'rail')
+    await user.click(screen.getByRole('button', { name: 'Close canvas' }))
+    await waitFor(() => expect(root()).toHaveAttribute('data-nav', 'sidebar'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Ondrey/ })).toHaveFocus())
+  })
+
+  it('900: a drawer row opens the document and closes the drawer; closing returns focus to the rail’s Open navigation (C-3a)', async () => {
+    const user = userEvent.setup()
+    await mountShell(900, { route: libraryRoute(ROWS) })
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+    await user.click(await screen.findByRole('button', { name: /Ondrey/ }))
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull()
+    await waitFor(() => expect(canvasHeading()).toHaveFocus())
+    await user.click(screen.getByRole('button', { name: 'Close canvas' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveFocus())
+  })
+
+  it('375: a link in the chat shows the Canvas view, and Back returns focus to that link', async () => {
+    const user = userEvent.setup()
+    await mountShell(375, {
+      route: withThread({}),
+      hash: '#campaign=cmp_A&conversation=cnv_1',
+      restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' },
+    })
+    const link = await screen.findByRole('button', { name: /Ondrey the Ferryman/ })
+    await user.click(link)
+    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
+    expect(live.state.view).toBe('canvas')
+    expect(columns().chat).toHaveAttribute('data-concealed', 'true')
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(columns().canvas).toBeNull())
+    await waitFor(() => expect(screen.getByRole('button', { name: /Ondrey the Ferryman/ })).toHaveFocus())
+  })
+})
+
 describe('what the shell never does (C-12, C-13)', () => {
   it('opening, closing and switching views make no request but the one document GET', async () => {
     const user = userEvent.setup()
@@ -442,7 +547,9 @@ describe('what the shell never does (C-12, C-13)', () => {
     await user.click(screen.getByRole('button', { name: 'Back' }))
     await flush()
     expect(server.docCalls()).toHaveLength(1)
-    expect(server.calls.filter((call) => call.method !== 'GET')).toEqual([])
+    // Only GETs, plus the documents list's read of the library by POST (4 categories, once).
+    expect(server.calls.filter((call) => call.method !== 'GET' && !call.url.endsWith('/library'))).toEqual([])
+    expect(server.libraryCalls()).toHaveLength(4)
   })
 
   it('a failed restore shows the panel in the canvas column with Close, and Close clears the key', async () => {

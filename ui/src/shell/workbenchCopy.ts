@@ -11,6 +11,9 @@
  * and announced, never a key, an id, a storage value or a log field.
  */
 
+/** The id of the documents section's heading, which the rail's Campaign documents button focuses. */
+export const DOCUMENTS_HEADING_ID = 'workbench-documents-heading'
+
 export const WORKBENCH_COPY = {
   // ── The canvas column ──
   /** Visible while a document loads; not a live region (A-29). */

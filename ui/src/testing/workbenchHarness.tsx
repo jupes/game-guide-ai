@@ -110,6 +110,33 @@ export const defaultWorkbenchRoute: Route = ({ url }) => {
   return { status: 404, body: {} }
 }
 
+export interface LibraryRow {
+  id: string
+  type: string
+  title: string
+  updatedAt?: string
+}
+
+/**
+ * The default route plus `POST /campaigns/{cid}/library`: the page for the category the
+ * body asks for, from `rows` (a category with no entry is an empty page). `campaignOf`
+ * lets a test echo another campaign, and `failing` makes a category answer 503.
+ */
+export function libraryRoute(
+  rows: Readonly<Record<string, readonly LibraryRow[]>>,
+  options: { campaignOf?: (requested: string) => string; failing?: readonly string[]; fallback?: Route } = {},
+): Route {
+  const fallback = options.fallback ?? defaultWorkbenchRoute
+  return (call) => {
+    const match = /^\/campaigns\/(cmp_\w+)\/library$/.exec(call.url)
+    if (match === null || call.method !== 'POST') return fallback(call)
+    const body = JSON.parse(call.body ?? '{}') as { category: string }
+    if (options.failing?.includes(body.category) === true) return { status: 503, body: {} }
+    const echoed = options.campaignOf?.(match[1]) ?? match[1]
+    return { status: 200, body: libraryBody(echoed, body.category, rows[body.category] ?? []) }
+  }
+}
+
 export function stubServer(route: Route = defaultWorkbenchRoute) {
   const calls: Call[] = []
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {

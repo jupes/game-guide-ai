@@ -56,7 +56,7 @@ import { NavRail } from './NavRail'
 import { NavSettings } from './NavSettings'
 import { TopBar, type TopBarNavToggle } from './TopBar'
 import { WorkbenchAnnouncer } from './WorkbenchAnnouncer'
-import { WORKBENCH_COPY } from './workbenchCopy'
+import { DOCUMENTS_HEADING_ID, WORKBENCH_COPY } from './workbenchCopy'
 import { WorkbenchViewSwitch } from './WorkbenchViewSwitch'
 import './WorkspaceShell.css'
 
@@ -125,6 +125,8 @@ function WorkspaceShellBody(): React.JSX.Element {
   const lastFocusedRef = React.useRef<Element | null>(null)
   const focusColumnRef = React.useRef<Column | null>(null)
   const refocusRef = React.useRef<Element | null>(null)
+  /** The rail's Campaign documents button opened the drawer: land on the documents heading. */
+  const toDocumentsRef = React.useRef(false)
   // The button that opens the drawer is the rail's where the rail is, TopBar's otherwise.
   const openerRef = presentation === 'rail' ? railButtonRef : menuButtonRef
 
@@ -136,6 +138,10 @@ function WorkspaceShellBody(): React.JSX.Element {
     setOpen(true)
   }, [openerRef, setDrawerOpener])
   const closeDrawer = React.useCallback(() => setOpen(false), [])
+  const openDocuments = React.useCallback(() => {
+    toDocumentsRef.current = true
+    openDrawer()
+  }, [openDrawer])
 
   // Focus into the drawer on open (its name is announced first), and back to the
   // button that opened it on an open -> closed transition while a drawer is still the
@@ -146,7 +152,11 @@ function WorkspaceShellBody(): React.JSX.Element {
     const wasOpen = wasOpenRef.current
     wasOpenRef.current = drawerOpen
     if (drawerOpen && !wasOpen) {
-      navHostRef.current?.focus()
+      const toDocuments = toDocumentsRef.current
+      toDocumentsRef.current = false
+      // The drawer's name is announced first; the documents button then lands on its list.
+      if (toDocuments) document.getElementById(DOCUMENTS_HEADING_ID)?.focus()
+      if (!toDocuments || document.activeElement === document.body) navHostRef.current?.focus()
     } else if (!drawerOpen && wasOpen && hasDrawer) {
       openerRef.current?.focus()
     }
@@ -276,6 +286,7 @@ function WorkspaceShellBody(): React.JSX.Element {
             expanded={drawerOpen}
             onOpen={openDrawer}
             openButtonRef={railButtonRef}
+            onOpenDocuments={workbench ? openDocuments : undefined}
             inert={drawerOpen}
           />
         )}

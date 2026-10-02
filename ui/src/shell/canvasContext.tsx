@@ -632,6 +632,12 @@ export function useCanvasState(): CanvasState {
   return React.useContext(CanvasStateContext) ?? INERT_STATE
 }
 
+/** Whether a canvas provider is mounted: the shell always has one; a bare LeftNav (a story, an old test) does not, and shows no documents list. */
+// eslint-disable-next-line react-refresh/only-export-components -- hook co-located with provider
+export function useCanvasMounted(): boolean {
+  return React.useContext(CanvasActionsContext) !== null
+}
+
 /** The canvas actions and refs: stable for the provider's life, so reading them never re-renders. */
 // eslint-disable-next-line react-refresh/only-export-components -- hook co-located with provider
 export function useCanvasActions(): CanvasActions {

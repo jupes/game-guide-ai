@@ -83,21 +83,65 @@ function timelinePage(count: number) {
   return { schema_version: 1, conversation_id: THREAD_ID, items, next_cursor: null }
 }
 
+/** A tool turn whose result is a document link: the control that opens a document from the chat. */
+const LINK_TITLE = 'Ondrey the Ferryman'
+const TOOL_ENTRY = {
+  schema_version: 1,
+  entry_kind: 'tool',
+  entry_id: 'ent_story_tool_0001',
+  created_at: '2026-09-16T19:35:00Z',
+  brief: 'a ferryman',
+  invocation: {
+    schema_version: 1,
+    invocation_id: 'inv_0a1b2c3d4e5f6a7b',
+    tool_id: 'npc',
+    status: 'done',
+    attempt: 1,
+    cancel_requested: false,
+    created_at: '2026-09-16T19:35:00Z',
+    updated_at: '2026-09-16T19:35:20Z',
+    result: {
+      result_kind: 'document',
+      tool_id: 'npc',
+      prose: 'A ferryman who remembers every debt.',
+      suggestions: [],
+      document: { document_id: DOC_ID, type: 'npc', title: LINK_TITLE, library_category: 'npcs' },
+    },
+    error: null,
+  },
+}
+
 interface ApiOptions {
   /** Settled turns in the thread. */
   turns?: number
   /** How long `/chat` takes to answer. */
   chatMs?: number
+  /** The thread ends with a tool turn whose result is a document link. */
+  toolLink?: boolean
 }
 
-function workbenchApi({ turns = 40, chatMs = 0 }: ApiOptions = {}) {
-  return stubFetch((url) => {
+function workbenchApi({ turns = 40, chatMs = 0, toolLink = false }: ApiOptions = {}) {
+  return stubFetch((url, init) => {
+    if (url === `/campaigns/${CAMPAIGN_ID}/library`) {
+      const { category } = JSON.parse(String(init?.body ?? '{}')) as { category: string }
+      const items =
+        category === 'npcs'
+          ? [{
+              document_id: DOC_ID, type: 'npc', title: TITLE, qualifier: '', tags: [], archived: false,
+              updated_at: '2026-09-16T19:36:00Z',
+            }]
+          : []
+      return json({ schema_version: 1, campaign_id: CAMPAIGN_ID, category, items, next_cursor: null })
+    }
     if (url.includes('/models')) return json(CATALOG)
     if (url === `/campaigns/${CAMPAIGN_ID}`) return json(CAMPAIGN)
     if (url === `/campaigns/${CAMPAIGN_ID}/documents/${DOC_ID}`) return json(DOCUMENT)
     if (url.startsWith(`/campaigns/${CAMPAIGN_ID}/documents/${DOC_ID}/versions`)) return json(HISTORY)
     if (url === `/conversations/${THREAD_ID}`) return json(THREAD)
-    if (url.startsWith(`/conversations/${THREAD_ID}/timeline`)) return json(timelinePage(turns))
+    if (url.startsWith(`/conversations/${THREAD_ID}/timeline`)) {
+      const page = timelinePage(turns)
+      return json(toolLink ? { ...page, items: [TOOL_ENTRY, ...page.items] } : page)
+    }
     if (url.includes('/attachments')) return json({ conversation_id: THREAD_ID, attachments: [] })
     if (url.includes('/chat')) {
       const answer = json({ answer: 'A settled answer.', sources: [], answerable: true, conversation_id: THREAD_ID })
@@ -367,5 +411,57 @@ export const SkipLinksByKeyboard: Story = {
     await tabTo(toDocument, 40)
     await userEvent.keyboard('{Enter}')
     await expect(canvas.getByRole('heading', { level: 2, name: TITLE })).toHaveFocus()
+  },
+}
+
+// ── Where focus lands when the canvas closes (C-3, CANVAS-32), measured with real visibility ──
+
+/** 1280: a sidebar row opens the document and the sidebar steps aside; closing brings it back and focuses that row. */
+export const FocusReturnsToSidebarRow: Story = {
+  ...atViewport('wide1280'),
+  decorators: [withWorkbench(null)],
+  play: async ({ canvasElement }) => {
+    await expectViewport('wide1280')
+    const canvas = within(canvasElement)
+    const row = await canvas.findByRole('button', { name: new RegExp(TITLE) })
+    await userEvent.click(row)
+    await canvas.findByRole('heading', { level: 2, name: TITLE })
+    // The row is connected but its sidebar is gone from the layout: the case a plain isConnected check misses.
+    await waitFor(() => expect(row.checkVisibility()).toBe(false))
+    await userEvent.click(canvas.getByRole('button', { name: 'Close canvas' }))
+    await waitFor(() => expect(canvas.getByRole('button', { name: new RegExp(TITLE) })).toHaveFocus())
+    await expect(canvas.getByRole('navigation', { name: 'Main navigation' })).toBeVisible()
+  },
+}
+
+/** 900: a row in the drawer opens the document; closing returns focus to the rail's Open navigation, which opened the drawer. */
+export const FocusReturnsToRailFromDrawerRow: Story = {
+  ...atViewport('medium900'),
+  decorators: [withWorkbench(null)],
+  play: async ({ canvasElement }) => {
+    await expectViewport('medium900')
+    const canvas = within(canvasElement)
+    await userEvent.click(await canvas.findByRole('button', { name: 'Open navigation' }))
+    await userEvent.click(await canvas.findByRole('button', { name: new RegExp(TITLE) }))
+    await canvas.findByRole('heading', { level: 2, name: TITLE })
+    await userEvent.click(canvas.getByRole('button', { name: 'Close canvas' }))
+    await waitFor(() => expect(canvas.getByRole('button', { name: 'Open navigation' })).toHaveFocus())
+  },
+}
+
+/** 375: a link in the chat opens the Canvas view; Back returns focus to that link. */
+export const FocusReturnsToChatLinkOnPhone: Story = {
+  ...atViewport('phone375'),
+  decorators: [withWorkbench(null)],
+  beforeEach: workbenchApi({ turns: 2, toolLink: true }),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone375')
+    const canvas = within(canvasElement)
+    const link = await canvas.findByRole('button', { name: new RegExp(LINK_TITLE) })
+    await userEvent.click(link)
+    await canvas.findByRole('heading', { level: 2, name: TITLE })
+    await expect(canvas.getByRole('button', { name: 'Canvas' })).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(canvas.getByRole('button', { name: 'Back' }))
+    await waitFor(() => expect(canvas.getByRole('button', { name: new RegExp(LINK_TITLE) })).toHaveFocus())
   },
 }
