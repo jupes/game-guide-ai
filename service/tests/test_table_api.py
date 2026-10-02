@@ -37,7 +37,7 @@ from httpx import Response
 
 import config
 from service import app as appmod
-from service import ratelimit, security_headers, table_api, table_session_api
+from service import ratelimit, reveals_api, security_headers, table_api, table_session_api
 from service.app import app, get_auth_store
 from service.audit_log import InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
@@ -49,7 +49,7 @@ from service.jobs import InMemoryJobQueue
 from service.participant_store import InMemoryParticipantStore
 from service.ratelimit import SlidingWindowLimiter
 from service.reconciliation import enqueue_reconciliation
-from service.reveal_scope import ParticipantsAudience, TableAudience
+from service.reveal_scope import Audience, ParticipantsAudience, TableAudience
 from service.reveal_store import InMemoryRevealStore
 from service.reveals import DisplayCommand, Reveals, slot_clear_for
 from service.session import SessionData, encode_session
@@ -710,7 +710,7 @@ def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
 # ── The snapshot read (1kg.7.2 PR-2; ID-15, SEC-46, SEC-47, T-1, T-23) ───────
 
 SNAPSHOT_AT = "/table/snapshot?campaign_id="
-CANARY = {
+CANARY: dict[str, Any] = {
     "name": "Canary-Name-9f1c",
     "qualifier": "Canary-Qualifier-3a7d",
     "voice": "Canary-Voice-55b0",
@@ -727,6 +727,7 @@ class _Reading:
     ids: set[str]
     grant: str
     grant_id: str
+    document: str
 
 
 def _get(
@@ -779,13 +780,12 @@ def reading(world: _World) -> Iterator[_Reading]:
         return str(made.id)
 
     shown, private, held = new_document(), new_document(), new_document()
-    for n, (document, audience, mask) in enumerate(
-        [
-            (shown, TableAudience(), ("name",)),
-            (private, ParticipantsAudience(frozenset({seat_ids[0]})), ("voice",)),
-            (held, ParticipantsAudience(frozenset({seat_ids[1]})), ("voice",)),
-        ]
-    ):
+    plan: list[tuple[str, Audience, tuple[str, ...]]] = [
+        (shown, TableAudience(), ("name",)),
+        (private, ParticipantsAudience(frozenset({seat_ids[0]})), ("voice",)),
+        (held, ParticipantsAudience(frozenset({seat_ids[1]})), ("voice",)),
+    ]
+    for n, (document, audience, mask) in enumerate(plan):
         with world.db.transaction() as unit:
             found = world.sessions.get(unit, session)
         assert found is not None
@@ -795,12 +795,16 @@ def reading(world: _World) -> Iterator[_Reading]:
         served.display(command, owner_id=GM_A, now=T0)
     reads = TableReads(world.counting, rows, documents)
     app.dependency_overrides[appmod.get_table_reads] = lambda: reads
+    app.dependency_overrides[appmod.get_reveals] = lambda: served
+    app.dependency_overrides[reveals_api.get_clock] = lambda: world.now[0]
     secret = world.grant(campaign)
     live = world.lifecycle.resolve_screen(secret, now=T0)
     assert live is not None
     ids = {campaign, session, shown, private, held, *seat_ids, secret, live.grant_id}
-    yield _Reading(world, campaign, session, ids, secret, live.grant_id)
+    yield _Reading(world, campaign, session, ids, secret, live.grant_id, new_document())
     app.dependency_overrides.pop(appmod.get_table_reads, None)
+    app.dependency_overrides.pop(appmod.get_reveals, None)
+    app.dependency_overrides.pop(reveals_api.get_clock, None)
 
 
 def test_every_viewers_bytes_hold_the_masked_text_and_no_other_field_and_no_id(reading: _Reading) -> None:
@@ -820,6 +824,8 @@ def test_every_viewers_bytes_hold_the_masked_text_and_no_other_field_and_no_id(r
         assert answer.headers["cache-control"] == "no-store"
         assert answer.headers["cross-origin-resource-policy"] == "same-origin"
         assert answer.headers["content-type"].startswith("application/json")
+        assert answer.headers["x-content-type-options"] == "nosniff"
+        assert answer.headers["referrer-policy"] == "strict-origin-when-cross-origin"
         TableSnapshot.model_validate_json(answer.content)
         raw = answer.content.decode()
         assert CANARY["name"] in raw, name
@@ -847,6 +853,9 @@ def test_everyone_not_entitled_gets_the_one_inactive(reading: _Reading) -> None:
         "another kind of id": _get(SNAPSHOT_AT + "doc_" + "z" * 22, account=GM_A),
         "no query": _get("/table/snapshot", account=GM_A),
         "an empty query": _get(SNAPSHOT_AT, account=GM_A),
+        "a live screen of this campaign, asked about another": _get(
+            SNAPSHOT_AT + "cmp_" + "z" * 22, account=BYSTANDER, grant=reading.grant
+        ),
     }
     shapes = {name: _shape(answer) for name, answer in refusals.items()}
     assert len(set(shapes.values())) == 1, shapes
@@ -930,3 +939,50 @@ def test_a_degraded_instance_and_a_database_error_are_a_retryable_503_that_names
         failed = _get(at, account=GM_A)
     assert (failed.status_code, failed.json()["detail"]["retryable"]) == (503, True)
     assert "OperationalError" in caplog.text and "Canary" not in caplog.text + failed.text
+
+
+def _confirm_route(reading: _Reading, *, audience: dict[str, Any], mask: list[str], command: str) -> Response:
+    with reading.world.db.transaction() as unit:
+        found = reading.world.sessions.get(unit, reading.session)
+    assert found is not None
+    body = {
+        "schema_version": 1,
+        "command_id": command,
+        "document_id": reading.document,
+        "session_id": reading.session,
+        "reveal_epoch": found.reveal_epoch,
+        "version": 1,
+        "mask": mask,
+        "audience": audience,
+    }
+    return _post(f"/campaigns/{reading.campaign}/reveals", body, account=GM_A)
+
+
+def test_a_confirm_after_a_fact_narrowing_is_refused_at_the_route_and_no_reader_sees_it(reading: _Reading) -> None:
+    """RC-2's route half, end to end through both route families. A Confirm made
+    before a fact-changing narrowing shows (a reader sees it); the narrowing
+    (an archive; a removed seat) lands; the Confirm composed before it is refused
+    (409 for the archived campaign, 422 `audience` for the removed seat) and
+    what a reader sees is byte for byte what it was. Kills: a Confirm that
+    survives an archive or names a removed seat."""
+    world, at = reading.world, SNAPSHOT_AT + reading.campaign
+    shown = _confirm_route(reading, audience={"kind": "table"}, mask=["qualifier"], command="cmd_rc2_before_0001")
+    assert shown.status_code == 200, shown.text
+    assert "Canary-Qualifier" in _get(at, account=CONFIRMED).text, "a Confirm before the narrowing shows"
+    before = _get(at, account=CONFIRMED).content
+    with world.db.transaction() as unit:
+        seats = InMemoryParticipantStore(world.db)
+        removed = seats.add(unit, reading.campaign, alias="Gone", now=T0).id
+        seats.offer(unit, reading.campaign, removed, user_id=BYSTANDER)
+        seats.accept(unit, reading.campaign, removed, user_id=BYSTANDER, now=T0)
+        seats.confirm(unit, reading.campaign, removed, now=T0)
+    with world.db.transaction() as unit:
+        InMemoryParticipantStore(world.db).remove(unit, reading.campaign, removed, now=T0)
+    to_removed = {"kind": "participants", "participant_ids": [str(removed)]}
+    gone = _confirm_route(reading, audience=to_removed, mask=["voice"], command="cmd_rc2_removed_0001")
+    assert (gone.status_code, gone.json()["detail"]["field"]) == (422, "audience")
+    with world.db.transaction() as unit:
+        world.campaigns.set_archived(unit, reading.campaign, owner_id=GM_A, archived=True)
+    late = _confirm_route(reading, audience={"kind": "table"}, mask=["voice"], command="cmd_rc2_archived_001")
+    assert (late.status_code, late.json()["detail"]["code"]) == (409, "conflict")
+    assert _get(at, account=CONFIRMED).content == before, "nothing a reader sees changed"

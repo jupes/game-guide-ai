@@ -148,9 +148,11 @@ def test_an_empty_slot_has_no_content_and_a_shown_one_has_only_its_masked_field(
 def test_one_principal_is_named(rig: Rig) -> None:
     """kills: reading as nobody, or as two principals at once."""
     reads = TableReads(rig.twin.db, rig.rows, rig.twin.documents)
-    for both in ({}, {"account_id": 1, "grant_id": "tcr_" + "a" * 22}):
-        with pytest.raises(ValueError, match="one principal"):
-            reads.snapshot(rig.campaign, now=datetime.now(UTC), **both)
+    now = datetime.now(UTC)
+    with pytest.raises(ValueError, match="one principal"):
+        reads.snapshot(rig.campaign, now=now)
+    with pytest.raises(ValueError, match="one principal"):
+        reads.snapshot(rig.campaign, now=now, account_id=1, grant_id="tcr_" + "a" * 22)
 
 
 class _Pinned(InMemoryDocumentStore):
