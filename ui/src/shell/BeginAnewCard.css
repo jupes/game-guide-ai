@@ -1,0 +1,33 @@
+/* ── BeginAnewCard (agent-forge-harness-30c, PR-1) ───────────────────────────
+   An outlined card holding the create form. Tokens only; the form's own layout
+   is CampaignPicker.css's `.campaign-picker__form`. */
+
+.begin-anew {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+  min-width: 0;
+}
+
+.begin-anew__head {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-2);
+}
+
+.begin-anew__icon {
+  color: var(--md-sys-color-primary);
+}
+
+.begin-anew__title {
+  margin: 0;
+  font-family: var(--aether-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.begin-anew__line {
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+}

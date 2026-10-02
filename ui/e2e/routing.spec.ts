@@ -37,7 +37,7 @@ test('a real in-app Back after entering the workspace lands on landing, at "/"',
   await page.goto('/')
   await signIn(page, accounts[0])
 
-  await page.getByRole('button', { name: 'Enter the Tavern' }).click()
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
   await expect(page).toHaveURL(/\/workspace$/)
 
   await page.goBack()

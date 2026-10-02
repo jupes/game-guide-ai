@@ -37,7 +37,7 @@ test('production app preserves a conversation and emits bounded performance evid
   await page.getByRole('button', { name: 'Create account' }).click()
 
   await expect(page.getByRole('button', { name: 'Enter the Tavern' })).toBeVisible()
-  await page.getByRole('button', { name: 'Enter the Tavern' }).click()
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
   const channels = page.getByRole('navigation', { name: 'Channels' })
   await channels.getByRole('button', { name: 'Spell' }).click()
   await page.getByRole('button', { name: 'New conversation' }).click()

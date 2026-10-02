@@ -287,10 +287,10 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
 describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)', () => {
   it('T-9 a pick lands selected in its GM channel with no conversation open; Back gives /tavern with an empty hash (kills M-14, X-frag)', async () => {
     bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_A' }))
     await waitFor(() => expect(window.location.pathname + window.location.hash).toBe('/workspace#campaign=cmp_A'))
     expect(live.c.selection.kind).toBe('selected')
     expect(live.nav.mode).toBe('gm')
@@ -307,7 +307,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 
   it('T-10 closes a legacy GM conversation on the pick; the first campaign send makes its own thread, naming neither the legacy id (Critic 44, kills M-16)', async () => {
     const server = bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P1}{Enter}`)
@@ -321,7 +321,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 
     openTavern()
     const pick = server.calls.length
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_A' }))
     await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_A'))
     expect(live.raw.conversationId).toBeNull()
 
@@ -356,7 +356,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 
   it('T-11 first run: exactly one JSON create names the typed campaign, then the new campaign GM channel (Critic 48, kills M-14)', async () => {
     const server = bootProbed('/', { route: listOf([]) })
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
@@ -374,7 +374,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
   it('T-11 a 503 on create leaves the typed name and the campaign list reachable (Critic 48)', async () => {
     const route: Route = (c) => (c.method === 'POST' && c.url === '/campaigns' ? { status: 503 } : listOf([])(c))
     const server = bootProbed('/', { route })
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
@@ -416,7 +416,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
   it('T-7 a hostile fragment on /tavern selects nothing, names neither id and is stripped to foreign keys (kills M-10)', async () => {
     const server = boot('/tavern#campaign=cmp_A&conversation=cnv_1&x=1')
-    const item = await screen.findByRole('button', { name: 'Name of cmp_A' })
+    const item = await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     await flush()
     await flush()
     expect(server.calls.length).toBeGreaterThan(0)
@@ -427,7 +427,10 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     expect(window.location.hash).toBe('#x=1')
     // Two added assertions (inferred decision): the same claim -- "selects
     // nothing" -- read straight from the DOM, not only from the request log.
-    expect(item).toHaveAttribute('aria-pressed', 'false')
+    // (30c: a campaign card has no pressed state, so the card is shown and
+    // Continue without a campaign -- offered only once something is selected --
+    // is absent.)
+    expect(item).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Continue without a campaign' })).toBeNull()
   })
 
@@ -447,7 +450,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     sessionStorage.removeItem('probe')
 
     // 2. Cold load.
-    await screen.findByRole('button', { name: 'Name of cmp_tavern_probe_1' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_tavern_probe_1' })
     check('cold load')
 
     // 3. Legacy control: a plain prompt still reaches the recall store.
@@ -460,7 +463,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
 
     // 4. The pick.
     openTavern()
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_tavern_probe_1' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_tavern_probe_1' }))
     await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_tavern_probe_1'))
     check('pick')
 
@@ -486,11 +489,11 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
 })
 
 describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
-  /** Enter the Tavern, GM, open `open`: the heading renders as /tavern's `h1`,
+  /** Enter the workspace (the Sage chip), GM, open `open`: the heading renders as /tavern's `h1`,
    * focused, with a fresh history entry and no own fragment key; Back returns
    * to the workspace unchanged, and Forward reopens the tavern. */
-  async function expectTavernRoundTrip(open: () => Promise<void> | void): Promise<void> {
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+  async function expectTavernRoundTrip(open: () => Promise<void> | void, focus: 'prep' | 'heading' = 'prep'): Promise<void> {
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     const kind = live.c.selection.kind
     const len = window.history.length
@@ -498,7 +501,15 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     const heading = await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
     expect(window.location.pathname).toBe('/tavern')
     expect(window.history.length).toBe(len + 1)
-    expect(document.activeElement).toBe(heading)
+    if (focus === 'prep') {
+      // 30c ID-4: once the list settles, focus moves on to the top card's Prep.
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Prep Name of cmp_A' })).toHaveFocus())
+    } else {
+      // An empty list has no card to move to: focus stays on the heading.
+      await screen.findByText('Create your first campaign', { exact: false })
+      await flush()
+      expect(document.activeElement).toBe(heading)
+    }
     expect(window.location.hash).not.toMatch(/campaign=/)
     expect(window.location.hash).not.toMatch(/conversation=/)
     act(() => { window.history.back() })
@@ -515,6 +526,33 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     await expectTavernRoundTrip(() => { openTavern() })
   })
 
+  it('T-30 the Landing CTA opens /tavern for a dm: one new history entry, and Back gives / (30c ID-1)', async () => {
+    const server = bootProbed('/')
+    const len = window.history.length
+    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.history.length).toBe(len + 1)
+    await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
+    act(() => { window.history.back() })
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    expect(await screen.findByRole('button', { name: 'Enter the Tavern' })).toBeInTheDocument()
+  })
+
+  it('T-30 control: the CTA of a player still opens the workspace and makes no campaign request', async () => {
+    const server = bootProbed('/', { role: 'player' })
+    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace'))
+    expect(screen.queryByRole('heading', { name: 'Your Campaigns' })).toBeNull()
+    await flush()
+    expect(server.scoped()).toEqual([])
+  })
+
+  it('T-8c with no campaigns openTavern still lands focus on the heading and round-trips through history (30c ID-4)', async () => {
+    bootProbed('/', { route: listOf([]) })
+    await expectTavernRoundTrip(() => { openTavern() }, 'heading')
+  })
+
   it("T-8b LeftNav's Choose a campaign opens the tavern from uncampaigned GM and round-trips through history, focused (kills M-48)", async () => {
     bootProbed('/')
     await expectTavernRoundTrip(async () => {
@@ -524,13 +562,13 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
 
   it('T-9 veto a guard that refuses the pick leaves the tavern open and the selection at none (kills M-15)', async () => {
     bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     const before = live.raw.conversationId
     live.c.registerSwitchGuard(() => false)
-    await userEvent.click(screen.getByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Prep Name of cmp_A' }))
     await flush()
     expect(window.location.pathname).toBe('/tavern')
     expect(live.c.selection.kind).toBe('none')
@@ -543,10 +581,10 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     const seen: Array<{ campaignId: string | null }> = []
     live.c.registerSwitchGuard((next) => { seen.push(next); return true })
     openTavern()
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     const len = window.history.length
     const mark = server.calls.length
-    await userEvent.click(screen.getByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Prep Name of cmp_A' }))
     await waitFor(() => expect(window.location.pathname + window.location.hash).toBe('/workspace#campaign=cmp_A'))
     expect(live.nav.mode).toBe('gm')
     expect(live.raw.conversationId).toBeNull()
@@ -558,7 +596,7 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
 
     // Guard control: a real switch does run the guard.
     openTavern()
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_B' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_B' }))
     await waitFor(() => expect(seen).toEqual([{ campaignId: 'cmp_B' }]))
   })
 
@@ -579,10 +617,10 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
 
   it('T-12b the none case: no Continue button when nothing was ever selected (positive control)', async () => {
     bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     expect(screen.queryByRole('button', { name: 'Continue without a campaign' })).toBeNull()
   })
 
@@ -663,7 +701,7 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       return defaultRoute(c)
     }
     const server = bootProbed('/', { route })
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P1}{Enter}`)
@@ -727,7 +765,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
       return defaultRoute(c)
     }
     bootProbed('/tavern', { route })
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     await userEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
     const n = getCount
 
@@ -737,7 +775,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     await waitFor(() => expect(getCount).toBe(n + 1))
 
     act(() => { held?.reply({ status: 200, body: page([campaignBody('cmp_A'), campaignBody('cmp_B')]) }) })
-    await screen.findByRole('button', { name: 'Name of cmp_B' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_B' })
     const aResult = a()
     const eResult = e()
     expect(aResult.batches).toBeGreaterThanOrEqual(1)
@@ -764,7 +802,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
 
   it("T-5b signing in as a player over a parked tavern history entry never re-requests it (kills M-7)", async () => {
     const server = bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     openTavern()
     await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
     await userEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
@@ -794,7 +832,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
       ? { status: 200, body: page([campaignBody(owner === 'ada' ? 'cmp_A' : 'cmp_B')]) }
       : defaultRoute(c))
     const server = bootProbed('/tavern', { route })
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
 
     const mark = server.calls.length
     const w = watch('Name of cmp_A')
@@ -811,7 +849,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
 
   it('T-13b a role change at /tavern (same account) resets mode and leaves without a history entry (kills M-41 and M-42)', async () => {
     const server = bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
     await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
@@ -837,7 +875,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     boot('/tavern', { route })
     await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
     act(() => { held?.reply({ status: 200, body: page([campaignBody('cmp_A')]) }) })
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     const result = w()
     expect(result.batches).toBeGreaterThanOrEqual(1)
     expect(result.added).toBe(0)

@@ -785,6 +785,115 @@ describe('a fragment changed outside the app', () => {
   })
 })
 
+// ── 30c PR-1: conclude and reopen (P-1 to P-5) ───────────────────────────────
+
+describe('setConcluded (30c, P-1 to P-5)', () => {
+  const CONCLUDED_AT = '2026-09-20T10:00:00Z'
+  const concludedA = { ...A, concluded_at: CONCLUDED_AT }
+  const concludeRoute: Route = (call) => {
+    if (call.method === 'POST' && call.url === '/campaigns/cmp_A/conclude') return { status: 200, body: concludedA }
+    if (call.method === 'POST' && call.url === '/campaigns/cmp_A/reopen') return { status: 200, body: A }
+    return defaultRoute(call)
+  }
+
+  it('P-1 replaces the listed campaign in place, and leaves the selection and the scope key alone', async () => {
+    const { server } = await mount({ route: concludeRoute })
+    await loaded()
+    await run(() => live.c.selectCampaign(B))
+    const scope = live.c.scope
+    const selection = live.c.selection
+    expect(scope).not.toBeNull()
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('done')
+    expect(server.lines().filter((line) => line.startsWith('POST'))).toEqual(['POST /campaigns/cmp_A/conclude'])
+    expect(live.c.list).toMatchObject({ kind: 'ready', items: [concludedA, B] })
+    expect(live.c.scope).toBe(scope)
+    expect(live.c.selection).toBe(selection)
+    // Reopen puts the answer back: the same call, the other way.
+    expect(await run(() => live.c.setConcluded('cmp_A', false))).toBe('done')
+    expect(server.lines()).toContain('POST /campaigns/cmp_A/reopen')
+    expect(live.c.list).toMatchObject({ items: [A, B] })
+  })
+
+  it('P-1 concluding the SELECTED campaign still changes neither the selection nor the scope key', async () => {
+    await mount({ route: concludeRoute })
+    await loaded()
+    await run(() => live.c.selectCampaign(A))
+    const scope = live.c.scope
+    const selection = live.c.selection
+    await run(() => live.c.setConcluded('cmp_A', true))
+    expect(live.c.scope).toBe(scope)
+    expect(live.c.selection).toBe(selection)
+    expect(live.c.list).toMatchObject({ items: [concludedA, B] })
+  })
+
+  it('P-2 an answer that arrives after an account switch is dropped, and the new list is untouched', async () => {
+    const { server, signal } = await mount({
+      route: (call) => (call.method === 'POST' && call.url.endsWith('/conclude') ? 'defer' : concludeRoute(call)),
+    })
+    await loaded()
+    let outcome: string | null = null
+    act(() => { void live.c.setConcluded('cmp_A', true).then((o) => { outcome = o }) })
+    const post = server.calls.find((c) => c.method === 'POST')
+    expect(post).toBeDefined()
+    await switchAccount(signal, BOB)
+    await loaded()
+    expect(live.c.list).toMatchObject({ items: [A, B] })
+    act(() => post?.reply({ status: 200, body: concludedA }))
+    await flush()
+    expect(outcome).toBe('failed')
+    expect(live.c.list).toMatchObject({ kind: 'ready', items: [A, B] })
+  })
+
+  it('P-3 a 404 re-reads the first page exactly once and answers unavailable', async () => {
+    const { server } = await mount({
+      route: (call) => (call.method === 'POST' ? { status: 404, body: {} } : defaultRoute(call)),
+    })
+    await loaded()
+    const before = server.calls.length
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('unavailable')
+    await flush()
+    expect(server.lines().slice(before)).toEqual(['POST /campaigns/cmp_A/conclude', 'GET /campaigns'])
+  })
+
+  it('a 503 and a network failure answer failed and re-read nothing', async () => {
+    let reply: Reply = { status: 503 }
+    const { server } = await mount({ route: (call) => (call.method === 'POST' ? reply : defaultRoute(call)) })
+    await loaded()
+    const before = server.calls.length
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('failed')
+    reply = 'network'
+    expect(await run(() => live.c.setConcluded('cmp_A', false))).toBe('failed')
+    expect(server.lines().slice(before)).toEqual(['POST /campaigns/cmp_A/conclude', 'POST /campaigns/cmp_A/reopen'])
+    expect(live.c.list).toMatchObject({ items: [A, B] })
+  })
+
+  it('P-4 the inert default resolves failed and makes no request', async () => {
+    const outside = stubServer()
+    vi.stubGlobal('fetch', outside.fetchImpl)
+    const held: { value?: CampaignContextValue } = {}
+    function Bare(): null {
+      const value = useCampaign()
+      React.useLayoutEffect(() => {
+        held.value = value
+      })
+      return null
+    }
+    render(<Bare />)
+    expect(await (held.value as CampaignContextValue).setConcluded('cmp_A', true)).toBe('failed')
+    expect(outside.calls).toHaveLength(0)
+  })
+
+  it('P-5 a disabled account makes no request, and an enabled one (positive control) does', async () => {
+    const player = await mount({ role: 'player' })
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('failed')
+    expect(player.server.calls).toHaveLength(0)
+    player.view.unmount()
+    const dm = await mount({ route: concludeRoute })
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('done')
+    expect(dm.server.lines()).toEqual(['POST /campaigns/cmp_A/conclude'])
+  })
+})
+
 // ── The document key (agent-forge-harness-1kg.6.3, CANVAS-30) ─────────────────
 
 describe('the document key (T-3)', () => {
