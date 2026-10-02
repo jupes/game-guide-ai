@@ -162,6 +162,14 @@ workbench_write_limiter = _build(
     "WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", "WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S",
 )
 
+# The reveal Stop's own budget (agent-forge-harness-1kg.7.2, ID-8): the same shape
+# as the write throttle, a separate table, so a Stop is never refused for the
+# autosaves that spent the shared one.
+reveal_stop_limiter = _build(
+    config.REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT, config.REVEAL_STOP_RATE_LIMIT_WINDOW_S,
+    "REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT", "REVEAL_STOP_RATE_LIMIT_WINDOW_S",
+)
+
 if config.AUTH_TRUSTED_PROXY_HOPS < 0:
     raise ValueError(
         f"AUTH_TRUSTED_PROXY_HOPS must be >= 0, got {config.AUTH_TRUSTED_PROXY_HOPS!r}"
@@ -174,11 +182,17 @@ def reset_all() -> None:
     google_source_limiter.reset()
     chat_user_limiter.reset()
     workbench_write_limiter.reset()
+    reveal_stop_limiter.reset()
 
 
 def check_workbench_write(user_id: int) -> None:
     """Spend one write from `user_id`'s Workbench budget, or raise `RateLimited`."""
     workbench_write_limiter.check(str(user_id))
+
+
+def check_reveal_stop(user_id: int) -> None:
+    """Spend one Stop from `user_id`'s narrowing budget, or raise `RateLimited`."""
+    reveal_stop_limiter.check(str(user_id))
 
 
 # An IPv6 address in text form is at most 45 characters; anything longer is not

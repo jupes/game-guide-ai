@@ -1037,6 +1037,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/campaigns/{campaign_id}/assets/{asset_id}"), ("DELETE", "/campaigns/{campaign_id}/assets/{asset_id}"),
     ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
+    # 1kg.7.2 PR-1: the GM's reveal picture, Confirm and Stop.
+    ("GET", "/campaigns/{campaign_id}/reveals"), ("POST", "/campaigns/{campaign_id}/reveals"),
+    ("POST", "/campaigns/{campaign_id}/reveals/stop"),
     ("POST", "/table/screen"), ("POST", "/table/leave"),
     ("POST", "/campaigns/{campaign_id}/tool-invocations"),
     ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}"),
@@ -1392,6 +1395,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "assets_api.py").resolve(),
         (REPO_ROOT / "service" / "asset_serving_api.py").resolve(),
         (REPO_ROOT / "service" / "table_session_api.py").resolve(),
+        (REPO_ROOT / "service" / "reveals_api.py").resolve(),
         (REPO_ROOT / "service" / "table_api.py").resolve(),
         (REPO_ROOT / "service" / "tool_invocations_api.py").resolve(),
         (REPO_ROOT / "service" / "groups_api.py").resolve(),

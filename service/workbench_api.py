@@ -236,6 +236,11 @@ _READS_ONLY = "_workbench_reads_only"
 #: (`test_workbench_write_throttle.py`) can find it in a route's effective
 #: dependant tree without depending on the dependency's name or module.
 _WRITE_THROTTLE = "_workbench_write_throttle"
+#: Set beside `_WRITE_THROTTLE` on a throttle that spends the narrowing budget
+#: (ID-8), so a second pin can hold the set of routes on that budget exact.
+_NARROWING_THROTTLE = "_workbench_narrowing_throttle"
+#: The narrowing throttle's fixed sentence (a Stop, SEC-3: names no resource).
+NARROWING_THROTTLED_MESSAGE = "Too many stops at once. Wait, then try again."
 
 
 def reads_by_post[F: Callable[..., object]](endpoint: F) -> F:
@@ -284,6 +289,40 @@ def write_throttle(session: SessionDependency) -> Callable[..., None]:
     return throttle
 
 
+def spend_narrowing(user_id: int) -> None:
+    """A reveal Stop's own budget (1kg.7.2, ID-8). Past the bound it answers the
+    same 429 envelope as `spend_write`, with its own sentence, logged with no
+    body and no path id."""
+    try:
+        ratelimit.check_reveal_stop(user_id)
+        return
+    except ratelimit.RateLimited as exc:
+        wait = min(exc.retry_after, 86_400)
+    log.info("workbench stop throttled (user_id=%s, retry_after=%ss)", user_id, wait)
+    info = ErrorInfo(
+        code=ErrorCode.THROTTLED_USER, message=NARROWING_THROTTLED_MESSAGE, retryable=True, retry_after_s=wait
+    )
+    body = ErrorBody(detail=info).model_dump(mode="json", exclude_none=True)
+    raise HTTPException(status_code=429, detail=body["detail"], headers={"Retry-After": str(wait)})
+
+
+def narrowing_throttle(session: SessionDependency) -> Callable[..., None]:
+    """`write_throttle`'s shape, spending `spend_narrowing` instead: the router-level
+    dependency of a narrowing (a reveal Stop), so autosaves that emptied the
+    shared write budget never refuse it. Marked as a write throttle, so the route
+    pin counts the route as throttled, and as a narrowing throttle, so the second
+    pin holds the narrowing routes exact."""
+
+    def throttle(request: Request, caller: SessionData = Depends(session)) -> None:
+        if request.method not in _STATE_CHANGING:
+            return
+        spend_narrowing(caller.user_id)
+
+    setattr(throttle, _WRITE_THROTTLE, True)
+    setattr(throttle, _NARROWING_THROTTLE, True)
+    return throttle
+
+
 def mark_write_throttle[F: Callable[..., object]](dependency: F) -> F:
     """Mark a dependency outside this module (`table_api.mint_throttle`) as a
     write-throttle check, so the route-pin test finds it in a route's
@@ -296,6 +335,11 @@ def is_write_throttle(dependency: object) -> bool:
     """Whether a dependency's `call` is a write-throttle check — `write_throttle`'s
     own, or one `mark_write_throttle` marked."""
     return bool(getattr(dependency, _WRITE_THROTTLE, False))
+
+
+def is_narrowing_throttle(dependency: object) -> bool:
+    """Whether a dependency's `call` is a narrowing throttle (ID-8)."""
+    return bool(getattr(dependency, _NARROWING_THROTTLE, False))
 
 
 def is_reads_only(endpoint: object) -> bool:
@@ -384,8 +428,11 @@ def workbench_router(
     prefix: str = "",
     dependencies: Sequence[params.Depends] = (),
     content_types: Sequence[str] = ("application/json",),
+    throttle: Callable[[SessionDependency], Callable[..., None]] = write_throttle,
 ) -> APIRouter:
-    """The router every Workbench GM route is declared on.
+    """The router every Workbench GM route is declared on. `throttle` builds the
+    router's last dependency; a narrowing (a reveal Stop) passes
+    `narrowing_throttle` so it spends its own budget (1kg.7.2).
 
     Router-level dependencies run in this order, before any route's own:
     `dependencies` (a capability switch that must answer like an unknown path
@@ -398,7 +445,7 @@ def workbench_router(
     return APIRouter(
         prefix=prefix,
         route_class=WorkbenchRoute,
-        dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm), Depends(write_throttle(gm))],
+        dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm), Depends(throttle(gm))],
     )
 
 
