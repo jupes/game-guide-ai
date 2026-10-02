@@ -19,6 +19,7 @@ import { RevealSheetHost } from './RevealSheetHost'
 
 const DOC = 'doc_a'
 const SESSION = 'ses_revealFixtureSession00001'
+const OTHER_SESSION = 'ses_tableSessionIsNotThePicture01'
 
 type Reply = { status: number; body?: unknown } | 'defer'
 
@@ -471,6 +472,36 @@ describe('what a Confirm answers (test 24, Critic 1, 9)', () => {
     expect(posts(server, REVEALS)).toHaveLength(2)
   })
 
+  it('a refused audience whose re-read drops a chosen seat unticks it, disables Reveal, and no later Confirm carries his id (Critic 7)', async () => {
+    const detail = { status: 422, body: { detail: { code: 'validation', message: 'x', retryable: false, field: 'audience' } } }
+    const { user, server } = await openSheet({ worldOverrides: { confirm: () => detail } })
+    await ready()
+    await user.click(inDialog().getByRole('radio', { name: 'Chosen players' }))
+    await user.click(inDialog().getByRole('checkbox', { name: 'Brann' }))
+    await user.click(inDialog().getByRole('switch', { name: 'Name & voice' }))
+    expect(inDialog().getByRole('button', { name: 'Reveal to Brann' })).toBeEnabled()
+    // Brann's seat is removed before the Confirm lands; the refusal makes the sheet read the seats again.
+    world.seats = [ANA]
+    const seatsBefore = server.calls.filter((call) => isGet(call, /\/participants/)).length
+    await user.click(inDialog().getByRole('button', { name: 'Reveal to Brann' }))
+    await waitFor(() => expect(server.calls.filter((call) => isGet(call, /\/participants/)).length).toBeGreaterThan(seatsBefore))
+    await waitFor(() => expect(inDialog().getByText('Choose at least one player.')).toBeInTheDocument())
+    expect(posts(server, REVEALS)).toHaveLength(1)
+    expect(confirmBodies(server)[0].audience).toEqual({ kind: 'participants', participant_ids: [BRANN.participant_id] })
+    // Mutation: keeping the stored audience would leave his id behind with the button live.
+    expect(inDialog().queryByRole('checkbox', { name: 'Brann' })).toBeNull()
+    expect(inDialog().getByRole('checkbox', { name: 'Ana' })).not.toBeChecked()
+    expect(inDialog().getByRole('button', { name: 'Reveal' })).toBeDisabled()
+    // Positive control: ticking the seat that remains makes the next Confirm carry that seat and never Brann's.
+    world.confirm = () => ({ status: 200, body: revealPicture({ epoch: 4, participants: { [ANA.participant_id]: liveFixture(DOC, ['name', 'voice'], { version: 7 }) } }) })
+    await user.click(inDialog().getByRole('checkbox', { name: 'Ana' }))
+    await user.click(inDialog().getByRole('switch', { name: 'Name & voice' }))
+    await user.click(inDialog().getByRole('button', { name: 'Reveal to Ana' }))
+    await waitFor(() => expect(posts(server, REVEALS)).toHaveLength(2))
+    expect(confirmBodies(server)[1].audience).toEqual({ kind: 'participants', participant_ids: [ANA.participant_id] })
+    expect(JSON.stringify(confirmBodies(server)[1])).not.toContain(BRANN.participant_id)
+  })
+
   it('a 422 with no field is REVEAL-15 too: re-read, keep the draft, ask again', async () => {
     const { user, server } = await openSheet({
       worldOverrides: { confirm: () => ({ status: 422, body: { detail: { code: 'validation', message: 'x', retryable: false } } }) },
@@ -646,8 +677,8 @@ describe('the picture moves under an open sheet (Critic 8)', () => {
   it('adopts a new epoch, keeps the draft, says so, and the next Confirm carries it', async () => {
     const { server, user } = await openSheet({
       worldOverrides: {
-        // The table session reports a different epoch than the picture: the Confirm must carry the PICTURE's.
-        session: tableSessionBody({ reveal_epoch: 99 }),
+        // The table session reports a different session and epoch than the picture: the Confirm must carry the PICTURE's.
+        session: tableSessionBody({ session_id: OTHER_SESSION, reveal_epoch: 99 }),
         confirm: () => ({ status: 200, body: revealPicture({ epoch: 6, table: liveFixture(DOC, ['name', 'voice'], { version: 7 }) }) }),
       },
     })
@@ -661,6 +692,9 @@ describe('the picture moves under an open sheet (Critic 8)', () => {
     await waitFor(() => expect(posts(server, REVEALS)).toHaveLength(1))
     // Mutation: taking the epoch from the table session would send the stale 3.
     expect(confirmBodies(server)[0].reveal_epoch).toBe(5)
+    // Mutation: taking the session from the table session would send OTHER_SESSION.
+    expect(confirmBodies(server)[0].session_id).toBe(SESSION)
+    expect(confirmBodies(server)[0].session_id).not.toBe(OTHER_SESSION)
   })
 })
 

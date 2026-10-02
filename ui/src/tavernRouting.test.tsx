@@ -329,11 +329,18 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
-    expect(server.calls[send].method).toBe('POST')
-    expect(server.calls[send].url).toBe('/conversations')
-    expect(JSON.parse(server.calls[send].body ?? '{}')).toEqual({ schema_version: 1, started_mode: 'gm', campaign_id: 'cmp_A' })
-    expect(server.calls[send + 1].url).toBe('/chat')
-    expect(JSON.parse(server.calls[send + 1].body ?? '{}').conversation_id).toBe('cnv_new')
+    // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
+    // anywhere after the click, so the requests are found by method and url, never by index.
+    const sent = server.calls.slice(send)
+    const createAt = sent.findIndex((c) => c.method === 'POST')
+    const chatAt = sent.findIndex((c) => c.url === '/chat')
+    const create = sent[createAt]
+    const chat = sent[chatAt]
+    expect(create?.url).toBe('/conversations')
+    expect(JSON.parse(create?.body ?? '{}')).toEqual({ schema_version: 1, started_mode: 'gm', campaign_id: 'cmp_A' })
+    expect(createAt).toBeGreaterThanOrEqual(0)
+    expect(chatAt).toBeGreaterThan(createAt)
+    expect(JSON.parse(chat?.body ?? '{}').conversation_id).toBe('cnv_new')
     // ModelPicker's own catalog read (GET /models) is unrelated to the
     // campaign/conversation surface this check is about (inferred decision:
     // the plan's whitelist did not name it, but it carries nothing scoped).
@@ -737,11 +744,18 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
-    expect(server.calls[send].method).toBe('POST')
-    expect(server.calls[send].url).toBe('/conversations')
-    expect(JSON.parse(server.calls[send].body ?? '{}').campaign_id).toBe('cmp_New')
-    expect(server.calls[send + 1].url).toBe('/chat')
-    expect(JSON.parse(server.calls[send + 1].body ?? '{}').conversation_id).toBe('cnv_new')
+    // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
+    // anywhere after the click, so the requests are found by method and url, never by index.
+    const sent = server.calls.slice(send)
+    const createAt = sent.findIndex((c) => c.method === 'POST')
+    const chatAt = sent.findIndex((c) => c.url === '/chat')
+    const create = sent[createAt]
+    const chat = sent[chatAt]
+    expect(create?.url).toBe('/conversations')
+    expect(JSON.parse(create?.body ?? '{}').campaign_id).toBe('cmp_New')
+    expect(createAt).toBeGreaterThanOrEqual(0)
+    expect(chatAt).toBeGreaterThan(createAt)
+    expect(JSON.parse(chat?.body ?? '{}').conversation_id).toBe('cnv_new')
     // Inferred decision, as in T-10: ModelPicker's catalog read and the new
     // thread's own timeline/attachments are unrelated to the leak this checks.
     for (const call of server.calls.slice(rel)) {
