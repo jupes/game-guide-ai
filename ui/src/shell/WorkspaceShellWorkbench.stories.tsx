@@ -245,7 +245,8 @@ export const Wide1024Canvas: Story = {
     const canvas = await openCanvas(canvasElement)
     const column = box(canvasElement, '.workbench__canvas')
     await expect(near(column.width, 1024 - 56 - 472, 2)).toBe(true)
-    await expect(canvas.getByRole('region', { name: TITLE })).toHaveAttribute('data-layout', 'compact')
+    // The column is measured by a ResizeObserver, so the header goes compact one frame after it renders.
+    await waitFor(() => expect(canvas.getByRole('region', { name: TITLE })).toHaveAttribute('data-layout', 'compact'))
     await expectNoPageOverflow()
   },
 }
