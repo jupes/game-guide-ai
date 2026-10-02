@@ -10,7 +10,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setUnauthorizedHandler } from '../api'
 import { DOC_TYPE_VERSION, LIBRARY_CATEGORIES, type LibraryQuery } from './contracts'
 import { DOCUMENT_FIXTURES } from './documentFixtures'
-import { createDocument, getDocument, getDocumentHistory, queryLibrary, unarchiveDocument } from './documentApi'
+import {
+  createDocument,
+  getCharacterSheetLink,
+  getDocument,
+  getDocumentHistory,
+  getDocumentVersion,
+  queryLibrary,
+  sealDocument,
+  unarchiveDocument,
+} from './documentApi'
 
 interface Recorded {
   url: string
@@ -242,6 +251,59 @@ describe('queryLibrary', () => {
   })
 })
 
+// ── 1kg.7.3: seal, one pinned version, and the character sheet's link ─────────
+
+const PINNED = {
+  schema_version: 1,
+  document_id: DID,
+  type: 'npc',
+  type_version: 1,
+  version: VERSION,
+  data: { name: 'Ondrey', voice: 'Quiet' },
+}
+const LINK = { schema_version: 1, document_id: DID, participant_id: 'par_linkedSeat00000000001', seat_active: true }
+
+describe('sealDocument', () => {
+  it('POSTs to the seal route with an empty JSON body and reads the document it answers', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: NPC })
+    const result = await sealDocument(CID, DID, fetchImpl)
+    expect(result.kind).toBe('ok')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      url: `/campaigns/${CID}/documents/${DID}/seal`,
+      method: 'POST',
+      credentials: 'include',
+    })
+    expect(calls[0].headers['content-type']).toBe('application/json')
+    expect(JSON.parse(calls[0].body ?? 'null')).toEqual({})
+  })
+
+  it('reads every answer the way getDocument does', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    expect(await sealDocument(CID, DID, recorder({ status: 401, body: {} }).fetchImpl)).toEqual({ kind: 'unauthorized' })
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(await sealDocument(CID, DID, recorder({ status: 404, body: {} }).fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(await sealDocument(CID, DID, recorder({ status: 403, body: {} }).fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(await sealDocument(CID, DID, recorder({ status: 503, body: {} }).fetchImpl)).toEqual({ kind: 'failed' })
+    expect(await sealDocument(CID, DID, recorder('network').fetchImpl)).toEqual({ kind: 'failed' })
+    expect(await sealDocument(CID, DID, recorder({ status: 200, body: { ...NPC, schema_version: 2 } }).fetchImpl)).toEqual({
+      kind: 'unsupported',
+    })
+    expect(
+      await sealDocument(CID, DID, recorder({ status: 200, body: { ...NPC, document_id: 'doc_aDifferentDocument00001' } }).fetchImpl),
+    ).toEqual({ kind: 'failed' })
+  })
+
+  it('a malformed id makes no request', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: NPC })
+    expect(await sealDocument(CID, '../x', fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(calls).toHaveLength(0)
+    expect((await sealDocument(CID, DID, fetchImpl)).kind).toBe('ok')
+    expect(calls).toHaveLength(1)
+  })
+})
+
 // ── create and unarchive (agent-forge-harness-1kg.6.4, L-1) ──────────────────
 
 const COMMAND_ID = 'cmd_AbCdEfGh01234567'
@@ -325,6 +387,59 @@ describe('createDocument', () => {
     expect(calls).toHaveLength(0)
     await createDocument(CID, CREATE, fetchImpl)
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('getDocumentVersion', () => {
+  it('GETs one version and reads its snapshot', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: PINNED })
+    const result = await getDocumentVersion(CID, DID, 2, fetchImpl)
+    expect(result.kind).toBe('ok')
+    if (result.kind === 'ok') expect(result.snapshot.data.name).toBe('Ondrey')
+    expect(calls[0]).toMatchObject({ url: `/campaigns/${CID}/documents/${DID}/versions/2`, method: 'GET', body: null, credentials: 'include' })
+  })
+
+  it('maps every answer, and a snapshot of another document is failed', async () => {
+    const kind = async (answer: Answer) => (await getDocumentVersion(CID, DID, 2, recorder(answer).fetchImpl)).kind
+    expect(await kind({ status: 404, body: {} })).toBe('unavailable')
+    expect(await kind({ status: 403, body: {} })).toBe('unavailable')
+    expect(await kind({ status: 503, body: {} })).toBe('failed')
+    expect(await kind('network')).toBe('failed')
+    expect(await kind({ status: 200, raw: '<html>' })).toBe('failed')
+    expect(await kind({ status: 200, body: { ...PINNED, document_id: 'doc_aDifferentDocument00001' } })).toBe('failed')
+    expect(await kind({ status: 200, body: { ...PINNED, type: 'dragon-hoard' } })).toBe('unsupported')
+    expect(await kind({ status: 200, body: { ...PINNED, schema_version: 2 } })).toBe('unsupported')
+    expect(await kind({ status: 200, body: { ...PINNED, type_version: 99 } })).toBe('unsupported')
+  })
+
+  it('a 401 signs out, and a bad id or version number makes no request', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    expect(await getDocumentVersion(CID, DID, 2, recorder({ status: 401, body: {} }).fetchImpl)).toEqual({ kind: 'unauthorized' })
+    expect(handler).toHaveBeenCalledTimes(1)
+    const { fetchImpl, calls } = recorder({ status: 200, body: PINNED })
+    expect(await getDocumentVersion('bad id', DID, 2, fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(await getDocumentVersion(CID, DID, 0, fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(await getDocumentVersion(CID, DID, 1.5, fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('getCharacterSheetLink', () => {
+  it('GETs the link and reads it, ids only', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: LINK })
+    expect(await getCharacterSheetLink(CID, DID, fetchImpl)).toEqual({ kind: 'ok', link: LINK })
+    expect(calls[0]).toMatchObject({ url: `/campaigns/${CID}/documents/${DID}/link`, method: 'GET', credentials: 'include' })
+  })
+
+  it('maps every answer, and a link to another document is failed', async () => {
+    const kind = async (answer: Answer) => (await getCharacterSheetLink(CID, DID, recorder(answer).fetchImpl)).kind
+    expect(await kind({ status: 404, body: {} })).toBe('unavailable')
+    expect(await kind({ status: 503, body: {} })).toBe('failed')
+    expect(await kind('network')).toBe('failed')
+    expect(await kind({ status: 200, body: { ...LINK, document_id: 'doc_aDifferentDocument00001' } })).toBe('failed')
+    expect(await kind({ status: 200, body: { nope: true } })).toBe('failed')
+    expect(await getCharacterSheetLink('bad id', DID, recorder({ status: 200, body: LINK }).fetchImpl)).toEqual({ kind: 'unavailable' })
   })
 })
 

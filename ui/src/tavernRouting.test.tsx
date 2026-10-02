@@ -399,11 +399,18 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
-    expect(server.calls[send].method).toBe('POST')
-    expect(server.calls[send].url).toBe('/conversations')
-    expect(JSON.parse(server.calls[send].body ?? '{}')).toEqual({ schema_version: 1, started_mode: 'gm', campaign_id: 'cmp_A' })
-    expect(server.calls[send + 1].url).toBe('/chat')
-    expect(JSON.parse(server.calls[send + 1].body ?? '{}').conversation_id).toBe('cnv_new')
+    // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
+    // anywhere after the click, so the requests are found by method and url, never by index.
+    const sent = server.calls.slice(send)
+    const createAt = sent.findIndex((c) => c.method === 'POST')
+    const chatAt = sent.findIndex((c) => c.url === '/chat')
+    const create = sent[createAt]
+    const chat = sent[chatAt]
+    expect(create?.url).toBe('/conversations')
+    expect(JSON.parse(create?.body ?? '{}')).toEqual({ schema_version: 1, started_mode: 'gm', campaign_id: 'cmp_A' })
+    expect(createAt).toBeGreaterThanOrEqual(0)
+    expect(chatAt).toBeGreaterThan(createAt)
+    expect(JSON.parse(chat?.body ?? '{}').conversation_id).toBe('cnv_new')
     // ModelPicker's own catalog read (GET /models) is unrelated to the
     // campaign/conversation surface this check is about (inferred decision:
     // the plan's whitelist did not name it, but it carries nothing scoped).
@@ -418,7 +425,9 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
       // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
       const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead).toBe(true)
+      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
+      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -671,7 +680,10 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(window.history.length).toBe(len + 1)
     expect(seen).toEqual([])
     // (The documents list's library read, 1kg.6.3, is a read of the campaign already selected, not a switch.)
-    expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !c.url.endsWith('/library'))).toBe(false)
+    // (So are the table session's and the reveal picture's reads, 1kg.7.3.)
+    expect(
+      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !/\/(library|reveals|table-session)$/.test(c.url)),
+    ).toBe(false)
     expect(server.lines()).toContain('GET /campaigns/cmp_A')
 
     // Guard control: a real switch does run the guard.
@@ -812,11 +824,18 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
-    expect(server.calls[send].method).toBe('POST')
-    expect(server.calls[send].url).toBe('/conversations')
-    expect(JSON.parse(server.calls[send].body ?? '{}').campaign_id).toBe('cmp_New')
-    expect(server.calls[send + 1].url).toBe('/chat')
-    expect(JSON.parse(server.calls[send + 1].body ?? '{}').conversation_id).toBe('cnv_new')
+    // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
+    // anywhere after the click, so the requests are found by method and url, never by index.
+    const sent = server.calls.slice(send)
+    const createAt = sent.findIndex((c) => c.method === 'POST')
+    const chatAt = sent.findIndex((c) => c.url === '/chat')
+    const create = sent[createAt]
+    const chat = sent[chatAt]
+    expect(create?.url).toBe('/conversations')
+    expect(JSON.parse(create?.body ?? '{}').campaign_id).toBe('cmp_New')
+    expect(createAt).toBeGreaterThanOrEqual(0)
+    expect(chatAt).toBeGreaterThan(createAt)
+    expect(JSON.parse(chat?.body ?? '{}').conversation_id).toBe('cnv_new')
     // Inferred decision, as in T-10: ModelPicker's catalog read and the new
     // thread's own timeline/attachments are unrelated to the leak this checks.
     for (const call of server.calls.slice(rel)) {
@@ -827,7 +846,9 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
       // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
       const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead).toBe(true)
+      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
+      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })

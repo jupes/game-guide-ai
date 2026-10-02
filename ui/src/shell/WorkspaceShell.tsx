@@ -47,13 +47,14 @@
  * - Every layout decision reads a `satisfies Record<ShellLayout, …>` table, so
  *   adding a layout is a compile error here rather than a silent fallthrough that
  *   mounts no picker.
- * - The loss-guard dialog and the Workbench's announcer render at the root, as
- *   siblings of the chrome and the body, outside every container this component
- *   makes `inert`.
+ * - The loss-guard dialog, the reveal sheet (1kg.7.3) and the Workbench's announcers
+ *   render at the root, as siblings of the chrome and the body, outside every
+ *   container this component makes `inert`.
  */
 
 import * as React from 'react'
 import { CanvasHost } from '../gm/CanvasHost'
+import { RevealSheetHost } from '../gm/RevealSheetHost'
 import { AppHeader } from './AppHeader'
 import { useShellLayout, type ShellLayout } from './breakpoints'
 import { canvasShown, CanvasProvider, useCanvasActions, useCanvasState, useWorkbenchActive } from './canvasContext'
@@ -66,6 +67,9 @@ import { LossGuardHost } from './LossGuardDialog'
 import { ModelCatalogProvider } from './ModelCatalogContext'
 import { NavRail } from './NavRail'
 import { NavSettings } from './NavSettings'
+import { RevealAnnouncer } from './RevealAnnouncer'
+import { RevealProvider, useRevealSheetOpen } from './revealContext'
+import { TableSessionProvider } from './tableSession'
 import { TopBar, type TopBarNavToggle } from './TopBar'
 import { WorkbenchAnnouncer } from './WorkbenchAnnouncer'
 import { WORKBENCH_COPY } from './workbenchCopy'
@@ -101,12 +105,16 @@ export function WorkspaceShell(): React.JSX.Element {
   const railLibraryRef = React.useRef<HTMLButtonElement>(null)
   return (
     <ModelCatalogProvider>
-      <CanvasProvider>
-        {/* Focus falls back to the rail's Campaign Library button, then <main>, when the control that opened the panel is gone. */}
-        <LibraryPanelProvider fallback={{ rail: railLibraryRef, main: mainRef }}>
-          <WorkspaceShellBody mainRef={mainRef} railLibraryRef={railLibraryRef} />
-        </LibraryPanelProvider>
-      </CanvasProvider>
+      <TableSessionProvider>
+        <RevealProvider>
+          <CanvasProvider>
+            {/* Focus falls back to the rail's Campaign Library button, then <main>, when the control that opened the panel is gone. */}
+            <LibraryPanelProvider fallback={{ rail: railLibraryRef, main: mainRef }}>
+              <WorkspaceShellBody mainRef={mainRef} railLibraryRef={railLibraryRef} />
+            </LibraryPanelProvider>
+          </CanvasProvider>
+        </RevealProvider>
+      </TableSessionProvider>
     </ModelCatalogProvider>
   )
 }
@@ -129,7 +137,9 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
   const hasDrawer = presentation !== 'sidebar'
   const single = layout !== 'wide'
   const settingsInDrawer = SETTINGS_HOME[layout] === 'drawer'
-  const modal = guardDialog !== null
+  // The reveal sheet is modal too (1kg.7.3): the chrome and the body go `inert` while it is open for the open document.
+  const sheetOpen = useRevealSheetOpen()
+  const modal = guardDialog !== null || sheetOpen
   const chatVisible = !(single && shown && view === 'canvas')
   const canvasVisible = shown && (!single || view === 'canvas')
 
@@ -381,6 +391,8 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
       </div>
 
       {workbench && <WorkbenchAnnouncer />}
+      {workbench && <RevealAnnouncer />}
+      {workbench && <RevealSheetHost />}
       <LossGuardHost />
     </div>
   )

@@ -24,24 +24,30 @@
  * narrow layout the pane is full screen. Nothing here uses a width media query; the
  * shell's boundaries live in \`breakpoints.ts\`.
  *
- * Nothing here writes. A title, a summary or field text is GM-private (X-7): it is
- * rendered and nothing more.
+ * Nothing here writes a document. A title, a summary or field text is GM-private (X-7):
+ * it is rendered and nothing more.
  *
- * REVEAL-13 / I-8: this base has no reveal-write route, so nothing can be revealed and
- * the document's own default badge, \`GM ONLY\`, is true. 1kg.7.3 replaces it with the
- * server's live projection (the badge, and the pane's \`reveal\`).
+ * REVEAL-13 (1kg.7.3): the header, the badge and the field markers say what the server's
+ * reveal picture says (`useReveals()`), through `revealPresentation`. While the first
+ * picture loads the header says so, and when it cannot be read it says `Reveal state
+ * unknown — reconnecting` with no Open control: `GM ONLY` is shown only once the picture
+ * confirms the document is not live. Open starts the reveal sheet (`RevealSheetHost`,
+ * mounted at the shell root); Stop showing is sent at once and moves no focus (X-3).
  */
 
 import * as React from 'react'
 import { Button } from '../ds/Button'
 import { useShellLayout } from '../shell/breakpoints'
 import { useCanvasActions, useCanvasState } from '../shell/canvasContext'
+import { useReveals } from '../shell/revealContext'
 import { WORKBENCH_COPY } from '../shell/workbenchCopy'
 import { CanvasPane, type CanvasLayout } from './CanvasPane'
 import type { Document, DocumentVersion } from './contracts'
 import { getDocumentHistory } from './documentApi'
 import { documentTitle } from './documentTitle'
 import { GameDocument } from './GameDocument'
+import { documentTypeById } from './registry'
+import { NO_REVEAL_CONTROLS, revealPresentation } from './revealPresentation'
 import { returnFocus } from './returnFocus'
 import './CanvasHost.css'
 
@@ -82,6 +88,7 @@ interface OpenCanvasProps {
 /** One open document. Keyed by id and write revision, so its history state is always its own. */
 function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX.Element {
   const { closeDocument, openerRef, composerRef, titleRef } = useCanvasActions()
+  const reveals = useReveals()
   const [historyOpen, setHistoryOpen] = React.useState(false)
   const [history, setHistory] = React.useState<HistoryState | null>(null)
   const mounted = React.useRef(true)
@@ -132,9 +139,25 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
   }
 
   const read = history ?? HISTORY_LOADING
+  const title = documentTitle(document)
+  const type = documentTypeById(document.type)
+  const presentation =
+    type === undefined ? NO_REVEAL_CONTROLS : revealPresentation(reveals, documentId, type, reveals.seats ?? [])
+
+  // Pressing Stop moves no focus (X-3). But once the table is no longer seeing the document the Stop control is
+  // gone, and a browser drops focus from a control that unmounts to <body>: the canvas heading, which every state
+  // makes a programmatic focus target, takes it then, and only if it fell.
+  const stopPressed = React.useRef(false)
+  const canStop = presentation.canStop
+  React.useEffect(() => {
+    if (canStop || !stopPressed.current) return
+    stopPressed.current = false
+    const active = window.document.activeElement
+    if (active === null || active === window.document.body) titleRef.current?.focus()
+  }, [canStop, titleRef])
   return (
     <CanvasPane
-      title={documentTitle(document)}
+      title={title}
       documentType={document.type}
       updatedAt={document.updated_at}
       versionNumber={document.version.number}
@@ -156,8 +179,24 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
       composerRef={composerRef}
       titleRef={titleRef}
       layout={layout}
+      reveal={presentation.reveal}
+      onReveal={presentation.canOpen ? () => reveals.openSheet(documentId, window.document.activeElement) : undefined}
+      onStopReveal={
+        presentation.canStop
+          ? () => {
+              stopPressed.current = true
+              reveals.stop(documentId, title)
+            }
+          : undefined
+      }
     >
-      <GameDocument document={document} readOnly />
+      <GameDocument
+        document={document}
+        readOnly
+        revealBadge={presentation.badge}
+        revealedFields={presentation.fields}
+        revealedNote={presentation.note}
+      />
     </CanvasPane>
   )
 }

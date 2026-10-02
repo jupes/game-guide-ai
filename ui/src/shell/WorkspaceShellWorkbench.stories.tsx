@@ -135,6 +135,9 @@ function workbenchApi({ turns = 40, chatMs = 0, toolLink = false }: ApiOptions =
       return json({ schema_version: 1, campaign_id: CAMPAIGN_ID, category, items, next_cursor: null })
     }
     if (url.includes('/models')) return json(CATALOG)
+    // 1kg.7.3: the reveal surface at rest, so the header reads GM ONLY and no state of its own is drawn.
+    if (url === `/campaigns/${CAMPAIGN_ID}/reveals`) return json({ schema_version: 1, state: null })
+    if (url === `/campaigns/${CAMPAIGN_ID}/table-session`) return json({ schema_version: 1, session: null })
     if (url === `/campaigns/${CAMPAIGN_ID}`) return json(CAMPAIGN)
     if (url === `/campaigns/${CAMPAIGN_ID}/documents/${DOC_ID}`) return json(DOCUMENT)
     if (url.startsWith(`/campaigns/${CAMPAIGN_ID}/documents/${DOC_ID}/versions`)) return json(HISTORY)

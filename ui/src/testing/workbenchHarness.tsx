@@ -16,8 +16,9 @@ import * as React from 'react'
 import { act, render, waitFor } from '@testing-library/react'
 import { expect, vi } from 'vitest'
 import * as api from '../api'
-import { CampaignSchema, type Campaign } from '../gm/contracts'
+import { CampaignSchema, type Campaign, type Seat } from '../gm/contracts'
 import { DOCUMENT_FIXTURES } from '../gm/documentFixtures'
+import { pictureFixture, type PictureOptions } from '../gm/revealFixtures'
 import { AppNavProvider, useAppNav, type AppNavState, type ChatMode, type Screen } from '../shell/AppNav'
 import {
   CampaignProvider, useCampaign, useCampaignDocument, type CampaignContextValue, type CampaignDocumentValue,
@@ -26,6 +27,9 @@ import {
   CanvasProvider, useCanvasActions, useCanvasState, useWorkbenchActive, type CanvasActions, type CanvasState,
 } from '../shell/canvasContext'
 import { CurrentUserProvider, useCurrentUser, type CurrentUserContextValue } from '../shell/currentUser'
+import { RevealProvider, useReveals, type RevealsValue } from '../shell/revealContext'
+import { StopCourier } from '../shell/revealStop'
+import { TableSessionProvider, useTableSession, type TableSessionValue } from '../shell/tableSession'
 import type { IdentityChannelLike } from '../shell/identityBroadcast'
 import type { CampaignRestore } from '../shell/workspaceFragment'
 
@@ -96,8 +100,40 @@ export interface Call {
 }
 export type Route = (call: Call) => Reply | 'defer'
 
-/** Campaign by id, a document by id (`doc_missing` is a 404, `doc_newer` a newer schema), its history, and nothing else. */
-export const defaultWorkbenchRoute: Route = ({ url }) => {
+// ── The reveal surface (1kg.7.3) ────────────────────────────────────────────
+
+/** The GM's reveal answer: no picture for `null` (no live session), else the contract-shaped picture. */
+export function revealPicture(options: PictureOptions | null = null): Record<string, unknown> {
+  return { schema_version: 1, state: options === null ? null : pictureFixture(options) }
+}
+
+/** The table-session answer: a live session by default, `null` for none. Ids shaped like the server's. */
+export function tableSessionBody(extra: Record<string, unknown> | null = {}): Record<string, unknown> {
+  if (extra === null) return { schema_version: 1, session: null }
+  const startedAt = Date.now() - 3_600_000
+  return {
+    schema_version: 1,
+    session: {
+      schema_version: 1, session_id: 'ses_revealFixtureSession00001', campaign_id: 'cmp_A', state: 'live', gen: 1,
+      audio_epoch: 0, reveal_epoch: 3, started_at: new Date(startedAt).toISOString(),
+      ends_at: new Date(startedAt + 6 * 3_600_000).toISOString(), ended_at: null, audio: false, screens: [], ...extra,
+    },
+  }
+}
+
+/** A seat page. */
+export function seatBody(seats: readonly Seat[]): Record<string, unknown> {
+  return { schema_version: 1, items: seats, next_cursor: null }
+}
+
+/** Campaign by id, a document by id (`doc_missing` is a 404, `doc_newer` a newer schema), its history,
+ * and the reveal surface at rest (no table session, no picture, no seats); nothing else. */
+export const defaultWorkbenchRoute: Route = ({ url, method }) => {
+  if (method === 'GET') {
+    if (/^\/campaigns\/cmp_\w+\/reveals$/.test(url)) return { status: 200, body: revealPicture(null) }
+    if (/^\/campaigns\/cmp_\w+\/table-session$/.test(url)) return { status: 200, body: tableSessionBody(null) }
+    if (/^\/campaigns\/cmp_\w+\/participants(\?.*)?$/.test(url)) return { status: 200, body: seatBody([]) }
+  }
   const one = /^\/campaigns\/(cmp_\w+)$/.exec(url)
   if (one !== null) return { status: 200, body: campaignFixture(one[1]) }
   const doc = /^\/campaigns\/(cmp_\w+)\/documents\/(doc_\w+)$/.exec(url)
@@ -279,7 +315,7 @@ function channels() {
 /** What every mounted Workbench exposes to a test, refreshed on each committed render. */
 export const live = {} as {
   campaign: CampaignContextValue; document: CampaignDocumentValue; nav: AppNavState; user: CurrentUserContextValue
-  state: CanvasState; actions: CanvasActions; active: boolean
+  state: CanvasState; actions: CanvasActions; active: boolean; reveals: RevealsValue; table: TableSessionValue
 }
 
 function WorkbenchProbe(): null {
@@ -290,6 +326,8 @@ function WorkbenchProbe(): null {
   const nav = useAppNav()
   const user = useCurrentUser()
   const active = useWorkbenchActive()
+  const reveals = useReveals()
+  const table = useTableSession()
   React.useLayoutEffect(() => {
     live.state = state
     live.actions = actions
@@ -298,6 +336,8 @@ function WorkbenchProbe(): null {
     live.nav = nav
     live.user = user
     live.active = active
+    live.reveals = reveals
+    live.table = table
   })
   return null
 }
@@ -321,6 +361,8 @@ export async function mountWorkbench(ui: (server: StubServer) => React.ReactElem
   const server = stubServer(options.route)
   if (options.stubGlobalFetch === true) vi.stubGlobal('fetch', server.fetchImpl)
   const signal = channels()
+  // A courier of its own, so a Stop that is still retrying when a test ends never reaches the next one.
+  const courier = new StopCourier()
   window.history.replaceState(null, '', `/workspace${options.hash ?? ''}`)
   vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'ok', user: { email: GM_EMAIL, role: options.role ?? 'dm' } })
   const wrap = options.wrap ?? ((children: React.ReactNode) => children)
@@ -328,17 +370,21 @@ export async function mountWorkbench(ui: (server: StubServer) => React.ReactElem
     <AppNavProvider initialScreen={options.screen ?? 'workspace'} initialMode={options.mode ?? 'gm'}>
       <CurrentUserProvider identityChannelFactory={signal.factory}>
         <CampaignProvider fetchImpl={server.fetchImpl} restore={options.restore ?? null}>
-          <CanvasProvider fetchImpl={server.fetchImpl}>
-            <WorkbenchProbe />
-            {wrap(ui(server))}
-          </CanvasProvider>
+          <TableSessionProvider fetchImpl={server.fetchImpl}>
+            <RevealProvider fetchImpl={server.fetchImpl} courier={courier}>
+              <CanvasProvider fetchImpl={server.fetchImpl}>
+                <WorkbenchProbe />
+                {wrap(ui(server))}
+              </CanvasProvider>
+            </RevealProvider>
+          </TableSessionProvider>
         </CampaignProvider>
       </CurrentUserProvider>
     </AppNavProvider>
   )
   const view = render(options.strict === true ? <React.StrictMode>{tree}</React.StrictMode> : tree)
   await waitFor(() => expect(live.user.authStatus).not.toBe('checking'))
-  return { server, signal, view }
+  return { server, signal, view, courier }
 }
 
 /** A dm with campaign `cmp_A` selected and the canvas closed. */

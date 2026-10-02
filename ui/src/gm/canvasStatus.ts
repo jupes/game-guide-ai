@@ -13,6 +13,7 @@
  */
 
 import type { DocumentVersion } from './contracts'
+import { REVEAL_COPY } from './revealCopy'
 import { REGISTRY, documentTypeById } from './registry'
 
 /** CANVAS-27: the history list pages 20 entries at a time, newest first. */
@@ -67,12 +68,18 @@ export function canvasStatusRead(status: CanvasSaveStatus, canRetry: boolean): C
 export type CanvasReveal =
   | { state: 'hidden' }
   | { state: 'unknown' }
+  /** The first picture is still loading (1kg.7.3, I-10): neither hidden nor unknown. */
+  | { state: 'loading' }
   | {
       state: 'revealed'
       /** What is live, e.g. `portrait, name & voice`. */
       summary: string
       /** REVEAL-8: a revealed field's text differs in the latest version. */
       behindLatest?: boolean
+      /** 1kg.7.3 (I-8, D-12): a copy is held until its seat is confirmed. */
+      waiting?: boolean
+      /** 1kg.7.3 (REVEAL-16): a Stop pressed here has failed and is retrying. */
+      stopFailed?: boolean
     }
 
 export interface CanvasRevealRead {
@@ -108,10 +115,14 @@ export function canvasRevealRead(reveal: CanvasReveal): CanvasRevealRead {
       stopLabel: 'Stop showing',
     }
   }
+  if (reveal.state === 'loading') {
+    return { message: REVEAL_COPY.checking, note: null, openLabel: null, openIcon: 'visibility', stopLabel: 'Stop showing' }
+  }
   const behind = reveal.behindLatest === true
+  const notes = [behind ? 'Table is seeing an earlier version' : null, reveal.waiting === true ? REVEAL_COPY.waitingNote : null]
   return {
-    message: `Revealed · ${reveal.summary}`,
-    note: behind ? 'Table is seeing an earlier version' : null,
+    message: reveal.stopFailed === true ? REVEAL_COPY.stopRetryingMessage : `Revealed · ${reveal.summary}`,
+    note: notes.filter((note) => note !== null).join(' · ') || null,
     openLabel: behind ? 'Update…' : 'Change what the table sees',
     openIcon: behind ? 'sync' : 'tune',
     stopLabel: 'Stop showing',

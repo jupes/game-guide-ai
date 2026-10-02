@@ -15,6 +15,7 @@ import {
   getConversation,
   listCampaigns,
   listSeats,
+  listCampaignSeats,
   reopenCampaign,
 } from './campaignApi'
 
@@ -348,6 +349,51 @@ describe('getConversation', () => {
     expect(calls).toHaveLength(0)
     await getConversation('cnv_1', fetchImpl)
     expect(calls).toHaveLength(1)
+  })
+})
+
+// ── 1kg.7.3: the seats the reveal sheet names ────────────────────────────────
+
+const GM_SEAT = {
+  schema_version: 1,
+  participant_id: 'par_brannSeat000000000001',
+  alias: 'Brann',
+  status: 'confirmed',
+  address: null,
+  created_at: '2026-09-16T19:20:11Z',
+  offered_at: null,
+  offer_expires_at: null,
+  accepted_at: null,
+  confirmed_at: '2026-09-16T19:25:00Z',
+  removed_at: null,
+}
+
+describe('listCampaignSeats', () => {
+  it('GETs one page of fifty, with the cookie and no body, and reads the seats', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: { schema_version: 1, items: [GM_SEAT], next_cursor: null } })
+    const result = await listCampaignSeats('cmp_A', fetchImpl)
+    expect(result.kind).toBe('ok')
+    if (result.kind === 'ok') expect(result.items.map((seat) => seat.alias)).toEqual(['Brann'])
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ url: '/campaigns/cmp_A/participants?limit=50', method: 'GET', body: null, credentials: 'include' })
+  })
+
+  it('403, 404, 5xx, a network failure and an unreadable body are failed; a 401 signs out', async () => {
+    const answers: Answer[] = [{ status: 403 }, { status: 404 }, { status: 503 }, 'network', { status: 200, raw: '<html>' }, { status: 200, body: { items: 'x' } }]
+    for (const answer of answers) {
+      expect(await listCampaignSeats('cmp_A', recorder(answer).fetchImpl)).toEqual({ kind: 'failed' })
+    }
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    expect(await listCampaignSeats('cmp_A', recorder({ status: 401 }).fetchImpl)).toEqual({ kind: 'unauthorized' })
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('a malformed campaign id makes no request', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: { schema_version: 1, items: [], next_cursor: null } })
+    expect(await listCampaignSeats('../x', fetchImpl)).toEqual({ kind: 'failed' })
+    expect(calls).toHaveLength(0)
+    expect((await listCampaignSeats('cmp_A', fetchImpl)).kind).toBe('ok')
   })
 })
 

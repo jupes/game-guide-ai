@@ -69,6 +69,33 @@ describe('REVEAL-13 / REVEAL-14 — the header repeats the live projection', () 
     expect(read.note).toBe('Table is seeing an earlier version')
     expect(read.openLabel).toBe('Update…')
   })
+
+  it('1kg.7.3 (I-10): while the first picture loads it says so, offers no Open, and keeps Stop reachable (X-3)', () => {
+    const read = canvasRevealRead({ state: 'loading' })
+    expect(read.message).toBe('Checking what the table sees…')
+    expect(read.openLabel).toBeNull()
+    expect(read.stopLabel).toBe('Stop showing')
+    // Neither the hidden nor the unknown reading may flash while it loads.
+    expect(read.message).not.toBe('Reveal state unknown — reconnecting')
+    expect(read.message).not.toBeNull()
+  })
+
+  it("1kg.7.3 (REVEAL-16): a Stop that failed reads Couldn't stop showing — retrying, and Stop stays", () => {
+    const read = canvasRevealRead({ state: 'revealed', summary: 'Name · to the table', stopFailed: true })
+    expect(read.message).toBe("Couldn't stop showing — retrying")
+    expect(read.stopLabel).toBe('Stop showing')
+    expect(canvasRevealRead({ state: 'revealed', summary: 'Name · to the table', stopFailed: false }).message).toBe(
+      'Revealed · Name · to the table',
+    )
+  })
+
+  it('1kg.7.3 (I-8): a copy waiting for its seat adds a note, joined to the REVEAL-8 note', () => {
+    expect(canvasRevealRead({ state: 'revealed', summary: 'Name', waiting: true }).note).toBe('Waiting until you confirm the seat')
+    expect(canvasRevealRead({ state: 'revealed', summary: 'Name', waiting: false }).note).toBeNull()
+    expect(canvasRevealRead({ state: 'revealed', summary: 'Name', behindLatest: true, waiting: true }).note).toBe(
+      'Table is seeing an earlier version · Waiting until you confirm the seat',
+    )
+  })
 })
 
 describe('X-8 — unknown is not NPC', () => {

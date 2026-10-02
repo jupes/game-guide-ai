@@ -14,7 +14,15 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const FILES = ['ToolRail.css', 'ToolMenu.css', 'SlashMenu.css', 'CustomiseRailDialog.css', 'ToolComposer.css', 'GmThread.css'] as const
+const FILES = [
+  'ToolRail.css',
+  'ToolMenu.css',
+  'SlashMenu.css',
+  'CustomiseRailDialog.css',
+  'ToolComposer.css',
+  'GmThread.css',
+  'RevealSheet.css',
+] as const
 
 function css(name: string): string {
   return readFileSync(join(HERE, name), 'utf-8')
@@ -58,17 +66,24 @@ describe('§10.2: the rail on medium and narrow layouts', () => {
     expect(css('CustomiseRailDialog.css')).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.gm-customise\s*\{[\s\S]*?height: 100dvh/)
   })
 
+  it('makes the reveal sheet a full-screen sheet below 768px, with no horizontal scroll (1kg.7.3)', () => {
+    const source = css('RevealSheet.css')
+    expect(source).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.gm-reveal\s*\{[\s\S]*?height: 100dvh/)
+    expect(source).toMatch(/\.gm-reveal\s*\{[\s\S]*?overflow-x: hidden/)
+    expect(source).toMatch(/\.gm-reveal\s*\{[\s\S]*?max-width: 560px/)
+  })
+
   it('lets the slash menu take the composer width below 768px', () => {
     expect(css('SlashMenu.css')).toMatch(/@media \(max-width: 767px\)[\s\S]*?width: 100%/)
   })
 })
 
 describe('LAYOUT-9: the 44px touch floor and a visible focus ring', () => {
-  it.each(['ToolRail.css', 'ToolMenu.css', 'CustomiseRailDialog.css'])('%s keeps the touch floor', (name) => {
+  it.each(['ToolRail.css', 'ToolMenu.css', 'CustomiseRailDialog.css', 'RevealSheet.css'])('%s keeps the touch floor', (name) => {
     expect(css(name)).toContain('var(--aether-touch-min)')
   })
 
-  it.each(['ToolRail.css', 'ToolMenu.css', 'CustomiseRailDialog.css'])('%s draws a focus ring', (name) => {
+  it.each(['ToolRail.css', 'ToolMenu.css', 'CustomiseRailDialog.css', 'RevealSheet.css'])('%s draws a focus ring', (name) => {
     expect(css(name)).toMatch(/:focus-visible[\s\S]*?outline: 3px solid var\(--md-sys-color-secondary\)/)
   })
 })
