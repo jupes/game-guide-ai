@@ -1078,6 +1078,73 @@ ask for (SEC-40). The UI has no such dialog yet, so nothing visible breaks today
 **a DM should keep a password and link Google** (sign up with the invite's password
 form, then Profile, Link Google account) until Google re-authentication ships.
 
+## 15. GM tools (owner steps)
+
+Code: `service/tool_invocations.py` (availability), `service/document_tools.py` and
+`service/card_executors.py` (the executors); setting: `WORKBENCH_ENABLED_TOOLS`
+(`config.py`). **Off until you set the repository variable below**: with it unset or
+empty the deploy passes nothing, and every tool answers `409 tool_disabled` in the
+Workbench. Merging code changes nothing a tester can see.
+
+**Why a repository variable.** `scripts/deploy.sh` passes `--set-env-vars`, which
+REPLACES the service's whole environment on every deploy (the `1kg.9.5` finding). A
+value set with `gcloud run services update` alone is wiped by the next CI push, so the
+list is carried by the deploy job, like the Google id in §14.
+
+**Which ids work today.** The id is the registry's tool id. Only a tool with a
+server executor runs; the others are valid ids that stay inert.
+
+Working ids: `npc`, `encounter`, `monster`, `loot`, `names`, `rules`, `hooks`
+
+- `npc` and `encounter` are document tools (`1kg.4.4`): the result is saved into the
+  campaign as a document.
+- `monster` (a stat block), `loot`, `names`, `rules` (a cited answer from the corpus)
+  and `hooks` are card tools (`1kg.4.3`).
+- `recap` has no executor yet, so naming it changes nothing (the recap tool follows
+  `1kg.4.4`). `portrait` and `map` have no executor either, and both need the
+  `image_generation` capability, which is **off**: see the last paragraph.
+
+**Switch tools on** (set the shell up as in §10):
+
+```bash
+gh variable set WORKBENCH_ENABLED_TOOLS --body "npc,encounter,monster,loot,names,rules,hooks"
+```
+
+then push or re-run the deploy job. The value is a comma list; spaces around an id and
+a repeated id are tidied. `scripts/deploy.sh` checks every id against the registry's
+tool ids **before** `docker` or `gcloud` runs, and a name it does not know fails the
+deploy with exit code 2 naming the variable and listing the valid ids (it never prints
+the value you gave: the repository is public, so Actions logs are public). The service
+checks the same list at start and refuses to boot on an unknown id, which would make
+the deploy fail late, after the image was pushed; the early check is what
+prevents that.
+
+**Verify it.** After the deploy, ask the running service what it was given (the proxy
+as in §8, or the revision's env):
+
+```bash
+gcloud run services describe game-guide-ai --project="$PROJECT" --region="$REGION" \
+  --format='yaml(spec.template.spec.containers[0].env)' | grep -A1 'name: WORKBENCH'
+```
+
+A tool then runs when a GM asks for it in the Workbench. Each run is a billable model
+call and passes the same cost guards, per-user window and pilot-day cap as any
+Workbench operation (`docs/ARCHITECTURE.md`, the tool-invocation section).
+`docs/ARCHITECTURE.md` also names what a production owner should settle before naming a
+tool: E-8's chosen limits, the tool's `1kg.4.6` threshold and the SEC-39 terms record.
+There are no production users today, so this is your call; it is recorded here so it is
+made on purpose.
+
+**Turn it off.** Unset the variable (`gh variable delete WORKBENCH_ENABLED_TOOLS`) and
+redeploy: every tool answers `409 tool_disabled` again. Naming fewer ids switches the
+rest off the same way.
+
+**`image_generation` stays off.** `scripts/deploy.sh` has no input for
+`WORKBENCH_CAPABILITIES`: it never forwards one, and a stray value in the deploy
+environment is ignored. Portrait and map are paid under D-3, so the capability stays off
+until `yje.4.1`'s entitlement gate covers them; naming `portrait` or `map` meanwhile
+changes nothing, and `image_generation` itself is not a tool id, so it is refused.
+
 ## Cost
 
 ~$9.4/mo steady state (Cloud SQL `db-f1-micro`), within the $10 cap. Corpus
