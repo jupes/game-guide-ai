@@ -14,8 +14,9 @@ import { act, renderHook } from '@testing-library/react'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { NARROW_MEDIA, PHONE_MEDIA, useShellLayout } from './breakpoints'
+import { MEDIUM_MEDIA, NARROW_MEDIA, PHONE_MEDIA, useShellLayout } from './breakpoints'
 import { installMatchMedia, type MatchMediaStub } from '../testing/matchMediaStub'
+import { installMatchMediaWidth, type MatchMediaWidthStub } from '../testing/matchMediaWidth'
 
 const SHELL_DIR = dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = dirname(SHELL_DIR)
@@ -51,6 +52,10 @@ describe('the breakpoint constants (T-BP-1)', () => {
   it('are the bead’s 600 px phone rule and LAYOUT-3’s 768 px narrow rule', () => {
     expect(PHONE_MEDIA).toBe('(width < 600px)')
     expect(NARROW_MEDIA).toBe('(width < 768px)')
+  })
+
+  it('add LAYOUT-1’s 1024 px medium rule (T-1)', () => {
+    expect(MEDIUM_MEDIA).toBe('(width < 1024px)')
   })
 })
 
@@ -106,6 +111,14 @@ describe('the shell stylesheets (T-BP-2, T-BP-3)', () => {
   })
 })
 
+describe('the canvas host stylesheet (C-16)', () => {
+  it('is written for the column it is in: no width media query at all', () => {
+    const css = stripComments(readFileSync(join(SRC_DIR, 'gm', 'CanvasHost.css'), 'utf8'))
+    expect(css.length).toBeGreaterThan(200)
+    expect(mediaConditions(css).filter((condition) => condition.includes('width'))).toEqual([])
+  })
+})
+
 describe('the stat block reflows inside a 320 px chat (T-BP-4, INF-15)', () => {
   it('lets the details grid track shrink below 250 px', () => {
     const css = stripComments(readFileSync(join(SRC_DIR, 'ds', 'StatBlockCard.css'), 'utf8'))
@@ -142,7 +155,7 @@ describe('useShellLayout (T-HK-1..3)', () => {
     const { result } = renderHook(() => useShellLayout())
     expect(result.current).toBe('narrow')
     expect(stub.queries).toContain(NARROW_MEDIA)
-    expect(new Set(stub.queries)).toEqual(new Set([NARROW_MEDIA]))
+    expect(new Set(stub.queries)).toEqual(new Set([NARROW_MEDIA, MEDIUM_MEDIA]))
     act(() => stub?.set(false))
     expect(result.current).toBe('wide')
     act(() => stub?.set(true))
@@ -161,5 +174,48 @@ describe('useShellLayout (T-HK-1..3)', () => {
     const own = installMatchMedia(false)
     own.restore()
     expect(typeof window.matchMedia).toBe('undefined')
+  })
+})
+
+describe('useShellLayout at a width (T-1, LAYOUT-1..3)', () => {
+  let stub: MatchMediaWidthStub | null = null
+  afterEach(() => {
+    stub?.restore()
+    stub = null
+  })
+
+  it.each([
+    [375, 'narrow'],
+    [767, 'narrow'],
+    [768, 'medium'],
+    [900, 'medium'],
+    [1023, 'medium'],
+    [1024, 'wide'],
+    [1280, 'wide'],
+  ] as const)('is %i px → %s', (width, layout) => {
+    stub = installMatchMediaWidth(width)
+    const { result } = renderHook(() => useShellLayout())
+    expect(result.current).toBe(layout)
+  })
+
+  it('follows a resize across both boundaries', () => {
+    stub = installMatchMediaWidth(1280)
+    const { result } = renderHook(() => useShellLayout())
+    expect(result.current).toBe('wide')
+    act(() => stub?.setWidth(900))
+    expect(result.current).toBe('medium')
+    act(() => stub?.setWidth(375))
+    expect(result.current).toBe('narrow')
+    act(() => stub?.setWidth(1100))
+    expect(result.current).toBe('wide')
+  })
+
+  it('listens to both queries and unsubscribes from both', () => {
+    stub = installMatchMediaWidth(900)
+    const { unmount } = renderHook(() => useShellLayout())
+    expect(new Set(stub.queries)).toEqual(new Set([NARROW_MEDIA, MEDIUM_MEDIA]))
+    expect(stub.listenerCount()).toBe(2)
+    unmount()
+    expect(stub.listenerCount()).toBe(0)
   })
 })

@@ -73,6 +73,7 @@ import {
   formatTimestamp,
   versionLabel,
 } from './canvasStatus'
+import { returnFocus as focusAfterClose } from './returnFocus'
 import './CanvasPane.css'
 
 /**
@@ -123,6 +124,12 @@ export interface CanvasPaneProps {
   openerRef?: React.RefObject<HTMLElement | null>
   /** CANVAS-32: the composer, used when the opener is gone. */
   composerRef?: React.RefObject<HTMLElement | null>
+  /**
+   * 1kg.6.3: the heading, as a programmatic focus target. The shell moves focus
+   * here when a document opens, and the heading is `tabIndex={-1}`: reachable by
+   * script, never a tab stop.
+   */
+  titleRef?: React.Ref<HTMLHeadingElement>
   /** @default 'wide' */
   layout?: CanvasLayout
   /** BCP-47 tag(s) for the client-side time format. Defaults to the reader's. */
@@ -153,6 +160,7 @@ export function CanvasPane({
   onBack,
   openerRef,
   composerRef,
+  titleRef,
   layout = 'wide',
   locale,
   children,
@@ -179,12 +187,11 @@ export function CanvasPane({
 
   // ── CANVAS-32 ──────────────────────────────────────────────────────────────
   // Both targets arrive as refs. A control that has been removed from the
-  // document is "gone"; the composer then takes the focus. Nothing here queries
+  // document is "gone"; the composer then takes the focus. So is one that is
+  // connected but not visible (1kg.6.3, `returnFocus.ts`). Nothing here queries
   // the document for an element.
   const returnFocus = React.useCallback((): void => {
-    const opener = openerRef?.current ?? null
-    const target = opener !== null && opener.isConnected ? opener : (composerRef?.current ?? null)
-    target?.focus()
+    focusAfterClose(openerRef?.current ?? null, composerRef?.current ?? null)
   }, [openerRef, composerRef])
 
   const requestClose = React.useCallback(async (): Promise<void> => {
@@ -268,7 +275,7 @@ export function CanvasPane({
         </span>
 
         <div className="gm-canvas__identity">
-          <h2 className="gm-canvas__title" id={titleId}>
+          <h2 className="gm-canvas__title" id={titleId} ref={titleRef} tabIndex={-1}>
             {title}
           </h2>
           {/* §10.2: below 560 px of canvas width the meta line hides. It stays

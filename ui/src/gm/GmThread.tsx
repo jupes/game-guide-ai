@@ -70,8 +70,8 @@ const CREATIVE_NOTICE = '✦ Creative — may include invented content not drawn
  * announces when a GM turn starts, since this lane carries no live region. */
 export const PENDING_LABEL = 'Consulting the tomes…'
 
-/** No canvas is mounted in the shell yet (1kg.6.3), and no tool can return a
- * document before the invocation API (1kg.4.1), so nothing reaches this. */
+/** The default for a standalone mount with no canvas to open into. The shell's ChatPane
+ * passes `onOpenDocument` (1kg.6.3), which opens the document in the Workbench canvas. */
 const noCanvas = (): void => {}
 
 export interface GmThreadProps {

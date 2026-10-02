@@ -20,6 +20,8 @@ import { useCurrentUser } from './currentUser'
 import type { Conversation } from './conversationStore'
 import { modesForRole, accentClass } from './modes'
 import { useCampaign } from './campaignContext'
+import { CampaignDocumentsNav } from './CampaignDocumentsNav'
+import { useCanvasMounted, useWorkbenchActive } from './canvasContext'
 import { useCampaignThreads } from './campaignThreads'
 import { PendingButton, useRetrying } from './CampaignPicker'
 import './LeftNav.css'
@@ -54,6 +56,10 @@ export function LeftNav({ onNavigate, settings }: LeftNavProps): React.JSX.Eleme
   const { user } = useCurrentUser()
   const store = useConversationStore()
   const { selection, enabled } = useCampaign()
+  // The documents list is the Workbench's, so it needs a canvas to open into (a bare LeftNav has none).
+  const workbenchActive = useWorkbenchActive()
+  const canvasMounted = useCanvasMounted()
+  const workbench = workbenchActive && canvasMounted
   const campaignGm = mode === 'gm' && selection.kind !== 'none'
   const [renameState, setRenameState] = React.useState<{
     id: string
@@ -172,6 +178,9 @@ export function LeftNav({ onNavigate, settings }: LeftNavProps): React.JSX.Eleme
         })}
       </div>
       )}
+
+      {/* 1kg.6.3: a GM's way to a document that already exists, until the Library panel (1kg.6.4). */}
+      {workbench && <CampaignDocumentsNav onNavigate={onNavigate} />}
 
       {settings}
 

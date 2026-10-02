@@ -346,7 +346,9 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_A'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail).toBe(true)
+      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
+      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -588,7 +590,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(live.raw.conversationId).toBeNull()
     expect(window.history.length).toBe(len + 1)
     expect(seen).toEqual([])
-    expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
+    // (The documents list's library read, 1kg.6.3, is a read of the campaign already selected, not a switch.)
+    expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !c.url.endsWith('/library'))).toBe(false)
     expect(server.lines()).toContain('GET /campaigns/cmp_A')
 
     // Guard control: a real switch does run the guard.
@@ -742,7 +745,9 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_New'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail).toBe(true)
+      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
+      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })

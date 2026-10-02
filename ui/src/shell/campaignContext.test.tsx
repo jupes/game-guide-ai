@@ -17,7 +17,8 @@ import { CampaignSchema, type Campaign } from '../gm/contracts'
 import { AppNavProvider, useAppNav, type AppNavState, type ChatMode } from './AppNav'
 import { CurrentUserProvider, useCurrentUser, type CurrentUserContextValue } from './currentUser'
 import {
-  CampaignProvider, canUseCampaigns, useCampaign, type CampaignContextValue, type SwitchGuard,
+  CampaignProvider, canUseCampaigns, useCampaign, useCampaignDocument, type CampaignContextValue,
+  type CampaignDocumentValue, type SwitchGuard,
 } from './campaignContext'
 import type { IdentityChannelLike } from './identityBroadcast'
 import type { CampaignRestore } from './workspaceFragment'
@@ -94,17 +95,19 @@ function channels() {
   return { factory, opened, posts, receive }
 }
 
-const live = {} as { c: CampaignContextValue; nav: AppNavState; user: CurrentUserContextValue }
+const live = {} as { c: CampaignContextValue; d: CampaignDocumentValue; nav: AppNavState; user: CurrentUserContextValue }
 /** One entry per committed render: what the Probe's consumers were handed. */
 const rendered: Array<{ account: string; mode: ChatMode; id: string | null; selection: string; names: string }> = []
 function Probe(): React.JSX.Element {
   const c = useCampaign()
+  const d = useCampaignDocument()
   const nav = useAppNav()
   const user = useCurrentUser()
   const names = c.list.kind === 'idle' ? '' : c.list.items.map((i) => i.name).join(',')
   React.useLayoutEffect(() => {
     rendered.push({ account: user.user.id, mode: nav.mode, id: nav.conversationId, selection: c.selection.kind, names })
     live.c = c
+    live.d = d
     live.nav = nav
     live.user = user
   })
@@ -888,5 +891,174 @@ describe('setConcluded (30c, P-1 to P-5)', () => {
     const dm = await mount({ route: concludeRoute })
     expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('done')
     expect(dm.server.lines()).toEqual(['POST /campaigns/cmp_A/conclude'])
+  })
+})
+
+// ── The document key (agent-forge-harness-1kg.6.3, CANVAS-30) ─────────────────
+
+describe('the document key (T-3)', () => {
+  const RESTORE = { campaignId: 'cmp_A', conversationId: null, documentId: 'doc_1' } as const
+  const HASH = '#campaign=cmp_A&document=doc_1'
+  function edit(hash: string): void {
+    window.history.replaceState(null, '', `/workspace${hash}`)
+    act(() => { window.dispatchEvent(new HashChangeEvent('hashchange')) })
+  }
+
+  it('a cold restore keeps the document key through restoring -> selected, and the deep link stays in the URL', async () => {
+    const { server } = await mount({
+      hash: HASH, restore: RESTORE,
+      route: (call) => (call.url === '/campaigns/cmp_A' ? 'defer' : defaultRoute(call)),
+    })
+    await flush()
+    expect(live.c.selection).toEqual({ kind: 'restoring', campaignId: 'cmp_A' })
+    expect(live.d.documentKey).toBe('doc_1')
+    expect(window.location.hash).toBe(HASH)
+    act(() => server.calls[0].reply({ status: 200, body: A }))
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    expect(live.d.documentKey).toBe('doc_1')
+    expect(window.location.hash).toBe(HASH)
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A'])
+  })
+
+  it('a switch or a clear drops the document key from the state and the URL', async () => {
+    await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await run(() => live.c.selectCampaign(B))
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('#campaign=cmp_B')
+    act(() => live.d.setDocumentKey('doc_2'))
+    expect(window.location.hash).toBe('#campaign=cmp_B&document=doc_2')
+    await run(() => live.c.clearCampaign())
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('')
+  })
+
+  it('an unavailable campaign drops the document key with it', async () => {
+    await mount({
+      hash: HASH, restore: RESTORE,
+      route: (call) => (call.url === '/campaigns/cmp_A' ? { status: 404 } : defaultRoute(call)),
+    })
+    await waitFor(() => expect(live.c.selection).toStrictEqual({ kind: 'unavailable' }))
+    expect(live.d.documentKey).toBeNull()
+    await waitFor(() => expect(window.location.hash).toBe(''))
+  })
+
+  it('leaving GM removes the key from the URL but not from the state; returning writes it back (CANVAS-9)', async () => {
+    await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    act(() => live.nav.setMode('sage'))
+    await waitFor(() => expect(window.location.hash).toBe(''))
+    expect(live.d.documentKey).toBe('doc_1')
+    act(() => live.nav.setMode('gm'))
+    await waitFor(() => expect(window.location.hash).toBe(HASH))
+    expect(live.d.documentKey).toBe('doc_1')
+  })
+
+  it('a same-campaign hash naming another document notifies the listener first; the URL keeps the current id until setDocumentKey', async () => {
+    const { server } = await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    const heard: Array<{ id: string; hash: string }> = []
+    let off = (): void => {}
+    act(() => { off = live.d.onDocumentLink((id) => heard.push({ id, hash: window.location.hash })) })
+    edit('#campaign=cmp_A&document=doc_2')
+    // The listener runs before the fragment is rewritten (it saw the edit), and the rewrite then restores doc_1.
+    expect(heard).toEqual([{ id: 'doc_2', hash: '#campaign=cmp_A&document=doc_2' }])
+    expect(window.location.hash).toBe(HASH)
+    expect(live.d.documentKey).toBe('doc_1')
+    act(() => live.d.setDocumentKey('doc_2'))
+    expect(window.location.hash).toBe('#campaign=cmp_A&document=doc_2')
+    // The same id again is not a link; an unsubscribed listener hears nothing.
+    edit('#campaign=cmp_A&document=doc_2')
+    expect(heard).toHaveLength(1)
+    off()
+    edit('#campaign=cmp_A&document=doc_3')
+    expect(heard).toHaveLength(1)
+    expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A'])
+  })
+
+  it('a hash that only drops the document key is rewritten, not treated as a close (I-11)', async () => {
+    await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    const heard: string[] = []
+    act(() => { live.d.onDocumentLink((id) => heard.push(id)) })
+    edit('#campaign=cmp_A')
+    expect(window.location.hash).toBe(HASH)
+    expect(live.d.documentKey).toBe('doc_1')
+    expect(heard).toEqual([])
+  })
+
+  it('a link to another campaign that names a document restores both, by GET only', async () => {
+    const { server } = await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    edit('#campaign=cmp_B&document=doc_9')
+    await waitFor(() => expect(live.c.selection).toEqual({ kind: 'selected', campaign: B }))
+    expect(live.d.documentKey).toBe('doc_9')
+    expect(window.location.hash).toBe('#campaign=cmp_B&document=doc_9')
+    expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+
+  it('setDocumentKey ignores a malformed id, and any id unless a campaign is selected', async () => {
+    await mount({
+      hash: HASH, restore: RESTORE,
+      route: (call) => (call.url === '/campaigns/cmp_A' ? 'defer' : defaultRoute(call)),
+    })
+    await flush()
+    act(() => live.d.setDocumentKey('doc_other'))
+    expect(live.d.documentKey).toBe('doc_1')
+    act(() => live.d.setDocumentKey(null))
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('#campaign=cmp_A')
+  })
+
+  it('setDocumentKey refuses an id that is not opaque and writes nothing', async () => {
+    await mount({ hash: '#campaign=cmp_A', restore: { campaignId: 'cmp_A', conversationId: null } })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    act(() => live.d.setDocumentKey('Ondrey the Wise'))
+    act(() => live.d.setDocumentKey('doc/../x'))
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('#campaign=cmp_A')
+  })
+
+  it('a stray document key is stripped when no campaign is chosen, and for a player at settle with no request', async () => {
+    await mount({ hash: '#campaign=cmp_A', restore: { campaignId: 'cmp_A', conversationId: null } })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await run(() => live.c.clearCampaign())
+    edit('#document=doc_1')
+    expect(window.location.hash).toBe('')
+  })
+
+  it('a player gets the document key stripped at settle and makes no request (C-12d)', async () => {
+    const { server } = await mount({
+      role: 'player', hash: HASH, restore: RESTORE,
+    })
+    expect(window.location.hash).toBe('')
+    expect(live.d.documentKey).toBeNull()
+    edit(HASH)
+    expect(window.location.hash).toBe('')
+    expect(server.calls).toHaveLength(0)
+  })
+
+  it('an identity change replaces the document key with the new account\'s (none)', async () => {
+    const { signal } = await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await switchAccount(signal, BOB)
+    expect(live.d.documentKey).toBeNull()
+  })
+
+  it('outside a provider the document hook is inert', () => {
+    const held: { value?: CampaignDocumentValue } = {}
+    function Bare(): null {
+      const value = useCampaignDocument()
+      React.useLayoutEffect(() => {
+        held.value = value
+      })
+      return null
+    }
+    render(<Bare />)
+    const bare = held.value as CampaignDocumentValue
+    expect(bare.documentKey).toBeNull()
+    expect(() => bare.setDocumentKey('doc_1')).not.toThrow()
+    expect(bare.onDocumentLink(() => {})).toBeTypeOf('function')
   })
 })

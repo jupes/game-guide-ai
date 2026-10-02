@@ -221,6 +221,14 @@ export interface GameDocumentProps {
   onSelectionAction?: (action: EditAction, selection: DocumentSelection) => void
   /** CANVAS-29's **Got it**. */
   onAcknowledgeChanges?: () => void
+  /**
+   * 1kg.6.3 (I-1): show the document with no way to change it. Every field reads
+   * as not editable whatever the registry says, so there is no **Edit**, no field
+   * **Edit with assistant** and no SelectionBar (whose actions are billable, X-1).
+   * The shell uses it until the beads that own saving (1kg.6.5) land: an Edit
+   * button with no save path would silently lose typed text. @default false
+   */
+  readOnly?: boolean
   className?: string
   style?: React.CSSProperties
 }
@@ -241,6 +249,7 @@ export function GameDocument({
   onArmFieldEdit,
   onSelectionAction,
   onAcknowledgeChanges,
+  readOnly = false,
   className,
   style,
 }: GameDocumentProps): React.JSX.Element {
@@ -248,7 +257,10 @@ export function GameDocument({
   const [raised, setRaised] = React.useState<{ selection: DocumentSelection; placement: BarPlacement } | null>(null)
 
   const type = documentTypeById(gameDocument.type)
-  const fields = React.useMemo(() => documentFieldReads(gameDocument.type), [gameDocument.type])
+  const fields = React.useMemo(
+    () => documentFieldReads(gameDocument.type).map((field) => (readOnly ? { ...field, editable: false } : field)),
+    [gameDocument.type, readOnly],
+  )
 
   const changed = new Set(changedFields.filter((key) => fields.some((field) => field.key === key)))
   const holding = new Set(assistantEditing)
