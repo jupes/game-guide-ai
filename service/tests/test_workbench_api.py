@@ -1040,7 +1040,7 @@ EXPECTED_WORKBENCH_ROUTES = {
     # 1kg.7.2 PR-1: the GM's reveal picture, Confirm and Stop.
     ("GET", "/campaigns/{campaign_id}/reveals"), ("POST", "/campaigns/{campaign_id}/reveals"),
     ("POST", "/campaigns/{campaign_id}/reveals/stop"),
-    ("POST", "/table/screen"), ("POST", "/table/leave"),
+    ("POST", "/table/screen"), ("POST", "/table/leave"), ("GET", "/table/snapshot"),
     ("POST", "/campaigns/{campaign_id}/tool-invocations"),
     ("GET", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}"),
     ("POST", "/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel"),

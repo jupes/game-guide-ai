@@ -1676,6 +1676,10 @@ export const TableLeaveRequestSchema = refusingProtoKeys(
 )
 export type TableLeaveRequest = z.infer<typeof TableLeaveRequestSchema>
 
+/** GET /table/snapshot?campaign_id= (1kg.7.2): the campaign is in the query (SEC-43); the principal is the cookie. */
+export const TableSnapshotQuerySchema = refusingProtoKeys(z.strictObject({ campaign_id: OpaqueIdSchema }))
+export type TableSnapshotQuery = z.infer<typeof TableSnapshotQuerySchema>
+
 /** What the deployment has switched on (RAIL-10, AE-58): the answer to the lookup
  * a GM client makes once per load. A newer server may add a switch; it is
  * stripped, because this client's registry cannot name a tool for it. */
@@ -2859,6 +2863,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   ScreenMintRequest: ScreenMintRequestSchema,
   ScreenMintAnswer: ScreenMintAnswerSchema,
   TableLeaveRequest: TableLeaveRequestSchema,
+  TableSnapshotQuery: TableSnapshotQuerySchema,
   Capabilities: CapabilitiesSchema,
   RevealAudience: RevealAudienceSchema,
   RevealSlotRef: RevealSlotRefSchema,

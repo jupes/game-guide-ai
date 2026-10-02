@@ -13,7 +13,7 @@
 
 import * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as api from '../api'
 import { AppNavContext, AppNavProvider, useAppNav, type AppNavState } from './AppNav'
@@ -44,8 +44,18 @@ type Reply = { status: number; body?: unknown } | 'network' | 'defer'
 interface Call { url: string; method: string; body: string | null; reply: (r: Reply) => void }
 type Route = (call: Call) => Reply
 
+/** One of the caller's seats (PlayerSeat, 30c PR-2). */
+function seatBody(id: string, over: Record<string, unknown> = {}) {
+  return {
+    schema_version: 1, campaign_id: id, campaign_name: `Table of ${id}`, alias: 'Brannoc',
+    accepted_at: '2026-09-10T12:00:00Z', confirmed: true, tone: null, game_system: 'dnd5e',
+    avatar_icon: 'castle', avatar_tone: 'gold', concluded: false, last_played_at: null, live: false, ...over,
+  }
+}
+
 const defaultRoute: Route = ({ url }) => {
   if (url === '/campaigns') return { status: 200, body: EMPTY_PAGE }
+  if (url.startsWith('/seats')) return { status: 200, body: EMPTY_PAGE }
   const one = /^\/campaigns\/(cmp_\w+)$/.exec(url)
   if (one !== null) return { status: 200, body: campaignBody(one[1]) }
   return { status: 404, body: {} }
@@ -54,6 +64,12 @@ const defaultRoute: Route = ({ url }) => {
 const listOf = (items: unknown[], next: string | null = null): Route => (call) => (
   call.method === 'GET' && call.url === '/campaigns' ? { status: 200, body: page(items, next) } : defaultRoute(call)
 )
+/** Every `GET /seats` answers `items` (one page); everything else is `base`. */
+const seatedWith = (items: unknown[], base: Route = defaultRoute): Route => (call) => (
+  call.method === 'GET' && call.url.startsWith('/seats') ? { status: 200, body: page(items) } : base(call)
+)
+/** The campaigns read never answers; seats (and the rest) are the default. */
+const deferCampaigns: Route = (call) => (call.url === '/campaigns' ? 'defer' : defaultRoute(call))
 
 function stubServer(route: Route) {
   const calls: Call[] = []
@@ -71,6 +87,8 @@ function stubServer(route: Route) {
     fetchImpl,
     calls,
     lines: () => calls.map((c) => `${c.method} ${c.url}`),
+    /** The campaign family only: the seat read (30c PR-2) is asserted on its own. */
+    campaignLines: () => calls.filter((c) => !c.url.startsWith('/seats')).map((c) => `${c.method} ${c.url}`),
     posts: () => calls.filter((c) => c.method === 'POST'),
   }
 }
@@ -185,7 +203,7 @@ afterEach(() => {
 
 describe('TavernScreen mounted alone (74j, T-16 to T-18)', () => {
   it('one main and one h1 named Your Campaigns in the first commit, in every list state; focus only on an in-app arrival', async () => {
-    const { server } = await mount({ route: () => 'defer' })
+    const { server } = await mount({ route: deferCampaigns })
     act(() => live.nav.openTavern?.())
     expect(screen.getAllByRole('main')).toHaveLength(1)
     const heading = await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
@@ -264,7 +282,7 @@ describe('the status node and the headings (S-1)', () => {
       expect(document.querySelectorAll('[role="status"], [role="alert"], [aria-live]')).toHaveLength(1)
     }
     // loading
-    const loading = await mount({ route: () => 'defer' })
+    const loading = await mount({ route: deferCampaigns })
     openTavern()
     await screen.findByRole('heading', { level: 1 })
     expect(live.statusAtMount).toBe('')
@@ -407,7 +425,7 @@ describe('reading the whole list (S-5)', () => {
     await findPrep('cmp_A')
     await findPrep('cmp_B')
     await act(async () => {})
-    expect(server.lines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2'])
+    expect(server.campaignLines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2'])
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
@@ -424,14 +442,14 @@ describe('reading the whole list (S-5)', () => {
     openTavern()
     const loadMore = await screen.findByRole('button', { name: 'Load more' })
     await act(async () => {})
-    expect(server.lines()).toHaveLength(TAVERN_MAX_PAGES)
+    expect(server.campaignLines()).toHaveLength(TAVERN_MAX_PAGES)
     // The read is complete at the ceiling: announced, and the top card takes focus.
     expect(statusNode()).toHaveTextContent('Campaigns loaded')
     await waitFor(() => expect(prepButton('cmp_p0')).toHaveFocus())
     await userEvent.click(loadMore)
-    await waitFor(() => expect(server.lines()).toHaveLength(TAVERN_MAX_PAGES + 1))
+    await waitFor(() => expect(server.campaignLines()).toHaveLength(TAVERN_MAX_PAGES + 1))
     await act(async () => {})
-    expect(server.lines()).toHaveLength(TAVERN_MAX_PAGES + 1)
+    expect(server.campaignLines()).toHaveLength(TAVERN_MAX_PAGES + 1)
     expect(screen.getByRole('button', { name: 'Load more' })).toBeInTheDocument()
   })
 
@@ -473,13 +491,13 @@ describe('reading the whole list (S-5)', () => {
     openTavern()
     await screen.findByRole('button', { name: 'Retry' })
     await act(async () => {})
-    expect(server.lines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2'])
+    expect(server.campaignLines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2'])
     expect(prepButton('cmp_A')).toBeInTheDocument()
     expect(screen.getByText("Couldn't load campaigns", { selector: 'p:not([role])' })).toBeInTheDocument()
     failing = false
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
     await findPrep('cmp_B')
-    expect(server.lines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2', 'GET /campaigns?cursor=c2'])
+    expect(server.campaignLines()).toEqual(['GET /campaigns', 'GET /campaigns?cursor=c2', 'GET /campaigns?cursor=c2'])
   })
 })
 
@@ -665,7 +683,7 @@ describe('Concluded (S-8, S-9, S-10, S-11)', () => {
     expect(button).toHaveFocus()
     expect(button).not.toHaveAttribute('aria-disabled')
     expect(screen.getByRole('button', { name: 'Concluded (2)' })).toBeInTheDocument()
-    expect(server.lines().filter((l) => l.startsWith('GET'))).toEqual(['GET /campaigns'])
+    expect(server.campaignLines().filter((l) => l.startsWith('GET'))).toEqual(['GET /campaigns'])
   })
 
   it('S-10 a 404 re-reads the list once and says the campaign is no longer available', async () => {
@@ -912,11 +930,11 @@ describe('errors, creation and storage (S-15, S-17, S-18)', () => {
     expect(live.c.selection).toMatchObject({ kind: 'selected', campaign: { campaign_id: 'cmp_A' } })
   })
 
-  it('a player never reaches it: bounced to Landing with no campaign or seat request', async () => {
+  it('a player is no longer bounced (30c PR-2): the tavern renders and no campaign request is made', async () => {
     const { server } = await mount({ role: 'player', initialScreen: 'tavern' })
-    await waitFor(() => expect(live.nav.screen).toBe('landing'))
-    expect(screen.queryByRole('heading', { name: 'Your Campaigns' })).toBeNull()
-    expect(server.calls).toHaveLength(0)
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    expect(live.nav.screen).toBe('tavern')
+    await waitFor(() => expect(server.lines()).toEqual(['GET /seats']))
   })
 })
 
@@ -941,5 +959,313 @@ describe('navigation on selection change (74j, T-9, T-10, T-12a mutation coverag
     await waitFor(() => expect(live.c.selection.kind).toBe('none'))
     expect(live.raw.conversationId).toBeNull()
     expect(live.nav.screen).toBe('workspace')
+  })
+})
+
+// ── 30c PR-2: the player's tavern and "Your seats" ────────────────────────────
+
+describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
+  const asPlayer = (route: Route = defaultRoute, seed?: (store: MemoryConversationStore) => void) =>
+    mount({ role: 'player', initialScreen: 'tavern', route, seed })
+  const seatNames = (): string[] => within(screen.getByRole('list', { name: 'Your seats' }))
+    .getAllByRole('heading', { level: 2 }).map((h) => h.textContent ?? '')
+  const seatCard = (id: string): HTMLElement => screen.getByRole('group', { name: `Table of ${id}` })
+  const NOTE = 'Creating campaigns is not available to your account yet'
+
+  it('SP-1 a player gets the screen: one h1 and one status, no campaign request, no Begin anew, a locked New Campaign with its reason', async () => {
+    const { server } = await asPlayer()
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await screen.findByRole('heading', { level: 2, name: 'Campaigns are being built' })
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(server.calls.some((c) => c.url.startsWith('/campaigns'))).toBe(false)
+    expect(screen.queryByRole('heading', { name: 'Begin anew' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Continue without a campaign' })).toBeNull()
+    const locked = screen.getByRole('button', { name: 'New Campaign' })
+    expect(locked).toHaveAttribute('aria-disabled', 'true')
+    expect(locked).toHaveAccessibleDescription(NOTE)
+    await userEvent.click(locked)
+    expect(live.nav.screen).toBe('tavern')
+    expect(server.lines()).toEqual(['GET /seats'])
+    // Control: a dm's New Campaign is a live button with no such reason.
+    cleanup()
+    await mount({ initialScreen: 'tavern' })
+    const open = await screen.findByRole('button', { name: 'New Campaign' })
+    expect(open).not.toHaveAttribute('aria-disabled')
+  })
+
+  it('SP-2 the seats are ordered live first, concluded last, each by when the table last met (else when the seat was taken)', async () => {
+    const seats = [
+      seatBody('cmp_A', { last_played_at: day(5) }),
+      seatBody('cmp_C', { concluded: true, last_played_at: day(28) }),
+      seatBody('cmp_B', { live: true, accepted_at: day(1) }),
+      seatBody('cmp_D', { confirmed: false, live: true, accepted_at: day(9) }),
+    ]
+    await asPlayer(seatedWith(seats))
+    await screen.findByRole('list', { name: 'Your seats' })
+    expect(seatNames()).toEqual(['Table of cmp_B', 'Table of cmp_D', 'Table of cmp_A', 'Table of cmp_C'])
+    // Fed the other way round, the order is the same: it is the client's.
+    cleanup()
+    await asPlayer(seatedWith([...seats].reverse()))
+    await screen.findByRole('list', { name: 'Your seats' })
+    expect(seatNames()).toEqual(['Table of cmp_B', 'Table of cmp_D', 'Table of cmp_A', 'Table of cmp_C'])
+  })
+
+  it('SP-3 each seat says one thing about its standing: plain "Live now" and no link or button, waiting, concluded, or last played', async () => {
+    const seats = [
+      seatBody('cmp_B', { live: true, tone: 'Mystery · Low magic' }),
+      seatBody('cmp_D', { confirmed: false, live: true }),
+      seatBody('cmp_C', { concluded: true }),
+      seatBody('cmp_A', { last_played_at: '2026-09-04T12:00:00Z', alias: 'Ysolde' }),
+    ]
+    await asPlayer(seatedWith(seats))
+    await screen.findByRole('list', { name: 'Your seats' })
+
+    const live = within(seatCard('cmp_B'))
+    expect(live.getByText('Live now')).toBeInTheDocument()
+    expect(live.getByText('Mystery · Low magic')).toBeInTheDocument()
+    expect(live.getByText('Playing as Brannoc')).toBeInTheDocument()
+    expect(live.getByText('5e')).toBeInTheDocument()
+    expect(live.queryByText('Last played', { exact: false })).toBeNull()
+    // ID-17: no table page exists, so there is nothing to press and nowhere to go.
+    expect(screen.queryAllByRole('link')).toHaveLength(0)
+    expect(document.querySelectorAll('a')).toHaveLength(0)
+    for (const id of ['cmp_B', 'cmp_D', 'cmp_C', 'cmp_A']) {
+      expect(within(seatCard(id)).queryAllByRole('button'), id).toHaveLength(0)
+    }
+
+    // An unconfirmed seat cannot join, whatever the table is doing (D-12).
+    const waiting = within(seatCard('cmp_D'))
+    expect(waiting.getByText('Waiting for your GM to confirm your seat')).toBeInTheDocument()
+    expect(waiting.queryByText('Live now')).toBeNull()
+    expect(within(seatCard('cmp_C')).getByText('This table has concluded')).toBeInTheDocument()
+    expect(within(seatCard('cmp_C')).queryByText('Live now')).toBeNull()
+    const quiet = within(seatCard('cmp_A'))
+    expect(quiet.getByText(/^Last played 4 September( 2026)?$/)).toBeInTheDocument()
+    expect(quiet.getByText('Playing as Ysolde')).toBeInTheDocument()
+    expect(quiet.queryByText('Live now')).toBeNull()
+    expect(screen.getAllByText('Live now')).toHaveLength(1)
+  })
+
+  it('SP-4 a player with no seat gets E-1, and Ask the Sage enters the workspace in Sage; a player with a seat does not', async () => {
+    await asPlayer()
+    await screen.findByRole('heading', { level: 2, name: 'Campaigns are being built' })
+    expect(screen.getByText('Prep, documents and the live table are coming.', { exact: false })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Tell me when campaigns open' })).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Your seats' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Ask the Sage' }))
+    expect(live.nav.screen).toBe('workspace')
+    expect(live.nav.mode).toBe('sage')
+    cleanup()
+    await asPlayer(seatedWith([seatBody('cmp_A')]))
+    await screen.findByRole('list', { name: 'Your seats' })
+    expect(screen.queryByRole('heading', { name: 'Campaigns are being built' })).toBeNull()
+  })
+
+  it('SP-4 E-1 is never shown while the seats load or after they fail (an empty guess would be untrue)', async () => {
+    const held = await asPlayer((call) => (call.url.startsWith('/seats') ? 'defer' : defaultRoute(call)))
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    expect(screen.queryByRole('heading', { name: 'Campaigns are being built' })).toBeNull()
+    expect(screen.getByText('Loading your seats…', { selector: 'p.tavern-screen__message' })).toBeInTheDocument()
+    expect(document.querySelectorAll('.tavern-screen__skeleton')).toHaveLength(2)
+    held.view.unmount()
+    cleanup()
+    await asPlayer((call) => (call.url.startsWith('/seats') ? { status: 503 } : defaultRoute(call)))
+    await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.queryByRole('heading', { name: 'Campaigns are being built' })).toBeNull()
+  })
+
+  it('SP-5 "Where you were" shows for a player with no seat and a started thread, and is absent once there is a seat', async () => {
+    const seed = (store: MemoryConversationStore): void => {
+      const sage = store.create('sage', 'What is a fireball?')
+      store.recordFirstPrompt(sage.id, 'What is a fireball?')
+    }
+    const { store } = await asPlayer(defaultRoute, seed)
+    expect(await screen.findByRole('heading', { level: 2, name: 'Where you were' })).toBeInTheDocument()
+    expect(screen.getByText('Sage · “What is a fireball?”')).toBeInTheDocument()
+    const sage = store.list('sage')[0]
+    await userEvent.click(screen.getByRole('button', { name: 'Back to that thread' }))
+    expect(live.nav.mode).toBe('sage')
+    expect(live.raw.conversationId).toBe(sage.id)
+    cleanup()
+    await asPlayer(seatedWith([seatBody('cmp_A')]), seed)
+    await screen.findByRole('list', { name: 'Your seats' })
+    expect(screen.queryByRole('heading', { name: 'Where you were' })).toBeNull()
+  })
+
+  it('SP-6 a player hears "Loading your seats…" once and "Seats loaded" once, in the one status node', async () => {
+    const watch = watchStatus()
+    await asPlayer(seatedWith([seatBody('cmp_A')]))
+    await screen.findByRole('list', { name: 'Your seats' })
+    await waitFor(() => expect(statusNode()).toHaveTextContent('Seats loaded'))
+    watch.stop()
+    expect(watch.texts).toEqual(['Loading your seats…', 'Seats loaded'])
+    expect(live.statusAtMount).toBe('')
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+  })
+
+  it('SP-7 follows the cursor on its own, and stops at exactly TAVERN_MAX_PAGES reads however long the server goes on', async () => {
+    const twoPages: Route = (call) => {
+      if (call.method === 'GET' && call.url === '/seats') return { status: 200, body: page([seatBody('cmp_A')], 's2') }
+      if (call.method === 'GET' && call.url === '/seats?cursor=s2') return { status: 200, body: page([seatBody('cmp_B')]) }
+      return defaultRoute(call)
+    }
+    const two = await asPlayer(twoPages)
+    await screen.findByRole('list', { name: 'Your seats' })
+    await waitFor(() => expect(seatNames()).toHaveLength(2))
+    expect(two.server.lines()).toEqual(['GET /seats', 'GET /seats?cursor=s2'])
+    two.view.unmount()
+    cleanup()
+
+    const endless: Route = (call) => {
+      const read = /^\/seats(?:\?cursor=s(\d+))?$/.exec(call.url)
+      if (call.method === 'GET' && read !== null) {
+        const n = read[1] === undefined ? 0 : Number(read[1])
+        return { status: 200, body: page([seatBody(`cmp_p${n}`)], `s${n + 1}`) }
+      }
+      return defaultRoute(call)
+    }
+    const many = await asPlayer(endless)
+    await waitFor(() => expect(statusNode()).toHaveTextContent('Seats loaded'))
+    await act(async () => {})
+    expect(many.server.lines()).toHaveLength(TAVERN_MAX_PAGES)
+    expect(seatNames()).toHaveLength(TAVERN_MAX_PAGES)
+  })
+
+  it('SP-8 a failed read says so in the status and a plain line; one Retry asks again, and its success lands focus on the h1', async () => {
+    let failing = true
+    const route: Route = (call) => (call.url.startsWith('/seats')
+      ? (failing ? { status: 503 } : { status: 200, body: page([seatBody('cmp_A')]) })
+      : defaultRoute(call))
+    const { server } = await asPlayer(route)
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(statusNode()).toHaveTextContent("Couldn't load your seats")
+    expect(document.querySelector('p.tavern-screen__message')).toHaveTextContent("Couldn't load your seats")
+    expect(screen.getAllByRole('button', { name: /^Retry/ })).toHaveLength(1)
+    failing = false
+    await userEvent.click(retry)
+    await screen.findByRole('list', { name: 'Your seats' })
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveFocus())
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+    expect(server.lines()).toEqual(['GET /seats', 'GET /seats'])
+    expect(statusNode()).toHaveTextContent('Seats loaded')
+  })
+
+  it('SP-9 a dm sees its campaigns and its seats together, and the end message waits for both reads', async () => {
+    const watch = watchStatus()
+    let held: Call | null = null
+    const route: Route = (call) => {
+      if (call.url.startsWith('/seats')) {
+        held = call
+        return 'defer'
+      }
+      return listOf([campaignBody('cmp_A')])(call)
+    }
+    await mount({ route })
+    openTavern()
+    await findPrep('cmp_A')
+    expect(statusNode()).toHaveTextContent('Loading campaigns…')
+    expect(screen.queryByRole('list', { name: 'Your seats' })).toBeNull()
+    act(() => (held as Call | null)?.reply({ status: 200, body: page([seatBody('cmp_S')]) }))
+    await screen.findByRole('list', { name: 'Your seats' })
+    await waitFor(() => expect(statusNode()).toHaveTextContent('Campaigns loaded'))
+    watch.stop()
+    expect(watch.texts).toEqual(['Loading campaigns…', 'Campaigns loaded'])
+    expect(screen.getByRole('heading', { level: 2, name: 'Begin anew' })).toBeInTheDocument()
+    expect(screen.getByRole('list', { name: 'Your campaigns' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Your seats' })).toBeInTheDocument()
+  })
+
+  it('SP-9 a dm whose seats fail keeps its campaigns, hears it once, and has ONE Retry that re-asks only the seats', async () => {
+    let failing = true
+    const route: Route = (call) => (call.url.startsWith('/seats')
+      ? (failing ? { status: 503 } : { status: 200, body: page([seatBody('cmp_S')]) })
+      : listOf([campaignBody('cmp_A')])(call))
+    const { server } = await mount({ route })
+    openTavern()
+    await findPrep('cmp_A')
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getAllByRole('button', { name: /^Retry/ })).toHaveLength(1)
+    expect(statusNode()).toHaveTextContent("Couldn't load your seats")
+    const lines = Array.from(document.querySelectorAll('p.tavern-screen__message')).map((p) => p.textContent)
+    expect(lines).toEqual(["Couldn't load your seats"])
+    expect(prepButton('cmp_A')).toBeInTheDocument()
+    failing = false
+    await userEvent.click(retry)
+    await screen.findByRole('list', { name: 'Your seats' })
+    expect(server.campaignLines()).toEqual(['GET /campaigns'])
+    expect(server.lines().filter((l) => l.startsWith('GET /seats'))).toHaveLength(2)
+    await waitFor(() => expect(statusNode()).toHaveTextContent('Campaigns loaded'))
+  })
+
+  it('SP-9 both reads failing is one Retry and both lines; pressing it re-asks both', async () => {
+    const route: Route = (call) => (call.url.startsWith('/seats') || call.url === '/campaigns' ? { status: 503 } : defaultRoute(call))
+    const { server } = await mount({ route })
+    openTavern()
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    expect(screen.getAllByRole('button', { name: /^Retry/ })).toHaveLength(1)
+    const lines = () => Array.from(document.querySelectorAll('p.tavern-screen__message')).map((p) => p.textContent)
+    expect(lines()).toEqual(["Couldn't load campaigns", "Couldn't load your seats"])
+    // The campaign failure is the one announced when both fail.
+    expect(statusNode()).toHaveTextContent("Couldn't load campaigns")
+    await userEvent.click(retry)
+    await waitFor(() => expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(2))
+    await waitFor(() => expect(server.lines().filter((l) => l === 'GET /seats')).toHaveLength(2))
+  })
+
+  it('SP-10 more than 12 seats show 12, and Show more seats reveals the rest with no request; 12 show no button', async () => {
+    const thirteen = Array.from({ length: 13 }, (_, i) => seatBody(`cmp_s${String(i).padStart(2, '0')}`, { last_played_at: day(i + 1) }))
+    const { server } = await asPlayer(seatedWith(thirteen))
+    await screen.findByRole('list', { name: 'Your seats' })
+    expect(seatNames()).toHaveLength(12)
+    const before = server.calls.length
+    await userEvent.click(screen.getByRole('button', { name: 'Show more seats' }))
+    expect(seatNames()).toHaveLength(13)
+    expect(screen.queryByRole('button', { name: 'Show more seats' })).toBeNull()
+    expect(server.calls.length).toBe(before)
+    cleanup()
+    await asPlayer(seatedWith(thirteen.slice(0, 12)))
+    await screen.findByRole('list', { name: 'Your seats' })
+    expect(seatNames()).toHaveLength(12)
+    expect(screen.queryByRole('button', { name: 'Show more seats' })).toBeNull()
+  })
+
+  it('SP-11 a seat card is a non-interactive group under a Your seats heading, and the player has its own subhead', async () => {
+    await asPlayer(seatedWith([seatBody('cmp_A')]))
+    const card = await screen.findByRole('group', { name: 'Table of cmp_A' })
+    expect(card).not.toHaveAttribute('tabindex')
+    expect(card.className).not.toContain('card--interactive')
+    expect(screen.getByRole('heading', { level: 2, name: 'Your seats' })).toBeInTheDocument()
+    expect(screen.getByText('The tables where you have a seat.')).toBeInTheDocument()
+  })
+
+  it('SP-12 no seat name, alias or tone reaches web storage, the URL or the page title', async () => {
+    const title = document.title
+    const seat = seatBody('cmp_secret1', { campaign_name: 'Wyrmkeep Obsidian', alias: 'Qarth Vellum', tone: 'Grimdark dread' })
+    await asPlayer(seatedWith([seat]))
+    await screen.findByRole('group', { name: 'Wyrmkeep Obsidian' })
+    const stored = [window.localStorage, window.sessionStorage].flatMap((area) => (
+      Array.from({ length: area.length }, (_, i) => area.key(i) ?? '').flatMap((k) => [k, area.getItem(k) ?? ''])
+    )).join('\n')
+    for (const secret of ['cmp_secret1', 'Wyrmkeep', 'Obsidian', 'Qarth', 'Vellum', 'Grimdark']) {
+      expect(stored.includes(secret), secret).toBe(false)
+    }
+    expect(document.title).toBe(title)
+    expect(window.location.search).toBe('')
+    expect(window.location.hash).toBe('')
+  })
+
+  it('SP-13 a role change at the tavern keeps the screen: the dm cards go and the player view comes, with a fresh seat read', async () => {
+    const { server } = await mount({ route: listOf([campaignBody('cmp_A')]) })
+    openTavern()
+    await findPrep('cmp_A')
+    const seatReads = (): number => server.lines().filter((l) => l === 'GET /seats').length
+    expect(seatReads()).toBe(1)
+    act(() => { live.user.signIn({ email: 'ada@example.com', role: 'player' }) })
+    await screen.findByRole('heading', { level: 2, name: 'Campaigns are being built' })
+    expect(live.nav.screen).toBe('tavern')
+    expect(screen.queryByRole('button', { name: 'Prep Name of cmp_A' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Begin anew' })).toBeNull()
+    expect(seatReads()).toBe(2)
   })
 })

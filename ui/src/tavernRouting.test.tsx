@@ -79,6 +79,7 @@ function stubServer(route: Route) {
  * `POST /conversations` echoes the posted campaign id. */
 const defaultRoute: Route = ({ method, url, body }) => {
   if (method === 'GET' && url === '/campaigns') return { status: 200, body: page([campaignBody('cmp_A')]) }
+  if (method === 'GET' && url.startsWith('/seats')) return { status: 200, body: page([]) }
   const one = /^\/campaigns\/(cmp_\w+)$/.exec(url)
   if (method === 'GET' && one !== null) return { status: 200, body: campaignBody(one[1]) }
   if (method === 'GET' && url === '/conversations/cnv_T') return { status: 200, body: THREAD_T }
@@ -246,41 +247,110 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
     expect(server.calls.filter((c) => c.method === 'POST' || c.method === 'PATCH')).toEqual([])
   })
 
-  it('T-5 as a player lands on Landing with no history entry and no campaign request; a dm is the control', async () => {
+  it('T-4 the seat read is one request per visit under StrictMode, for a dm and for a player', async () => {
+    const dm = boot('/tavern', { strict: true })
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await flush()
+    expect(dm.lines().filter((l) => l === 'GET /seats')).toHaveLength(1)
+    cleanup()
+    const player = boot('/tavern', { strict: true, role: 'player' })
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await flush()
+    expect(player.lines().filter((l) => l === 'GET /seats')).toHaveLength(1)
+  })
+
+  it('T-5 as a player a cold /tavern renders the tavern with no history entry: its seats are read, no campaign is (30c PR-2); a dm is the control', async () => {
     const before = window.history.length
     const server = boot('/tavern', { role: 'player' })
-    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
     await flush()
-    expect(window.location.pathname).toBe('/')
+    expect(window.location.pathname).toBe('/tavern')
     expect(window.history.length).toBe(before)
     expect(server.scoped()).toEqual([])
+    expect(server.lines()).toEqual(['GET /seats'])
     cleanup()
     const control = boot('/tavern', { role: 'dm' })
     await waitFor(() => expect(control.scoped()).toContain('GET /campaigns'))
   })
 
-  it('T-6 a signed-out load shows Login, and after sign-in lands on Landing, never the tavern; openTavern is the control (kills M-9)', async () => {
-    const server = bootProbed('/tavern', { signedOut: true })
-    await screen.findByRole('button', { name: /sign in/i })
-    const w = watch('Your Campaigns')
-    vi.spyOn(api, 'login').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+  async function signInThroughLogin(role: 'dm' | 'player' = 'dm'): Promise<void> {
+    vi.spyOn(api, 'login').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role } })
     await userEvent.type(screen.getByLabelText('Email'), 'ada@example.com')
     await userEvent.type(screen.getByLabelText('Password'), 'pw')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+  }
+
+  it('T-6 a signed-out load of /tavern shows Login, and signing in returns you to /tavern with no new history entry and no flash of Landing (30c ID-26)', async () => {
+    const server = bootProbed('/tavern', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    expect(server.calls.filter((c) => c.url.startsWith('/campaigns') || c.url.startsWith('/seats'))).toEqual([])
+    const len = window.history.length
+    const landing = watch('Enter the Tavern')
+    await signInThroughLogin()
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await flush()
+    const seen = landing()
+    expect(seen.added).toBe(0)
+    expect(seen.present).toBe(0)
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.history.length).toBe(len)
+    await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
+    // An arrival by sign-in is a cold one: nothing takes focus.
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('T-6 the path is all that returns: a fragment on the signed-out /tavern is gone after sign-in and selects nothing', async () => {
+    const server = bootProbed('/tavern#campaign=cmp_A&conversation=cnv_1&x=1', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await flush()
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.location.hash).toBe('')
+    expect(live.c.selection.kind).toBe('none')
+    expect(server.calls.some((c) => c.url.includes('cmp_A') || c.url.includes('cnv_1'))).toBe(false)
+  })
+
+  it('T-6 a player who signs in over /tavern gets the player tavern, and its seats are read', async () => {
+    const server = bootProbed('/tavern', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin('player')
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await waitFor(() => expect(server.lines()).toContain('GET /seats'))
+    expect(window.location.pathname).toBe('/tavern')
+    expect(server.scoped()).toEqual([])
+  })
+
+  it('T-6 control: signing in from any other signed-out screen still lands on Landing (kills M-9)', async () => {
+    const server = bootProbed('/', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
     expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
     await flush()
-    const signedIn = w()
-    expect(signedIn.batches).toBeGreaterThanOrEqual(1)
-    expect(signedIn.added).toBe(0)
-    expect(signedIn.present).toBe(0)
     expect(window.location.pathname).toBe('/')
-    expect(server.calls.filter((c) => c.url.startsWith('/campaigns'))).toEqual([])
-    // Control, same harness: the tavern does read the list here, and watch() does see its heading.
-    const control = watch('Your Campaigns')
-    openTavern()
-    await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
+    expect(screen.queryByRole('heading', { name: 'Your Campaigns' })).toBeNull()
+    expect(server.calls.filter((c) => c.url.startsWith('/campaigns') || c.url.startsWith('/seats'))).toEqual([])
+    cleanup()
+    // A cold /workspace is still sent home to Landing, then signs in to Landing.
+    bootProbed('/workspace', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
+  })
+
+  it('T-6 control: signing OUT at the tavern and back in lands on Landing, not the tavern', async () => {
+    const server = bootProbed('/tavern')
     await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
-    expect(control().added).toBeGreaterThanOrEqual(1)
+    vi.spyOn(api, 'logout').mockResolvedValue(true)
+    await act(async () => { await live.user.user.signOut() })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    await flush()
+    expect(window.location.pathname).toBe('/')
+    expect(screen.queryByRole('heading', { name: 'Your Campaigns' })).toBeNull()
+    expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(1)
   })
 })
 
@@ -548,13 +618,23 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(await screen.findByRole('button', { name: 'Enter the Tavern' })).toBeInTheDocument()
   })
 
-  it('T-30 control: the CTA of a player still opens the workspace and makes no campaign request', async () => {
+  it('T-30 the CTA of a player opens /tavern too (30c PR-2, ID-22): a new history entry, its seats read and no campaign request', async () => {
+    // A previous test's Back leaves forward entries, which a push would replace
+    // rather than add to: drop them first so the count below is the push's alone.
+    window.history.pushState(null, '', '/')
     const server = bootProbed('/', { role: 'player' })
+    const len = window.history.length
     await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
-    await waitFor(() => expect(window.location.pathname).toBe('/workspace'))
-    expect(screen.queryByRole('heading', { name: 'Your Campaigns' })).toBeNull()
-    await flush()
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.history.length).toBe(len + 1)
+    await waitFor(() => expect(server.lines()).toContain('GET /seats'))
     expect(server.scoped()).toEqual([])
+    // Back leaves it for Landing, and the Sage chip is still the way to chat.
+    act(() => { window.history.back() })
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace'))
   })
 
   it('T-8c with no campaigns openTavern still lands focus on the heading and round-trips through history (30c ID-4)', async () => {
@@ -821,7 +901,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     expect(server.calls.filter((c) => c.url === '/campaigns')).toHaveLength(1)
   })
 
-  it("T-5b signing in as a player over a parked tavern history entry never re-requests it (kills M-7)", async () => {
+  it("T-5b signing in as a player over a parked tavern history entry never re-requests the dm's campaigns, and Back to it shows the player tavern (kills M-7)", async () => {
     const server = bootProbed('/')
     await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     openTavern()
@@ -839,10 +919,13 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     window.addEventListener('popstate', onPopState)
     act(() => { window.history.go(L2 === L1 + 1 ? -2 : -1) })
     await waitFor(() => expect(popped).toContain('/tavern'))
-    await waitFor(() => expect(window.location.pathname).toBe('/'))
     window.removeEventListener('popstate', onPopState)
 
-    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    // A player may open the tavern (30c PR-2): the entry shows its seats and
+    // asks the server for nothing a player may not read.
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await waitFor(() => expect(server.calls.slice(mark).some((c) => c.url === '/seats')).toBe(true))
+    expect(window.location.pathname).toBe('/tavern')
     expect(window.history.length).toBe(L2)
     expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
   })
@@ -868,7 +951,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     expect(server.calls.slice(mark).some((c) => c.url.includes('cmp_A') || (c.body ?? '').includes('cmp_A'))).toBe(false)
   })
 
-  it('T-13b a role change at /tavern (same account) resets mode and leaves without a history entry (kills M-41 and M-42)', async () => {
+  it('T-13b a role change at /tavern (same account) resets mode and stays on the tavern without a history entry, as the player tavern (30c PR-2; kills M-41 and M-42)', async () => {
     const server = bootProbed('/')
     await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
@@ -878,12 +961,41 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     const mark = server.calls.length
 
     act(() => { live.user.signIn({ email: 'ada@example.com', role: 'player' }) })
-    await screen.findByText('Enter the Tavern')
+    await screen.findByRole('heading', { level: 2, name: 'Campaigns are being built' })
 
-    expect(window.location.pathname).toBe('/')
+    expect(window.location.pathname).toBe('/tavern')
+    expect(live.nav.screen).toBe('tavern')
     expect(live.nav.mode).toBe('sage')
     expect(window.history.length).toBe(len)
+    expect(screen.queryByRole('button', { name: /^Prep/ })).toBeNull()
     expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
+  })
+
+  it("T-31 a seat answer that lands after an account switch is never shown to the new account (30c PR-2)", async () => {
+    let held: Call | null = null
+    let reads = 0
+    const route: Route = (call) => {
+      if (call.method === 'GET' && call.url.startsWith('/seats')) {
+        reads += 1
+        if (reads === 1) { held = call; return 'defer' }
+        return { status: 200, body: page([]) }
+      }
+      return defaultRoute(call)
+    }
+    bootProbed('/tavern', { role: 'player', route })
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await waitFor(() => expect(held).not.toBeNull())
+    const w = watch('Table of cmp_S9')
+    act(() => { live.user.signIn({ email: 'bob@example.com', role: 'player' }) })
+    await screen.findByText('Enter the Tavern')
+    act(() => (held as Call | null)?.reply({ status: 200, body: page([{
+      schema_version: 1, campaign_id: 'cmp_S9', campaign_name: 'Table of cmp_S9', alias: 'Brannoc',
+      accepted_at: '2026-09-10T12:00:00Z', confirmed: true, tone: null, game_system: 'dnd5e', avatar_icon: 'castle',
+      avatar_tone: 'gold', concluded: false, last_played_at: null, live: true,
+    }]) }))
+    await flush()
+    expect(w().present).toBe(0)
+    expect(screen.queryByText('Table of cmp_S9')).toBeNull()
   })
 
   it('T-29 a cold /tavern load never flashes the empty state while the first read is in flight (kills M-40)', async () => {

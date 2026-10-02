@@ -31,7 +31,7 @@ import type { RevealRequest, RevealState, Seat } from '../gm/contracts'
 import { REVEAL_COPY } from '../gm/revealCopy'
 import { confirmReveal, readReveals, type ConfirmResult } from '../gm/revealApi'
 import { liveOf, sameAudience, type DraftAudience } from '../gm/revealFields'
-import { listSeats } from './campaignApi'
+import { listCampaignSeats } from './campaignApi'
 import { useCampaign, type CampaignScope } from './campaignContext'
 import { useCanvasState, useWorkbenchActive } from './canvasContext'
 import { CurrentUserContext } from './currentUser'
@@ -176,7 +176,7 @@ class RevealStore extends Emitter {
     const privately = picture?.slots.some((entry) => entry.live !== null && entry.slot.kind === 'participant') === true
     if (!privately || this.seatsAsked || this.snap.seats !== null || this.campaignId === null) return
     this.seatsAsked = true
-    void listSeats(this.campaignId, this.fetchImpl).then((result) => {
+    void listCampaignSeats(this.campaignId, this.fetchImpl).then((result) => {
       if (result.kind === 'ok') this.noteSeats(token, result.items)
     })
   }

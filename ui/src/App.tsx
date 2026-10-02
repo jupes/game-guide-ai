@@ -6,7 +6,7 @@ import { ProfilePage } from './shell/ProfilePage'
 import { TavernScreen } from './shell/TavernScreen'
 import { Login } from './shell/Login'
 import { Signup } from './shell/Signup'
-import { useCurrentUser } from './shell/currentUser'
+import { STUB, useCurrentUser } from './shell/currentUser'
 import { getInviteTokenFromHash } from './shell/inviteToken'
 import './shell/AuthScreen.css'
 
@@ -42,6 +42,14 @@ export default function App(): React.JSX.Element {
   // or `unauthenticated`; `checking`/`unavailable` haven't answered the
   // question yet) whose ids actually differ. `lastSettledUserId` remembers
   // the last settled id seen, `null` meaning "none yet".
+  //
+  // One exception (30c PR-2, ID-26, "sign-in returns you where you were"): a
+  // cold load of the signed-out `/tavern`, signed in from the Login or Signup it
+  // showed, stays on the tavern instead of dropping to Landing. It is the path
+  // alone that returns: the address bar is rewritten without any fragment, so
+  // nothing in it is read as an instruction. Every other transition -- sign-out,
+  // an expired session, an account switch, a sign-in over any other screen --
+  // still resets to Landing.
   const lastSettledUserId = React.useRef<string | null>(null)
   React.useEffect(() => {
     const settled = authStatus === 'authenticated' || authStatus === 'unauthenticated'
@@ -49,12 +57,18 @@ export default function App(): React.JSX.Element {
     const previous = lastSettledUserId.current
     if (previous !== null && previous !== user.id) {
       setConversationId(null)
-      // `replace`, not a user navigation: this must not leave a history
-      // entry a signed-out user (or the next account) could Back into.
-      backToLanding('replace')
+      if (previous === STUB.id && authStatus === 'authenticated' && screen === 'tavern') {
+        if (window.location.hash !== '') {
+          window.history.replaceState({}, '', window.location.pathname + window.location.search)
+        }
+      } else {
+        // `replace`, not a user navigation: this must not leave a history
+        // entry a signed-out user (or the next account) could Back into.
+        backToLanding('replace')
+      }
     }
     lastSettledUserId.current = user.id
-  }, [authStatus, user.id, setConversationId, backToLanding])
+  }, [authStatus, user.id, screen, setConversationId, backToLanding])
 
   // Hold everything until the identity is known. Rendering the workspace during
   // the check let a returning user start a conversation while the store was

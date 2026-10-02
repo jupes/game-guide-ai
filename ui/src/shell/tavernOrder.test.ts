@@ -1,11 +1,11 @@
 /**
  * tavernOrder.test.ts -- the tavern's pure rules (agent-forge-harness-30c,
- * PR-1, U-1 to U-7): ordering, the date line, the seat chip, the badge copy and
+ * PR-1, U-1 to U-7; PR-2, U-8 to U-11): ordering, the date line, the seat chip, the badge copy and
  * the "where you were" pick.
  */
 import { describe, expect, it } from 'vitest'
 import type { ChatMode } from '../api'
-import type { Campaign } from '../gm/contracts'
+import type { Campaign, PlayerSeat } from '../gm/contracts'
 import type { Conversation } from './conversationStore'
 import {
   BADGE_COPY,
@@ -14,6 +14,7 @@ import {
   TAVERN_PAGE_SIZE,
   latestConversation,
   orderCampaigns,
+  orderSeats,
   seatChipLabel,
   tavernDate,
 } from './tavernOrder'
@@ -135,5 +136,54 @@ describe('constants (U-7)', () => {
     expect(SYSTEM_LABELS.dnd5e).toBe('5e')
     expect(TAVERN_PAGE_SIZE).toBe(12)
     expect(TAVERN_MAX_PAGES).toBe(4)
+  })
+})
+
+function seat(id: string, over: Partial<PlayerSeat> = {}): PlayerSeat {
+  return {
+    schema_version: 1, campaign_id: id, campaign_name: `Table of ${id}`, alias: 'Brannoc',
+    accepted_at: '2026-09-01T12:00:00Z', confirmed: true, tone: null, game_system: 'dnd5e',
+    avatar_icon: 'castle', avatar_tone: 'gold', concluded: false, last_played_at: null, live: false, ...over,
+  }
+}
+const seatIds = (items: readonly PlayerSeat[]): string[] => items.map((s) => s.campaign_id)
+
+describe('orderSeats (30c PR-2, U-8 to U-11)', () => {
+  it('U-8 puts a confirmed live seat first, then the rest by when the table last met, then a concluded one last', () => {
+    const quiet = seat('cmp_quiet', { last_played_at: '2026-09-05T12:00:00Z' })
+    const live = seat('cmp_live', { live: true, accepted_at: '2026-08-01T12:00:00Z' })
+    const done = seat('cmp_done', { concluded: true, last_played_at: '2026-09-28T12:00:00Z' })
+    const older = seat('cmp_older', { last_played_at: '2026-09-02T12:00:00Z' })
+    const expected = ['cmp_live', 'cmp_quiet', 'cmp_older', 'cmp_done']
+    expect(seatIds(orderSeats([quiet, live, done, older]))).toEqual(expected)
+    expect(seatIds(orderSeats([done, older, quiet, live]))).toEqual(expected)
+  })
+
+  it('U-9 an unconfirmed seat is never "live first", whatever the table is doing', () => {
+    const waiting = seat('cmp_waiting', { confirmed: false, live: true, last_played_at: '2026-09-30T12:00:00Z' })
+    const live = seat('cmp_live', { live: true, last_played_at: '2026-09-01T12:00:00Z' })
+    expect(seatIds(orderSeats([waiting, live]))).toEqual(['cmp_live', 'cmp_waiting'])
+  })
+
+  it('U-10 a seat that never met is placed by when it was taken, and ties break on acceptance then id', () => {
+    const taken = seat('cmp_taken', { accepted_at: '2026-09-20T12:00:00Z' })
+    const met = seat('cmp_met', { last_played_at: '2026-09-10T12:00:00Z' })
+    expect(seatIds(orderSeats([met, taken]))).toEqual(['cmp_taken', 'cmp_met'])
+    const same = '2026-09-10T12:00:00Z'
+    const newerAcceptance = seat('cmp_b', { last_played_at: same, accepted_at: '2026-09-09T12:00:00Z' })
+    const olderAcceptance = seat('cmp_a', { last_played_at: same, accepted_at: '2026-09-01T12:00:00Z' })
+    expect(seatIds(orderSeats([olderAcceptance, newerAcceptance]))).toEqual(['cmp_b', 'cmp_a'])
+    const x = seat('cmp_x', { accepted_at: same })
+    const y = seat('cmp_y', { accepted_at: same })
+    expect(seatIds(orderSeats([y, x]))).toEqual(['cmp_x', 'cmp_y'])
+  })
+
+  it('U-11 reads an offset timestamp as the moment it names, and never reorders its input', () => {
+    // 23:00+05:00 is 18:00Z: earlier than 19:00Z though it sorts later as text.
+    const early = seat('cmp_early', { last_played_at: '2026-09-10T23:00:00+05:00' })
+    const late = seat('cmp_late', { last_played_at: '2026-09-10T19:00:00Z' })
+    const input = [early, late]
+    expect(seatIds(orderSeats(input))).toEqual(['cmp_late', 'cmp_early'])
+    expect(seatIds(input)).toEqual(['cmp_early', 'cmp_late'])
   })
 })

@@ -168,6 +168,9 @@ PROTECTED_ROUTES: list[Route] = [
     # (a live screen grant decides without it, SEC-44), so the dependency walk
     # below cannot see it as guarded; it is listed so both halves run on it.
     ("POST", "/table/screen", "/table/screen", {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa"}),
+    # 1kg.7.2 PR-2: the table's snapshot read. It calls `require_session` through
+    # the table principal too, so it is listed for the same reason.
+    ("GET", "/table/snapshot", "/table/snapshot?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
     # 1kg.4.1 slice B: the GM's tool invocations.
     ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
      {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",

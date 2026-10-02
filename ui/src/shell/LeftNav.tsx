@@ -20,7 +20,7 @@ import { useCurrentUser } from './currentUser'
 import type { Conversation } from './conversationStore'
 import { modesForRole, accentClass } from './modes'
 import { useCampaign } from './campaignContext'
-import { CampaignDocumentsNav } from './CampaignDocumentsNav'
+import { LibraryNavGroup } from './LibraryNavGroup'
 import { useCanvasMounted, useWorkbenchActive } from './canvasContext'
 import { useCampaignThreads } from './campaignThreads'
 import { PendingButton, useRetrying } from './CampaignPicker'
@@ -49,14 +49,16 @@ export interface LeftNavProps {
   /** Rendered between the conversation list and the footer (the narrow
    * layout's NavSettings). */
   settings?: React.ReactNode
+  /** Called when a Campaign Library row opened the panel, just before `onNavigate`: the shell hands focus to the panel as the drawer closes. */
+  onOpenLibrary?: () => void
 }
 
-export function LeftNav({ onNavigate, settings }: LeftNavProps): React.JSX.Element {
+export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId, openTavern } = useAppNav()
   const { user } = useCurrentUser()
   const store = useConversationStore()
   const { selection, enabled } = useCampaign()
-  // The documents list is the Workbench's, so it needs a canvas to open into (a bare LeftNav has none).
+  // The Campaign Library group is the Workbench's, so it needs a canvas to open into (a bare LeftNav has none).
   const workbenchActive = useWorkbenchActive()
   const canvasMounted = useCanvasMounted()
   const workbench = workbenchActive && canvasMounted
@@ -179,8 +181,8 @@ export function LeftNav({ onNavigate, settings }: LeftNavProps): React.JSX.Eleme
       </div>
       )}
 
-      {/* 1kg.6.3: a GM's way to a document that already exists, until the Library panel (1kg.6.4). */}
-      {workbench && <CampaignDocumentsNav onNavigate={onNavigate} />}
+      {/* 1kg.6.4: a GM's way to the Campaign Library, whose panel holds the lists. */}
+      {workbench && <LibraryNavGroup onNavigate={onNavigate} onOpenLibrary={onOpenLibrary} />}
 
       {settings}
 

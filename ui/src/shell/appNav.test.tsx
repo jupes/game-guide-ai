@@ -182,9 +182,9 @@ describe('Landing component', () => {
     expect(enterWorkspace).toHaveBeenCalledTimes(1)
   })
 
-  // 30c ID-1 (L-1): the CTA opens the tavern for an account that can use
-  // campaigns, and the workspace for everyone else.
-  it('L-1 the CTA of a dm opens the tavern, not the workspace; that of a player still enters the workspace', async () => {
+  // 30c ID-1, ID-22 (L-1): the CTA opens the tavern for every signed-in account,
+  // a player's included (PR-2 built its tavern); the workspace is the chips' way in.
+  it('L-1 the CTA of a dm and that of a player both open the tavern, never the workspace', async () => {
     const stub = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
     const mount = (role: 'dm' | 'player') => {
       const enterWorkspace = vi.fn()
@@ -209,9 +209,8 @@ describe('Landing component', () => {
 
     const player = mount('player')
     await userEvent.click(screen.getByRole('button', { name: /Enter the Tavern/i }))
-    expect(player.enterWorkspace).toHaveBeenCalledTimes(1)
-    expect(player.enterWorkspace).toHaveBeenCalledWith()
-    expect(player.openTavern).not.toHaveBeenCalled()
+    expect(player.openTavern).toHaveBeenCalledTimes(1)
+    expect(player.enterWorkspace).not.toHaveBeenCalled()
     // Landing's own reads and writes: none for either account.
     expect(stub).not.toHaveBeenCalled()
   })

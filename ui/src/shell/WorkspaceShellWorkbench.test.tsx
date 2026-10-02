@@ -11,12 +11,12 @@
 
 import * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ThemeProvider } from '../ds/theme'
 import { installMatchMediaWidth, type MatchMediaWidthStub } from '../testing/matchMediaWidth'
 import {
-  flush, libraryRoute, live, mountSelected, mountWorkbench, run, type MountOptions, type Route, defaultWorkbenchRoute,
+  campaignFixture, flush, libraryRoute, live, mountSelected, mountWorkbench, run, type MountOptions, type Route, defaultWorkbenchRoute,
   type LibraryRow,
 } from '../testing/workbenchHarness'
 import { ConversationStoreProvider } from './ConversationStoreContext'
@@ -303,8 +303,11 @@ describe('who sees the Workbench (X-9)', () => {
     await flush()
     expect(columns().canvas).toBeNull()
     expect(switchGroup()).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Campaign documents' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Campaign Library' })).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Campaign Library' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Campaign Library' })).toBeNull()
     expect(screen.queryByRole('region', { name: 'Ondrey' })).toBeNull()
+    expect(server.libraryCalls()).toHaveLength(0)
     expect(screen.queryByRole('group', { name: 'Skip links' })).toBeNull()
     expect(server.docCalls()).toHaveLength(0)
     expect(window.location.hash).toBe('')
@@ -432,7 +435,7 @@ describe('the loss guard dialog and announcer at the shell root (C-11)', () => {
 })
 
 const ROWS: Readonly<Record<string, readonly LibraryRow[]>> = {
-  npcs: [{ id: 'doc_a', type: 'npc', title: 'Ondrey' }],
+  npcs: [{ id: 'doc_a', type: 'npc', title: 'Ondrey' }, { id: 'doc_b', type: 'npc', title: 'Brannoch' }],
 }
 
 /** A wire tool entry whose result is a document link (the shape `/timeline` serves). */
@@ -475,48 +478,229 @@ const withThread = (rows: Readonly<Record<string, readonly LibraryRow[]>>): Rout
   return libraryRoute(rows)(call)
 }
 
-describe('the documents list in the shell (I-2) and where focus lands on close (C-3, CANVAS-32)', () => {
-  it('the rail’s Campaign documents button opens the drawer and lands on the documents list', async () => {
-    const user = userEvent.setup()
-    await mountShell(900, { route: libraryRoute(ROWS) })
-    await user.click(screen.getByRole('button', { name: 'Campaign documents' }))
-    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { level: 2, name: 'Campaign documents' })).toHaveFocus()
-    // The same drawer, the same single list: nothing was fetched twice for it.
-  })
+const libraryRegion = (): HTMLElement | null => screen.queryByRole('region', { name: 'Campaign Library' })
+const libraryHeading = (): HTMLElement => screen.getByRole('heading', { level: 2, name: 'Campaign Library' })
+/** A row of the Campaign Library group in LeftNav (the sidebar, or the drawer where there is one). */
+const groupRow = (name: string): HTMLElement =>
+  within(screen.getByRole('list', { name: 'Campaign Library' })).getByRole('button', { name })
+const railLibrary = (): HTMLElement => screen.getByRole('button', { name: 'Campaign Library' })
 
-  it('the rail has no Campaign documents button for a player, or in Sage', async () => {
-    const user = userEvent.setup()
-    await mountShell(900, { route: libraryRoute(ROWS) })
-    expect(screen.getByRole('button', { name: 'Campaign documents' })).toBeInTheDocument()
-    await user.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'Sage' }))
-    expect(screen.queryByRole('button', { name: 'Campaign documents' })).toBeNull()
-  })
-
-  it('1280: a sidebar row opens the document, and closing it returns focus to that very row', async () => {
+describe('the Campaign Library in the shell (1kg.6.4, LIB-7 to LIB-10, C-3, CANVAS-32)', () => {
+  it('1280, no canvas: a sidebar row opens the panel on the heading, Escape closes it, and focus returns to the row', async () => {
     const user = userEvent.setup()
     await mountShell(1280, { route: libraryRoute(ROWS) })
-    const row = await screen.findByRole('button', { name: /Ondrey/ })
-    await user.click(row)
-    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
-    await waitFor(() => expect(canvasHeading()).toHaveFocus())
-    expect(root()).toHaveAttribute('data-nav', 'rail')
-    await user.click(screen.getByRole('button', { name: 'Close canvas' }))
-    await waitFor(() => expect(root()).toHaveAttribute('data-nav', 'sidebar'))
-    await waitFor(() => expect(screen.getByRole('button', { name: /Ondrey/ })).toHaveFocus())
+    expect(libraryRegion()).toBeNull()
+    await user.click(groupRow('NPCs'))
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    expect(root()).toHaveAttribute('data-nav', 'sidebar')
+    expect(region).toHaveAttribute('data-layout', 'wide')
+    expect(region.parentElement).toHaveClass('workspace-shell__body')
+    expect(region).not.toHaveAttribute('aria-modal')
+    expect(libraryHeading()).toHaveFocus()
+    expect(groupRow('NPCs')).toHaveAttribute('aria-expanded', 'true')
+    expect(await within(region).findByRole('button', { name: /Ondrey/ })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(libraryRegion()).toBeNull()
+    expect(groupRow('NPCs')).toHaveFocus()
   })
 
-  it('900: a drawer row opens the document and closes the drawer; closing returns focus to the rail’s Open navigation (C-3a)', async () => {
+  it('1280: a pointer press in the chat column closes the panel and moves no focus', async () => {
+    const user = userEvent.setup()
+    await mountShell(1280, { route: libraryRoute(ROWS) })
+    await user.click(groupRow('NPCs'))
+    await screen.findByRole('region', { name: 'Campaign Library' })
+    fireEvent.pointerDown(columns().chat as HTMLElement)
+    expect(libraryRegion()).toBeNull()
+    expect(document.activeElement).toBe(document.body)
+    expect(groupRow('NPCs')).not.toHaveFocus()
+  })
+
+  it('1280: a press inside the panel does not close it', async () => {
+    const user = userEvent.setup()
+    await mountShell(1280, { route: libraryRoute(ROWS) })
+    await user.click(groupRow('NPCs'))
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    fireEvent.pointerDown(within(region).getByRole('tab', { name: 'Bestiary' }))
+    expect(libraryRegion()).not.toBeNull()
+  })
+
+  it('1280 with a canvas: the rail icon toggles the panel, and opening a document keeps it open', async () => {
+    const user = userEvent.setup()
+    const { server } = await mountShell(1280, { ...WITH_DOC, route: libraryRoute(ROWS) })
+    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
+    expect(railLibrary()).toHaveAttribute('aria-expanded', 'false')
+    await user.click(railLibrary())
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    expect(railLibrary()).toHaveAttribute('aria-expanded', 'true')
+    expect(railLibrary()).toHaveAttribute('aria-controls', region.id)
+    expect(libraryHeading()).toHaveFocus()
+    await user.click(await within(region).findByRole('button', { name: /Brannoch/ }))
+    await waitFor(() => expect(canvasHeading('Brannoch')).toBeInTheDocument())
+    expect(libraryRegion()).not.toBeNull()
+    expect(server.docCalls().map((call) => call.url)).toEqual([
+      '/campaigns/cmp_A/documents/doc_a', '/campaigns/cmp_A/documents/doc_b',
+    ])
+    await user.click(railLibrary())
+    expect(libraryRegion()).toBeNull()
+    expect(railLibrary()).toHaveFocus()
+  })
+
+  it('1280: opening a document from the panel while the canvas is closed turns the sidebar into the rail, and the panel stays', async () => {
+    const user = userEvent.setup()
+    await mountShell(1280, { route: libraryRoute(ROWS) })
+    await user.click(groupRow('NPCs'))
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    await user.click(await within(region).findByRole('button', { name: /Ondrey/ }))
+    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
+    expect(root()).toHaveAttribute('data-nav', 'rail')
+    expect(libraryRegion()).not.toBeNull()
+    // Escape: the sidebar row is gone from view, so focus falls back to the rail's Campaign Library button.
+    const hidden = groupRow('NPCs')
+    Object.defineProperty(hidden, 'checkVisibility', { value: () => false })
+    act(() => (document.activeElement as HTMLElement | null)?.blur())
+    await user.keyboard('{Escape}')
+    expect(libraryRegion()).toBeNull()
+    expect(railLibrary()).toHaveFocus()
+  })
+
+  it('900: rail menu, then a drawer row; the drawer closes and focus lands on the panel heading, not the rail button', async () => {
     const user = userEvent.setup()
     await mountShell(900, { route: libraryRoute(ROWS) })
     await user.click(screen.getByRole('button', { name: 'Open navigation' }))
-    await user.click(await screen.findByRole('button', { name: /Ondrey/ }))
+    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
+    await user.click(groupRow('NPCs'))
     expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull()
-    await waitFor(() => expect(canvasHeading()).toHaveFocus())
-    await user.click(screen.getByRole('button', { name: 'Close canvas' }))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveFocus())
+    await screen.findByRole('region', { name: 'Campaign Library' })
+    expect(libraryHeading()).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Open navigation' })).not.toHaveFocus()
+    await user.click(screen.getByRole('button', { name: 'Close library' }))
+    expect(libraryRegion()).toBeNull()
+    expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveFocus()
   })
 
+  it('900: opening a document closes the panel and shows the canvas', async () => {
+    const user = userEvent.setup()
+    await mountShell(900, { route: libraryRoute(ROWS) })
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+    await user.click(groupRow('NPCs'))
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    await user.click(await within(region).findByRole('button', { name: /Ondrey/ }))
+    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
+    expect(libraryRegion()).toBeNull()
+    expect(live.state.view).toBe('canvas')
+    expect(root()).toHaveAttribute('data-layout', 'medium')
+  })
+
+  it('900: with the drawer open the panel is inert, and Escape closes the drawer alone', async () => {
+    const user = userEvent.setup()
+    await mountShell(900, { route: libraryRoute(ROWS) })
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+    await user.click(groupRow('NPCs'))
+    await screen.findByRole('region', { name: 'Campaign Library' })
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
+    expect(libraryRegion()).toHaveAttribute('inert')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull()
+    expect(libraryRegion()).not.toBeNull()
+    expect(libraryRegion()).not.toHaveAttribute('inert')
+  })
+
+  it('900: the rail icon toggles the panel with no drawer', async () => {
+    const user = userEvent.setup()
+    await mountShell(900, { route: libraryRoute(ROWS) })
+    await user.click(railLibrary())
+    await screen.findByRole('region', { name: 'Campaign Library' })
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).toBeNull()
+    expect(libraryHeading()).toHaveFocus()
+    await user.click(railLibrary())
+    expect(libraryRegion()).toBeNull()
+  })
+
+  it('375: the TopBar menu, a row, a full-screen panel with <main> inert; Back returns focus to the menu button', async () => {
+    const user = userEvent.setup()
+    await mountShell(375, { route: libraryRoute(ROWS) })
+    const menu = screen.getByRole('button', { name: 'Open navigation' })
+    await user.click(menu)
+    await user.click(groupRow('NPCs'))
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    expect(region).toHaveAttribute('data-layout', 'narrow')
+    expect(document.querySelector('main')).toHaveAttribute('inert')
+    expect(libraryHeading()).toHaveFocus()
+    expect(screen.queryByRole('button', { name: 'Close library' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    expect(libraryRegion()).toBeNull()
+    expect(document.querySelector('main')).not.toHaveAttribute('inert')
+    expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveFocus()
+  })
+
+  it('375: opening a document shows the full-screen canvas, and the panel is gone', async () => {
+    const user = userEvent.setup()
+    await mountShell(375, { route: libraryRoute(ROWS) })
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+    await user.click(groupRow('NPCs'))
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    await user.click(await within(region).findByRole('button', { name: /Ondrey/ }))
+    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
+    expect(libraryRegion()).toBeNull()
+    expect(live.state.view).toBe('canvas')
+    expect(document.querySelector('main')).not.toHaveAttribute('inert')
+  })
+
+  it('a campaign switch closes the panel', async () => {
+    const user = userEvent.setup()
+    await mountShell(1280, { route: libraryRoute(ROWS) })
+    await user.click(groupRow('NPCs'))
+    await screen.findByRole('region', { name: 'Campaign Library' })
+    await run(() => live.campaign.selectCampaign(campaignFixture('cmp_B')))
+    expect(libraryRegion()).toBeNull()
+  })
+
+  it('Sage hides the group and closes the panel, and the GM channel does not reopen it', async () => {
+    const user = userEvent.setup()
+    await mountShell(1280, { route: libraryRoute(ROWS) })
+    await user.click(groupRow('NPCs'))
+    await screen.findByRole('region', { name: 'Campaign Library' })
+    const channels = within(screen.getByRole('navigation', { name: 'Channels' }))
+    await user.click(channels.getByRole('button', { name: 'Sage' }))
+    expect(libraryRegion()).toBeNull()
+    expect(screen.queryByRole('list', { name: 'Campaign Library' })).toBeNull()
+    await user.click(channels.getByRole('button', { name: 'GM' }))
+    expect(libraryRegion()).toBeNull()
+    expect(screen.getByRole('list', { name: 'Campaign Library' })).toBeInTheDocument()
+  })
+
+  it('the loss-guard dialog makes the panel inert, and Escape there answers the dialog alone', async () => {
+    const user = userEvent.setup()
+    const source = new TestSource()
+    await mountShell(1280, { ...WITH_DOC, route: libraryRoute(ROWS) })
+    await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
+    act(() => {
+      live.actions.registerDirtySource(source)
+    })
+    await user.click(railLibrary())
+    const region = await screen.findByRole('region', { name: 'Campaign Library' })
+    await user.click(await within(region).findByRole('button', { name: /Brannoch/ }))
+    await screen.findByRole('dialog', { name: /unsaved/ })
+    expect(document.querySelector('.workspace-shell__body')).toHaveAttribute('inert')
+    await user.keyboard('{Escape}')
+    expect(libraryRegion()).not.toBeNull()
+  })
+})
+
+describe('the Workbench list needs no standing request (I-5)', () => {
+  it('a GM with a campaign makes no /library request until the panel opens', async () => {
+    const user = userEvent.setup()
+    const { server } = await mountShell(1280, { route: libraryRoute(ROWS) })
+    await flush()
+    expect(server.libraryCalls()).toHaveLength(0)
+    await user.click(groupRow('NPCs'))
+    await waitFor(() => expect(server.libraryCalls()).toHaveLength(1))
+    expect(server.libraryBodies()[0]).toMatchObject({ category: 'npcs' })
+  })
+})
+
+describe('where focus lands on close from a chat link (C-3, CANVAS-32)', () => {
   it('375: a link in the chat shows the Canvas view, and Back returns focus to that link', async () => {
     const user = userEvent.setup()
     await mountShell(375, {
@@ -547,9 +731,9 @@ describe('what the shell never does (C-12, C-13)', () => {
     await user.click(screen.getByRole('button', { name: 'Back' }))
     await flush()
     expect(server.docCalls()).toHaveLength(1)
-    // Only GETs, plus the documents list's read of the library by POST (4 categories, once).
-    expect(server.calls.filter((call) => call.method !== 'GET' && !call.url.endsWith('/library'))).toEqual([])
-    expect(server.libraryCalls()).toHaveLength(4)
+    // Only GETs: the library is read only when its panel opens, and nothing here opened it.
+    expect(server.calls.filter((call) => call.method !== 'GET')).toEqual([])
+    expect(server.libraryCalls()).toHaveLength(0)
   })
 
   it('a failed restore shows the panel in the canvas column with Close, and Close clears the key', async () => {

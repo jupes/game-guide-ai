@@ -76,15 +76,16 @@ export function historyBody(documentId: string, numbers: readonly number[], next
 export function libraryBody(
   campaignId: string,
   category: string,
-  items: ReadonlyArray<{ id: string; type: string; title: string; updatedAt?: string }> = [],
+  items: ReadonlyArray<LibraryRow> = [],
+  nextCursor: string | null = null,
 ): Record<string, unknown> {
   return {
     schema_version: 1, campaign_id: campaignId, category,
     items: items.map((item) => ({
-      document_id: item.id, type: item.type, title: item.title, qualifier: '', tags: [], archived: false,
-      updated_at: item.updatedAt ?? '2026-09-16T19:36:00Z',
+      document_id: item.id, type: item.type, title: item.title, qualifier: item.qualifier ?? '', tags: item.tags ?? [],
+      archived: item.archived ?? false, updated_at: item.updatedAt ?? '2026-09-16T19:36:00Z',
     })),
-    next_cursor: null,
+    next_cursor: nextCursor,
   }
 }
 
@@ -151,12 +152,31 @@ export interface LibraryRow {
   type: string
   title: string
   updatedAt?: string
+  qualifier?: string
+  tags?: readonly string[]
+  archived?: boolean
 }
+
+interface LibraryRequestBody {
+  category: string
+  search?: string
+  sort?: 'recent' | 'name'
+  archived?: boolean
+  type?: string | null
+  cursor?: string | null
+  limit?: number | null
+}
+
+/** The cursor this harness hands out: the offset of the next row, in the base64url alphabet. */
+const cursorFor = (offset: number): string => `c${offset}`
 
 /**
  * The default route plus `POST /campaigns/{cid}/library`: the page for the category the
- * body asks for, from `rows` (a category with no entry is an empty page). `campaignOf`
- * lets a test echo another campaign, and `failing` makes a category answer 503.
+ * body asks for, from `rows` (a category with no entry is an empty page). It honours the
+ * body the way the server does: `archived`, a case-insensitive `search` over title, qualifier
+ * and tags, `type`, `sort` ('recent' keeps the order given; 'name' sorts by title), and
+ * `limit` with a `cursor` that pages. `campaignOf` lets a test echo another campaign, and
+ * `failing` makes a category answer 503.
  */
 export function libraryRoute(
   rows: Readonly<Record<string, readonly LibraryRow[]>>,
@@ -166,10 +186,77 @@ export function libraryRoute(
   return (call) => {
     const match = /^\/campaigns\/(cmp_\w+)\/library$/.exec(call.url)
     if (match === null || call.method !== 'POST') return fallback(call)
-    const body = JSON.parse(call.body ?? '{}') as { category: string }
+    const body = JSON.parse(call.body ?? '{}') as LibraryRequestBody
     if (options.failing?.includes(body.category) === true) return { status: 503, body: {} }
     const echoed = options.campaignOf?.(match[1]) ?? match[1]
-    return { status: 200, body: libraryBody(echoed, body.category, rows[body.category] ?? []) }
+    const needle = (body.search ?? '').trim().toLowerCase()
+    let matching = (rows[body.category] ?? []).filter((row) => (row.archived ?? false) === (body.archived ?? false))
+    if (body.type !== undefined && body.type !== null) matching = matching.filter((row) => row.type === body.type)
+    if (needle !== '') {
+      matching = matching.filter((row) =>
+        [row.title, row.qualifier ?? '', ...(row.tags ?? [])].some((text) => text.toLowerCase().includes(needle)),
+      )
+    }
+    if (body.sort === 'name') matching = [...matching].sort((a, b) => a.title.localeCompare(b.title))
+    const start = body.cursor === undefined || body.cursor === null ? 0 : Number(body.cursor.slice(1))
+    const limit = body.limit ?? 50
+    const page = matching.slice(start, start + limit)
+    const next = start + limit < matching.length ? cursorFor(start + limit) : null
+    return { status: 200, body: libraryBody(echoed, body.category, page, next) }
+  }
+}
+
+export interface CreateBody {
+  command_id: string
+  campaign_id: string
+  type: string
+  type_version: number
+  data: { name: string }
+}
+
+/**
+ * `POST /campaigns/{cid}/documents` answers 201 with a document of the type asked for, named
+ * from the body, and the document is then readable by `GET` (so opening it works). A replay of
+ * the same `command_id` answers the same document, as the server does. `answer` replaces the
+ * reply (a 409, a 429, `'defer'`) for a test of a failure.
+ */
+export function createRoute(
+  options: { id?: string; fallback?: Route; answer?: (body: CreateBody, call: Call) => Reply | 'defer' | undefined } = {},
+): Route {
+  const fallback = options.fallback ?? defaultWorkbenchRoute
+  const created = new Map<string, Record<string, unknown>>()
+  const byCommand = new Map<string, string>()
+  return (call) => {
+    const make = /^\/campaigns\/(cmp_\w+)\/documents$/.exec(call.url)
+    if (make !== null && call.method === 'POST') {
+      const body = JSON.parse(call.body ?? '{}') as CreateBody
+      const override = options.answer?.(body, call)
+      if (override !== undefined) return override
+      const id = byCommand.get(body.command_id) ?? options.id ?? `doc_made${created.size + 1}`
+      byCommand.set(body.command_id, id)
+      const document = {
+        ...DOCUMENT_FIXTURES[body.type as keyof typeof DOCUMENT_FIXTURES],
+        document_id: id, campaign_id: make[1], type: body.type, data: { name: body.data.name },
+      }
+      created.set(id, document)
+      return { status: 201, body: document }
+    }
+    const read = /^\/campaigns\/(cmp_\w+)\/documents\/(doc_\w+)$/.exec(call.url)
+    const made = read === null ? undefined : created.get(read[2])
+    if (made !== undefined && call.method === 'GET') return { status: 200, body: made }
+    return fallback(call)
+  }
+}
+
+/** `POST /campaigns/{cid}/documents/{did}/unarchive` answers 204 (or `answer`'s reply). */
+export function unarchiveRoute(
+  options: { fallback?: Route; answer?: (documentId: string, call: Call) => Reply | 'defer' | undefined } = {},
+): Route {
+  const fallback = options.fallback ?? defaultWorkbenchRoute
+  return (call) => {
+    const match = /^\/campaigns\/(cmp_\w+)\/documents\/(doc_\w+)\/unarchive$/.exec(call.url)
+    if (match === null || call.method !== 'POST') return fallback(call)
+    return options.answer?.(match[2], call) ?? { status: 204 }
   }
 }
 
@@ -181,6 +268,7 @@ export function stubServer(route: Route = defaultWorkbenchRoute) {
       reply: (reply) => {
         if (reply === 'network') reject(new TypeError('Failed to fetch'))
         else if (reply === 'abort') reject(new DOMException('aborted', 'AbortError'))
+        else if (reply.status === 204) resolve(new Response(null, { status: 204 }))
         else resolve(new Response(reply.raw ?? JSON.stringify(reply.body ?? {}), { status: reply.status }))
       },
     }
@@ -195,6 +283,11 @@ export function stubServer(route: Route = defaultWorkbenchRoute) {
     docCalls: () => calls.filter((call) => /\/documents\/[^/]+$/.test(call.url)),
     historyCalls: () => calls.filter((call) => /\/versions/.test(call.url)),
     libraryCalls: () => calls.filter((call) => /\/library$/.test(call.url)),
+    /** The parsed JSON body of every library call, in order. */
+    libraryBodies: () =>
+      calls.filter((call) => /\/library$/.test(call.url)).map((call) => JSON.parse(call.body ?? '{}') as Record<string, unknown>),
+    createCalls: () => calls.filter((call) => call.method === 'POST' && /\/documents$/.test(call.url)),
+    unarchiveCalls: () => calls.filter((call) => call.method === 'POST' && /\/unarchive$/.test(call.url)),
   }
 }
 export type StubServer = ReturnType<typeof stubServer>

@@ -24,7 +24,7 @@
 
 import * as React from 'react'
 import { useCanvasActions, useCanvasState } from '../shell/canvasContext'
-import { listSeats } from '../shell/campaignApi'
+import { listCampaignSeats } from '../shell/campaignApi'
 import { useReveals, useRevealSheetOpen } from '../shell/revealContext'
 import { mintCommandId } from '../shell/tableSessionApi'
 import { useTableSession } from '../shell/tableSession'
@@ -255,7 +255,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
   }
   React.useEffect(() => {
     let stale = false
-    void listSeats(campaignId, fetchImpl).then((result) => {
+    void listCampaignSeats(campaignId, fetchImpl).then((result) => {
       if (stale) return
       if (result.kind === 'ok') {
         setSeats({ status: 'ready', items: result.items })

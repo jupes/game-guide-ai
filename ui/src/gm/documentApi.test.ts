@@ -8,15 +8,17 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setUnauthorizedHandler } from '../api'
-import { LIBRARY_CATEGORIES, type LibraryQuery } from './contracts'
+import { DOC_TYPE_VERSION, LIBRARY_CATEGORIES, type LibraryQuery } from './contracts'
 import { DOCUMENT_FIXTURES } from './documentFixtures'
 import {
+  createDocument,
   getCharacterSheetLink,
   getDocument,
   getDocumentHistory,
   getDocumentVersion,
   queryLibrary,
   sealDocument,
+  unarchiveDocument,
 } from './documentApi'
 
 interface Recorded {
@@ -302,6 +304,92 @@ describe('sealDocument', () => {
   })
 })
 
+// ── create and unarchive (agent-forge-harness-1kg.6.4, L-1) ──────────────────
+
+const COMMAND_ID = 'cmd_AbCdEfGh01234567'
+const HANDOUT = { ...DOCUMENT_FIXTURES.handout, campaign_id: CID, document_id: DID }
+const CREATE = { commandId: COMMAND_ID, type: 'handout', name: 'Untitled Player Handout' } as const
+
+function errorBody(code: string, retryable = false): unknown {
+  return { detail: { code, message: 'refused', retryable } }
+}
+
+describe('createDocument', () => {
+  it('POSTs the exact create body as JSON, with the name in the body and never in the URL (X-7)', async () => {
+    const { fetchImpl, calls } = recorder({ status: 201, body: HANDOUT })
+    const result = await createDocument(CID, CREATE, fetchImpl)
+    expect(result.kind).toBe('ok')
+    if (result.kind === 'ok') expect(result.document.document_id).toBe(DID)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(`/campaigns/${CID}/documents`)
+    expect(calls[0].url).not.toMatch(/\?|Untitled|Handout/)
+    expect(calls[0]).toMatchObject({ method: 'POST', credentials: 'include' })
+    expect(calls[0].headers['content-type']).toBe('application/json')
+    expect(JSON.parse(calls[0].body ?? 'null')).toEqual({
+      schema_version: 1,
+      command_id: COMMAND_ID,
+      campaign_id: CID,
+      type: 'handout',
+      type_version: DOC_TYPE_VERSION.handout,
+      data: { name: 'Untitled Player Handout' },
+    })
+  })
+
+  it.each([
+    ['409 account_limit_reached', { status: 409, body: errorBody('account_limit_reached') }, 'limit'],
+    ['409 document_unsupported', { status: 409, body: errorBody('document_unsupported') }, 'unsupported'],
+    ['429', { status: 429, body: errorBody('rate_limited', true) }, 'throttled'],
+    ['422', { status: 422, body: errorBody('validation_failed') }, 'invalid'],
+    ['403', { status: 403, body: errorBody('forbidden') }, 'unavailable'],
+    ['404', { status: 404, body: errorBody('not_found') }, 'unavailable'],
+    ['500', { status: 500, body: {} }, 'failed'],
+    ['503', { status: 503, body: {} }, 'failed'],
+    ['a 409 with an unknown code', { status: 409, body: errorBody('something_new') }, 'failed'],
+    ['a 409 with no readable body', { status: 409, raw: 'nope' }, 'failed'],
+    ['a network failure', 'network', 'failed'],
+    ['an aborted request', 'abort', 'failed'],
+    ['a 201 whose body is not JSON', { status: 201, raw: '<html>' }, 'failed'],
+    ['a 201 whose body is not a document', { status: 201, body: { hello: 'world' } }, 'failed'],
+    ['a 201 for another campaign', { status: 201, body: { ...HANDOUT, campaign_id: 'cmp_somebodyElse0000000001' } }, 'failed'],
+    ['a 201 for another type', { status: 201, body: { ...DOCUMENT_FIXTURES.npc, campaign_id: CID, document_id: DID } }, 'failed'],
+  ] as Array<[string, Answer, string]>)('%s reads as %s', async (_label, answer, kind) => {
+    expect((await createDocument(CID, CREATE, recorder(answer).fetchImpl)).kind).toBe(kind)
+  })
+
+  it('a 401 is the centralized sign-out, once, and reads as unauthorized', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    expect(await createDocument(CID, CREATE, recorder({ status: 401, body: {} }).fetchImpl)).toEqual({ kind: 'unauthorized' })
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('a stat block without AC and HP is invalid with no request (LIB-12)', async () => {
+    const { fetchImpl, calls } = recorder({ status: 201, body: HANDOUT })
+    expect(await createDocument(CID, { commandId: COMMAND_ID, type: 'statblock', name: 'Tidewarden' }, fetchImpl)).toEqual({ kind: 'invalid' })
+    expect(calls).toHaveLength(0)
+    // Positive control: a type that needs only a name does reach the wire.
+    expect((await createDocument(CID, CREATE, fetchImpl)).kind).toBe('ok')
+    expect(calls).toHaveLength(1)
+  })
+
+  it.each([
+    ['a blank name', { ...CREATE, name: '   ' }],
+    ['a command id that is too short', { ...CREATE, commandId: 'short' }],
+  ])('%s is invalid with no request', async (_label, request) => {
+    const { fetchImpl, calls } = recorder({ status: 201, body: HANDOUT })
+    expect(await createDocument(CID, request, fetchImpl)).toEqual({ kind: 'invalid' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('a malformed campaign id makes no request and is unavailable (SEC-4)', async () => {
+    const { fetchImpl, calls } = recorder({ status: 201, body: HANDOUT })
+    expect(await createDocument('cmp_a/../b', CREATE, fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(calls).toHaveLength(0)
+    await createDocument(CID, CREATE, fetchImpl)
+    expect(calls).toHaveLength(1)
+  })
+})
+
 describe('getDocumentVersion', () => {
   it('GETs one version and reads its snapshot', async () => {
     const { fetchImpl, calls } = recorder({ status: 200, body: PINNED })
@@ -352,5 +440,47 @@ describe('getCharacterSheetLink', () => {
     expect(await kind({ status: 200, body: { ...LINK, document_id: 'doc_aDifferentDocument00001' } })).toBe('failed')
     expect(await kind({ status: 200, body: { nope: true } })).toBe('failed')
     expect(await getCharacterSheetLink('bad id', DID, recorder({ status: 200, body: LINK }).fetchImpl)).toEqual({ kind: 'unavailable' })
+  })
+})
+
+describe('unarchiveDocument', () => {
+  it('POSTs to the unarchive path with no body and no Content-Type, and a 204 is ok', async () => {
+    const { fetchImpl, calls } = recorder({ status: 204 })
+    expect(await unarchiveDocument(CID, DID, fetchImpl)).toEqual({ kind: 'ok' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(`/campaigns/${CID}/documents/${DID}/unarchive`)
+    expect(calls[0]).toMatchObject({ method: 'POST', body: null, credentials: 'include' })
+    expect(calls[0].headers['content-type']).toBeUndefined()
+  })
+
+  it.each([
+    ['403', { status: 403, body: errorBody('forbidden') }, 'unavailable'],
+    ['404', { status: 404, body: errorBody('not_found') }, 'unavailable'],
+    ['429', { status: 429, body: errorBody('rate_limited', true) }, 'throttled'],
+    ['503', { status: 503, body: errorBody('busy', true) }, 'failed'],
+    ['500', { status: 500, body: {} }, 'failed'],
+    ['a network failure', 'network', 'failed'],
+    ['an aborted request', 'abort', 'failed'],
+  ] as Array<[string, Answer, string]>)('%s reads as %s', async (_label, answer, kind) => {
+    expect((await unarchiveDocument(CID, DID, recorder(answer).fetchImpl)).kind).toBe(kind)
+  })
+
+  it('a 401 is the centralized sign-out, once, and reads as unauthorized', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    expect(await unarchiveDocument(CID, DID, recorder({ status: 401 }).fetchImpl)).toEqual({ kind: 'unauthorized' })
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['a campaign id with a slash', 'cmp_a/../b', DID],
+    ['a document id with a space', CID, 'doc 1'],
+    ['an empty document id', CID, ''],
+  ])('%s makes no request and is unavailable (SEC-4)', async (_label, campaignId, documentId) => {
+    const { fetchImpl, calls } = recorder({ status: 204 })
+    expect(await unarchiveDocument(campaignId, documentId, fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(calls).toHaveLength(0)
+    await unarchiveDocument(CID, DID, fetchImpl)
+    expect(calls).toHaveLength(1)
   })
 })

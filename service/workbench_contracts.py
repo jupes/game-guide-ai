@@ -2398,6 +2398,16 @@ class TableLeaveRequest(_Contract):
     schema_version: SchemaVersion
 
 
+class TableSnapshotQuery(_Contract):
+    """``GET /table/snapshot?campaign_id=`` (1kg.7.2, ID-15): which campaign's
+    table this principal reads. The campaign is in the URL's query because it is
+    not a secret (SEC-43); the **principal** is the cookie, and nothing here can
+    name a participant, a slot or a grant. A query is not a payload, so it
+    carries no ``schema_version``: the answer does (``TableSnapshot``)."""
+
+    campaign_id: OpaqueId
+
+
 class Capabilities(_Contract):
     """What the deployment has switched on (RAIL-10, AE-58): the answer to the
     lookup a GM client makes once per load. Every switch is off until the owner
@@ -4023,6 +4033,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "ScreenMintRequest": TypeAdapter(ScreenMintRequest),
     "ScreenMintAnswer": TypeAdapter(ScreenMintAnswer),
     "TableLeaveRequest": TypeAdapter(TableLeaveRequest),
+    "TableSnapshotQuery": TypeAdapter(TableSnapshotQuery),
     "Capabilities": TypeAdapter(Capabilities),
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
     "RevealSlotRef": TypeAdapter(RevealSlotRef, config=_HIDE_INPUT),

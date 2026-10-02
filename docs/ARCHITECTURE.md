@@ -724,6 +724,25 @@ read taken after they commit; if it fails the answer is a retryable 503, a retri
 Confirm replays by `command_id`, and a retried Stop is idempotent at the cost of
 one more epoch and one more `reveal.stopped` row.
 
+### The table read (1kg.7.2 PR-2)
+
+`GET /table/snapshot?campaign_id=` is the bearer-free read: players see only the
+sanitized projection of the slots they are entitled to. `table_api` runs Fetch
+Metadata, origin, the principal, the id shape (else the one `inactive`), the
+entitled-read budget keyed by the principal (`TABLE_READ_RATE_LIMIT_*`, 120 a
+minute: an account id or a grant id, never the source), then `TableReads`; a
+`None` is `inactive`, and only then is a refusal counted against the source
+budget (SEC-47(2)). Stored text reaches the route through `service/table_reads.py`
+alone (T-23), in one read-only transaction: the store's view finds the live
+session and the entitlement (the table slot, and the own slot only for a
+GM-confirmed seat; this module consults no eligibility rule, ED-25), then
+**only** `documents.snapshot(campaign, document, version)` reads text, and only
+a sealed version of the recorded type. `service/table_projection.py` is the one
+builder (SEC-14): it copies the masked keys and nothing else, at read time
+rather than at Confirm (ID-16: a sealed version is immutable, and `check_mask`
+and the contract share `_PROJECTION_VALUE`, a property test holds the two
+together). Frames that fail `TableSnapshot` are emitted with every slot empty.
+
 | Invariant | Held by |
 |---|---|
 | I-1 a slot shows at most one live content | one pointer column; `UNIQUE NULLS NOT DISTINCT (session_id, participant_id)` |

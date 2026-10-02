@@ -8,7 +8,7 @@
  */
 import type { ChatMode } from '../api'
 import type { BadgeTone } from '../ds/Badge'
-import type { Campaign } from '../gm/contracts'
+import type { Campaign, PlayerSeat } from '../gm/contracts'
 import type { Conversation, ConversationStore } from './conversationStore'
 
 /** Cards shown before "Show more campaigns" (ID-10), in the same step after. */
@@ -82,4 +82,32 @@ export function latestConversation(store: Pick<ConversationStore, 'list'>): Conv
     }
   }
   return newest
+}
+
+/** What a seat's recency is: when its table last met, else when it was taken. */
+function seatMoment(seat: PlayerSeat): number {
+  return momentOf(seat.last_played_at ?? seat.accepted_at)
+}
+
+/** A seat's place before recency: a table that is live for a confirmed seat
+ * first (it is the one a player came for), a concluded table last (30c PR-2,
+ * ID-23). */
+function seatRank(seat: PlayerSeat): number {
+  if (seat.concluded) return 2
+  return seat.live && seat.confirmed ? 0 : 1
+}
+
+/** The caller's seats in the order the screen shows them: live first, concluded
+ * last, each group by when its table last met (else when the seat was taken),
+ * newest first, then newest acceptance, then campaign id. The client orders on
+ * its own, as for campaigns: the server's order is by acceptance only. */
+export function orderSeats(items: readonly PlayerSeat[]): PlayerSeat[] {
+  return [...items].sort(
+    (a, b) => (
+      seatRank(a) - seatRank(b)
+      || seatMoment(b) - seatMoment(a)
+      || momentOf(b.accepted_at) - momentOf(a.accepted_at)
+      || (a.campaign_id < b.campaign_id ? -1 : a.campaign_id > b.campaign_id ? 1 : 0)
+    ),
+  )
 }
