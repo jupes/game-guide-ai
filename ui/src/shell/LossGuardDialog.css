@@ -1,0 +1,140 @@
+/* ── LossGuardDialog ─────────────────────────────────────────────────────────
+   §5.3. A centred modal at wide and medium, a full-width bottom sheet where the
+   shell has no navigation column (`data-nav="hidden"`, i.e. narrow). Tokens only,
+   so both themes follow the palette. It keys on `data-nav`, never a width query
+   (breakpoints.ts owns every boundary).
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.loss-guard__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--aether-z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--aether-space-4);
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 55%, transparent);
+}
+
+.loss-guard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+  width: min(440px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: var(--aether-space-5);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-sheet);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-level3);
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+  animation: loss-guard-in var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
+}
+
+.loss-guard:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.loss-guard__heading {
+  margin: 0;
+  font-family: var(--aether-font-display);
+  font-size: var(--md-sys-typescale-headline-small-size);
+  font-weight: var(--md-sys-typescale-headline-small-weight);
+  overflow-wrap: anywhere;
+}
+
+.loss-guard__body {
+  margin: 0;
+  font-size: 14px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.loss-guard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+}
+
+.loss-guard__button {
+  min-height: var(--aether-touch-min);
+  padding: 0 16px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-button);
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.loss-guard__button:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.loss-guard__button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.loss-guard__button--primary {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+/* The one destructive action: error-coloured text, never filled, so it reads as
+   the choice to think about rather than the one to press. */
+.loss-guard__button--destructive {
+  border-color: var(--md-sys-color-error);
+  color: var(--md-sys-color-error);
+}
+
+@media (hover: hover) {
+  .loss-guard__button:not(:disabled):hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+
+  .loss-guard__button--primary:not(:disabled):hover {
+    background: var(--md-sys-color-primary);
+    filter: brightness(1.08);
+  }
+}
+
+/* A bottom sheet where the shell has no navigation column (narrow). */
+.workspace-shell[data-nav="hidden"] .loss-guard__scrim {
+  align-items: flex-end;
+  padding: 0;
+}
+
+.workspace-shell[data-nav="hidden"] .loss-guard {
+  width: 100%;
+  border-inline: none;
+  border-block-end: none;
+  border-radius: var(--aether-radius-sheet) var(--aether-radius-sheet) 0 0;
+}
+
+.workspace-shell[data-nav="hidden"] .loss-guard__actions {
+  flex-direction: column;
+}
+
+.workspace-shell[data-nav="hidden"] .loss-guard__button {
+  width: 100%;
+}
+
+@keyframes loss-guard-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loss-guard {
+    animation: none;
+  }
+}
