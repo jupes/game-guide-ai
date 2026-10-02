@@ -16,6 +16,16 @@ the imports).
   (SEC-48).
 - `POST /table/leave`: `204`, and never a 401: it never reads or ends an
   account session (SEC-49).
+- `GET /table/snapshot?campaign_id=` (1kg.7.2 PR-2): the principal's
+  `TableSnapshot`, the table slot and, for a confirmed seat, its own. In order:
+  Fetch Metadata, origin, the principal, the campaign id's shape (else
+  `inactive`), the entitled-read budget keyed by the principal (SEC-47(1): an
+  account id or a grant id, never the source), then `TableReads.snapshot`.
+  `None` from it is the one `inactive`, and **only then** is a refusal counted
+  against the source budget (SEC-47(2)), so an exhausted budget turns only
+  would-be refusals into `429`. This module reaches stored text through
+  `table_reads` alone and imports neither the document store nor `reveals`
+  (T-23).
 
 **Router-level dependencies are exactly two, in this order.** Fetch Metadata
 (SEC-45): a `Sec-Fetch-Site` that is present and not `same-origin`, or
@@ -86,6 +96,7 @@ from . import ratelimit
 from .auth_store import AuthStore
 from .campaign_store import MissingParent, ScreenLimit
 from .session import SessionData
+from .table_reads import TableReads
 from .table_session_store import LiveScreen
 from .table_sessions import BackendUnavailable, Inactive, TableSessions
 from .workbench_api import WorkbenchRoute, cross_site, inactive, mark_write_throttle, origin_check, spend_write
@@ -98,6 +109,7 @@ from .workbench_contracts import (
     ScreenMintAnswer,
     ScreenMintRequest,
     TableLeaveRequest,
+    TableSnapshot,
 )
 
 log = logging.getLogger(__name__)
@@ -248,6 +260,27 @@ def _throttle(request: Request) -> None:
         )
 
 
+def _spend_read(principal: Principal) -> None:
+    """One entitled read from the principal's own budget (SEC-47(1)): the account
+    id or the grant id, so one venue's NAT never shares a budget. Past it, `429
+    throttled_user` with its wait, deciding nothing about the principal."""
+    if principal.screen is not None:
+        key = f"screen:{principal.screen.grant_id}"
+    elif principal.account is not None:
+        key = f"account:{principal.account.user_id}"
+    else:
+        raise ValueError("a principal is a screen or an account")
+    refused: ratelimit.RateLimited | None = None
+    try:
+        ratelimit.check_table_read(key)
+    except ratelimit.RateLimited as exc:
+        refused = exc
+    if refused is not None:
+        raise _refusal(
+            429, ErrorCode.THROTTLED_USER, THROTTLED_MESSAGE, retryable=True, retry_after_s=refused.retry_after
+        )
+
+
 def _guarded[T](work: Callable[[], T]) -> T:
     """One lifecycle call. What the database says is a retryable 503 with its
     type and SQLSTATE logged, never its message (which can quote a row)."""
@@ -286,10 +319,11 @@ def build_router(
     auth_store: Callable[[], AuthStore],
     clear_session_cookie: Callable[[Response], None],
     lifecycle: Callable[[], TableSessions | None],
+    table_reads: Callable[[], TableReads | None],
 ) -> APIRouter:
     """The table router, given the application's session check (called
     directly, never declared), its auth store getter, its account-cookie
-    deletion and the lifecycle getter."""
+    deletion, the lifecycle getter and the read side's."""
     router = APIRouter(
         route_class=TableRoute,
         dependencies=[Depends(fetch_metadata), Depends(origin_check())],
@@ -402,6 +436,36 @@ def build_router(
             _forget(request)
             response.headers["clear-site-data"] = CLEAR_SITE_DATA
         return response
+
+    @router.get("/table/snapshot", response_model=TableSnapshot)
+    def snapshot(
+        request: Request,
+        campaign_id: str | None = None,
+        principal: Principal = Depends(table_principal),
+        reads: TableReads | None = Depends(table_reads),
+        now: datetime = Depends(get_clock),
+    ) -> Response:
+        """What this principal may read of the campaign's live table (ID-15). Not
+        entitled, for any reason, is the one `inactive` (SEC-46); a screen reads
+        the table slot, a confirmed seat its own as well."""
+        if campaign_id is None or not ident.is_id(ident.CAMPAIGN, campaign_id):
+            inactive()
+        _spend_read(principal)
+        if reads is None:
+            raise _unavailable()
+        screen, account = principal.screen, principal.account
+        found = _guarded(
+            lambda: reads.snapshot(
+                campaign_id,
+                now=now,
+                grant_id=None if screen is None else screen.grant_id,
+                account_id=None if account is None else account.user_id,
+            )
+        )
+        if found is None:
+            _throttle(request)
+            inactive()
+        return JSONResponse(found.model_dump(mode="json"))
 
     return router
 

@@ -341,6 +341,9 @@ class TableView:
     own_slot: bool
     table: SlotContent
     mine: SlotContent | None = None
+    #: Whether table audio is on for the session (AUDIO-19): the session's own
+    #: flag, read in the same query as the slots. It belongs to no slot.
+    audio: bool = True
 
 
 @dataclass(frozen=True)
@@ -898,7 +901,7 @@ class PostgresRevealStore(_Writes):
             "SELECT s.id, s.campaign_id, s.link_generation, (c.owner_id = %(u)s) AS is_owner, p.id, "
             "(c.owner_id <> %(u)s AND p.confirmed_at IS NOT NULL) AS own_slot, "
             "t.id, t.seq, td.document_id, tdoc.type, td.version_number, td.mask, "
-            "m.id, m.seq, md.document_id, mdoc.type, md.version_number, md.mask "
+            "m.id, m.seq, md.document_id, mdoc.type, md.version_number, md.mask, s.table_audio "
             "FROM campaign.table_sessions s "
             "JOIN campaign.campaigns c ON c.id = s.campaign_id "
             "LEFT JOIN campaign.participants p ON p.campaign_id = s.campaign_id AND p.user_id = %(u)s "
@@ -926,6 +929,7 @@ class PostgresRevealStore(_Writes):
             own_slot=own,
             table=_content(row[6:12]),
             mine=_content(row[12:18]) if own else None,
+            audio=bool(row[18]),
         )
 
     def view_for_screen(
@@ -933,7 +937,7 @@ class PostgresRevealStore(_Writes):
     ) -> TableView | None:
         row = pg(unit).conn.execute(
             f"SELECT s.id, s.campaign_id, s.link_generation, "
-            f"t.id, t.seq, td.document_id, tdoc.type, td.version_number, td.mask "
+            f"t.id, t.seq, td.document_id, tdoc.type, td.version_number, td.mask, s.table_audio "
             f"FROM campaign.table_credentials g JOIN campaign.table_sessions s ON s.id = g.session_id "
             f"LEFT JOIN campaign.reveal_slots t ON t.session_id = s.id AND t.participant_id IS NULL "
             f"LEFT JOIN campaign.reveal_disclosures td ON td.id = t.disclosure_id AND td.ended_at IS NULL "
@@ -943,7 +947,7 @@ class PostgresRevealStore(_Writes):
         ).fetchone()
         if row is None:
             return None
-        return TableView(row[0], row[1], int(row[2]), False, None, False, _content(row[3:9]))
+        return TableView(row[0], row[1], int(row[2]), False, None, False, _content(row[3:9]), audio=bool(row[9]))
 
     def stale_slots(self, unit: UnitOfWork, campaign_id: str, *, now: datetime) -> list[StaleSlots]:
         moment = aware(now, "a clock")
@@ -1205,6 +1209,7 @@ class InMemoryRevealStore(_Writes):
             own_slot=own,
             table=self._shown(twin, slots.get(None)),
             mine=self._shown(twin, slots.get(seat.id)) if own and seat is not None else None,
+            audio=session.table_audio,
         )
 
     def view_for_screen(
@@ -1225,7 +1230,14 @@ class InMemoryRevealStore(_Writes):
             return None
         table = next((s for s in self._slots(unit, session.id) if s.participant_id is None), None)
         return TableView(
-            session.id, campaign_id, session.link_generation, False, None, False, self._shown(twin, table)
+            session.id,
+            campaign_id,
+            session.link_generation,
+            False,
+            None,
+            False,
+            self._shown(twin, table),
+            audio=session.table_audio,
         )
 
     def stale_slots(self, unit: UnitOfWork, campaign_id: str, *, now: datetime) -> list[StaleSlots]:

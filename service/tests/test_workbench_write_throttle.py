@@ -427,6 +427,7 @@ def test_mint_throttle_spends_only_for_an_account_principal(monkeypatch: pytest.
         auth_store=lambda: cast(AuthStore, None),
         clear_session_cookie=lambda response: None,
         lifecycle=lambda: None,
+        table_reads=lambda: None,
     )
     mint_route = next(route for route in router.routes if isinstance(route, APIRoute) and route.path == "/table/screen")
     mint_throttle = next(d.call for d in mint_route.dependant.dependencies if is_write_throttle(d.call))

@@ -43,14 +43,21 @@ from service.audit_log import InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
 from service.campaign_store import InMemoryCampaignStore
 from service.db import InMemoryDatabase
+from service.document_store import InMemoryDocumentStore
 from service.invites import Role
 from service.jobs import InMemoryJobQueue
 from service.participant_store import InMemoryParticipantStore
+from service.ratelimit import SlidingWindowLimiter
 from service.reconciliation import enqueue_reconciliation
+from service.reveal_scope import ParticipantsAudience, TableAudience
+from service.reveal_store import InMemoryRevealStore
+from service.reveals import DisplayCommand, Reveals, slot_clear_for
 from service.session import SessionData, encode_session
+from service.table_reads import TableReads
 from service.table_session_store import SCREENS_PER_SESSION, InMemoryTableSessionStore, no_slots
 from service.table_sessions import TableSessions
 from service.workbench_api import CROSS_SITE_DETAIL, FORBIDDEN_ORIGIN_DETAIL, INACTIVE_DETAIL, api_routes
+from service.workbench_contracts import Author, DocumentTypeId, TableSnapshot
 
 pytestmark = pytest.mark.real_auth
 
@@ -59,7 +66,7 @@ SECRET = "table-api-test-secret-long-enough-for-the-floor"
 T0 = datetime(2026, 9, 1, 19, 0, tzinfo=UTC)
 INACTIVE = {"detail": dict(INACTIVE_DETAIL)}
 UNAUTHENTICATED = {"detail": "not signed in"}
-MINT, LEAVE = "/table/screen", "/table/leave"
+MINT, LEAVE, SNAPSHOT = "/table/screen", "/table/leave", "/table/snapshot"
 LEAVE_BODY = {"schema_version": 1}
 SOURCE = Path(table_api.__file__)
 SERVICE = SOURCE.parent
@@ -635,6 +642,10 @@ FORBIDDEN_IMPORTS = frozenset({
     "conversations_api", "timeline_api", "table_session_api", "campaigns_api", "documents_api", "seats_api",
     "document_store", "document_wire", "history", "conversation_store", "timeline_store", "timeline",
     "asset_store", "asset_jobs", "media_objects", "attachments", "app",
+    # 1kg.7.2 PR-2, T-23, C-6(c): stored text reaches a table route through
+    # `table_reads` alone, so the route module names no reveal service or store
+    # and no projection builder either.
+    "reveals", "reveal_store", "table_projection",
     # T-23, SEC-44 (1kg.4.3 I-27): a table route acts with table authority
     # only, so it may never reach the Workbench tool modules either.
     "tool_invocations", "tool_invocations_api", "document_generation", "document_tools",
@@ -657,12 +668,18 @@ def _imported_modules(source: str) -> set[str]:
 def test_the_table_module_imports_no_gm_route_module_and_no_private_store() -> None:
     imported = _imported_modules(SOURCE.read_text(encoding="utf-8"))
     assert imported & FORBIDDEN_IMPORTS == set()
-    assert {"table_sessions", "workbench_api"} <= imported, "the check is reading the imports it should"
+    assert {"table_sessions", "workbench_api", "table_reads"} <= imported, "the check reads the imports it should"
 
 
 @pytest.mark.parametrize(
     "added",
-    ["from .conversations_api import read_body", "from . import timeline_api", "import service.document_store"],
+    [
+        "from .conversations_api import read_body",
+        "from . import timeline_api",
+        "import service.document_store",
+        "from .reveals import Reveals",
+        "from . import reveal_store",
+    ],
 )
 def test_the_import_boundary_fails_when_an_import_is_added(added: str) -> None:
     source = SOURCE.read_text(encoding="utf-8").replace("import config\n", f"import config\n{added}\n", 1)
@@ -676,15 +693,240 @@ NGINX = SERVICE.parent / "ui" / "nginx.conf"
 
 def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
     """`tests/test_proxy_contract.py` asks only for a location that begins with
-    `/table`. The two routes are named exactly — a bare `/table` would also
+    `/table`. The three routes are named exactly — a bare `/table` would also
     catch the table page (`1kg.7.4`) and `/table-sessions` — and each forwards
     `Host` (the origin check compares `Origin` with it) and `X-Real-IP`."""
     conf = NGINX.read_text(encoding="utf-8")
     table_paths = sorted({path for path, _ in api_routes(app) if path.startswith("/table/")})
-    assert table_paths == [LEAVE, MINT]
+    assert table_paths == [LEAVE, MINT, SNAPSHOT]
     blocks = dict(re.findall(r"location\s+(/table\S*)\s*\{([^}]*)\}", conf))
     assert sorted(blocks) == table_paths, "each table route by its own name, and no bare /table"
     for path, block in blocks.items():
         assert "proxy_set_header   Host $host;" in block, path
         assert "proxy_set_header   X-Real-IP $remote_addr;" in block, path
         assert "proxy_pass         http://service:8000;" in block, path
+
+
+# ── The snapshot read (1kg.7.2 PR-2; ID-15, SEC-46, SEC-47, T-1, T-23) ───────
+
+SNAPSHOT_AT = "/table/snapshot?campaign_id="
+CANARY = {
+    "name": "Canary-Name-9f1c",
+    "qualifier": "Canary-Qualifier-3a7d",
+    "voice": "Canary-Voice-55b0",
+    "tags": ["Canary-Tag-c21e"],
+}
+CONFIRMED, AWAITING = PLAYER, 5
+
+
+@dataclass
+class _Reading:
+    world: _World
+    campaign: str
+    session: str
+    ids: set[str]
+    grant: str
+    grant_id: str
+
+
+def _get(
+    path: str, *, account: int | None = None, grant: str | None = None, headers: dict[str, str] | None = None
+) -> Response:
+    """One GET from a browser holding exactly these cookies."""
+    cookies = []
+    if account is not None:
+        cookies.append(f"{config.SESSION_COOKIE_NAME}={_account(account)}")
+    if grant is not None:
+        cookies.append(f"{table_api.SCREEN_COOKIE}={grant}")
+    sent = {**(headers or {}), **({"cookie": "; ".join(cookies)} if cookies else {})}
+    return TestClient(app).get(path, headers=sent)
+
+
+@pytest.fixture
+def reading(world: _World) -> Iterator[_Reading]:
+    """A live table whose table slot shows an NPC's name and whose confirmed seat
+    holds a private copy of its voice, an awaiting seat holding a held one."""
+    world.auth._users.append(User(id=AWAITING, email="u5@example.com", role="dm", created_at=T0))
+    rows = InMemoryRevealStore(world.db)
+    documents = InMemoryDocumentStore(world.db)
+    seats = InMemoryParticipantStore(world.db)
+    served = Reveals(
+        world.db,
+        campaigns=world.campaigns,
+        sessions=InMemoryTableSessionStore(world.db, slot_clear=slot_clear_for(rows)),
+        reveals=rows,
+        documents=documents,
+        audit=world.audit,
+    )
+    campaign, session = world.live()
+    seat_ids = []
+    for player, confirm in ((CONFIRMED, True), (AWAITING, False)):
+        with world.db.transaction() as unit:
+            seat = seats.add(unit, campaign, alias=f"Seat {player}", now=T0).id
+            seats.offer(unit, campaign, seat, user_id=player)
+            seats.accept(unit, campaign, seat, user_id=player, now=T0)
+            if confirm:
+                seats.confirm(unit, campaign, seat, now=T0)
+        seat_ids.append(str(seat))
+
+    def new_document() -> str:
+        with world.db.transaction() as unit:
+            made = documents.create(
+                unit, campaign, doc_type=DocumentTypeId.NPC, type_version=1, data=dict(CANARY), author=Author.GM
+            )
+        with world.db.transaction() as unit:
+            documents.seal(unit, campaign, made.id)
+        return str(made.id)
+
+    shown, private, held = new_document(), new_document(), new_document()
+    for n, (document, audience, mask) in enumerate(
+        [
+            (shown, TableAudience(), ("name",)),
+            (private, ParticipantsAudience(frozenset({seat_ids[0]})), ("voice",)),
+            (held, ParticipantsAudience(frozenset({seat_ids[1]})), ("voice",)),
+        ]
+    ):
+        with world.db.transaction() as unit:
+            found = world.sessions.get(unit, session)
+        assert found is not None
+        command = DisplayCommand(
+            campaign, session, f"cmd_reading_{n:010d}", found.reveal_epoch, document, 1, mask, audience
+        )
+        served.display(command, owner_id=GM_A, now=T0)
+    reads = TableReads(world.counting, rows, documents)
+    app.dependency_overrides[appmod.get_table_reads] = lambda: reads
+    secret = world.grant(campaign)
+    live = world.lifecycle.resolve_screen(secret, now=T0)
+    assert live is not None
+    ids = {campaign, session, shown, private, held, *seat_ids, secret, live.grant_id}
+    yield _Reading(world, campaign, session, ids, secret, live.grant_id)
+    app.dependency_overrides.pop(appmod.get_table_reads, None)
+
+
+def test_every_viewers_bytes_hold_the_masked_text_and_no_other_field_and_no_id(reading: _Reading) -> None:
+    """T-1 on the raw response bytes and headers, and T-23's owner row: the
+    owner's account on a table route reads the table slot only, as a guest.
+    Kills: a projection built from the whole document, a private copy sent to
+    anyone but its seat, an id in a body or a header, a missing header."""
+    at = SNAPSHOT_AT + reading.campaign
+    viewers = {
+        "owner": _get(at, account=GM_A),
+        "confirmed seat": _get(at, account=CONFIRMED),
+        "awaiting seat": _get(at, account=AWAITING),
+        "screen": _get(at, grant=reading.grant),
+    }
+    for name, answer in viewers.items():
+        assert answer.status_code == 200, (name, answer.text)
+        assert answer.headers["cache-control"] == "no-store"
+        assert answer.headers["cross-origin-resource-policy"] == "same-origin"
+        assert answer.headers["content-type"].startswith("application/json")
+        TableSnapshot.model_validate_json(answer.content)
+        raw = answer.content.decode()
+        assert CANARY["name"] in raw, name
+        assert "Canary-Qualifier" not in raw and "Canary-Tag" not in raw, name
+        assert ("Canary-Voice" in raw) == (name == "confirmed seat"), name
+        assert not any(i in raw or i in str(answer.headers) for i in reading.ids), name
+        for key in ("session_id", "document_id", "participant_id", "disclosure_id", "epoch"):
+            assert key not in raw, (name, key)
+    assert '"role":"participant"' in viewers["confirmed seat"].text.replace(" ", "")
+    assert '"role":"guest"' in viewers["owner"].text.replace(" ", "")
+
+
+def test_everyone_not_entitled_gets_the_one_inactive(reading: _Reading) -> None:
+    """SEC-46: a stranger, another GM, no live session, a missing campaign, an id
+    of another kind, a missing or empty query: one body, one set of headers, and
+    no cookie deleted or set. Kills: a distinct answer for any of them."""
+    world = reading.world
+    ended = world.campaign(GM_B, "Ended")
+    world.lifecycle.end(GM_B, ended, world.start(ended, GM_B), now=T0)
+    refusals = {
+        "a stranger": _get(SNAPSHOT_AT + reading.campaign, account=BYSTANDER),
+        "another GM": _get(SNAPSHOT_AT + reading.campaign, account=GM_B),
+        "no live session": _get(SNAPSHOT_AT + ended, account=GM_B),
+        "a missing campaign": _get(SNAPSHOT_AT + "cmp_" + "z" * 22, account=GM_A),
+        "another kind of id": _get(SNAPSHOT_AT + "doc_" + "z" * 22, account=GM_A),
+        "no query": _get("/table/snapshot", account=GM_A),
+        "an empty query": _get(SNAPSHOT_AT, account=GM_A),
+    }
+    shapes = {name: _shape(answer) for name, answer in refusals.items()}
+    assert len(set(shapes.values())) == 1, shapes
+    one = refusals["a stranger"]
+    assert (one.status_code, one.json()) == (404, INACTIVE) and _cookies(one) == []
+    signed_out = _get(SNAPSHOT_AT + reading.campaign)
+    assert (signed_out.status_code, signed_out.json()) == (401, UNAUTHENTICATED)
+
+
+def test_the_order_of_checks_opens_no_transaction_before_the_id_shape(reading: _Reading) -> None:
+    """Fetch Metadata, then the principal, then the id shape, then the budget:
+    a cross-site read is the 403 and a malformed id the 404, and neither opens a
+    transaction. Kills: the id shape checked after the read."""
+    world = reading.world
+    before = world.counting.opened
+    cross = _get(SNAPSHOT_AT + reading.campaign, account=GM_A, headers={"sec-fetch-site": "cross-site"})
+    assert (cross.status_code, cross.json()["detail"]["code"]) == (403, "cross_site")
+    assert _get(SNAPSHOT_AT + "not-an-id", account=GM_A).status_code == 404
+    assert _get(SNAPSHOT_AT + "cmp_" + "a" * 21 + "!", account=GM_A).status_code == 404
+    assert world.counting.opened == before
+    assert _get(SNAPSHOT_AT + reading.campaign, account=GM_A).status_code == 200
+    assert world.counting.opened == before + 1, "one transaction per entitled read"
+
+
+def test_the_read_budget_is_keyed_by_the_principal_and_never_by_the_source(
+    reading: _Reading, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-47(1). Two accounts and a screen behind one source spend their own
+    budgets: the keys are `account:<id>` and `screen:<grant>`, and past its bound
+    one principal is the 429 while the others still read. Kills: keying by
+    `client_source`; one shared budget."""
+    seen: list[str] = []
+    real = ratelimit.check_table_read
+
+    def spy(key: str) -> None:
+        seen.append(key)
+        real(key)
+
+    monkeypatch.setattr(ratelimit, "check_table_read", spy)
+    monkeypatch.setattr(ratelimit, "table_read_limiter", SlidingWindowLimiter(2, 3600))
+    at = SNAPSHOT_AT + reading.campaign
+    assert [_get(at, account=GM_A).status_code for _ in range(2)] == [200, 200]
+    spent = reading.world.counting.opened
+    refused = _get(at, account=GM_A)
+    assert refused.status_code == 429 and refused.json()["detail"]["code"] == "throttled_user"
+    assert int(refused.headers["retry-after"]) >= 1
+    assert reading.world.counting.opened == spent, "a throttled read opens no transaction"
+    assert _get(at, account=CONFIRMED).status_code == 200
+    assert _get(at, grant=reading.grant).status_code == 200
+    assert seen == [f"account:{GM_A}"] * 3 + [f"account:{CONFIRMED}", f"screen:{reading.grant_id}"]
+
+
+def test_a_refusal_is_counted_against_the_source_and_never_an_entitled_read(
+    reading: _Reading, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-47(2): only a request that failed spends the source's refusal budget,
+    after the lookup; past it the next would-be refusal is a 429, and an entitled
+    principal on the same source still reads. Kills: counting before the lookup."""
+    monkeypatch.setattr(ratelimit, "source_limiter", SlidingWindowLimiter(2, 3600))
+    at = SNAPSHOT_AT + reading.campaign
+    assert [_get(at, account=GM_A).status_code for _ in range(4)] == [200] * 4
+    assert [_get(at, account=BYSTANDER).status_code for _ in range(3)] == [404, 404, 429]
+    assert _get(at, account=GM_A).status_code == 200
+
+
+def test_a_degraded_instance_and_a_database_error_are_a_retryable_503_that_names_no_text(
+    reading: _Reading, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Kills: a 500; a log line that carries the driver's message."""
+    at = SNAPSHOT_AT + reading.campaign
+    app.dependency_overrides[appmod.get_table_reads] = lambda: None
+    degraded = _get(at, account=GM_A)
+    assert (degraded.status_code, degraded.json()["detail"]["code"]) == (503, "backend_unavailable")
+
+    class Failing:
+        def snapshot(self, *args: Any, **kwargs: Any) -> Any:
+            raise psycopg.OperationalError("the row says Canary-Name-9f1c")
+
+    app.dependency_overrides[appmod.get_table_reads] = lambda: Failing()
+    with caplog.at_level(logging.DEBUG):
+        failed = _get(at, account=GM_A)
+    assert (failed.status_code, failed.json()["detail"]["retryable"]) == (503, True)
+    assert "OperationalError" in caplog.text and "Canary" not in caplog.text + failed.text
