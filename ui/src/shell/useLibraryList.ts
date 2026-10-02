@@ -62,6 +62,8 @@ export type LibraryListState =
       readonly more: 'idle' | 'loading' | 'failed'
       /** The settled search this answer is for. */
       readonly search: string
+      /** Counts first-page answers (not Load more, not a removal): a change is a new result to announce. */
+      readonly generation: number
     }
 
 export interface LibraryList {
@@ -80,6 +82,7 @@ interface Loaded {
   readonly nextCursor: string | null
   readonly more: 'idle' | 'loading' | 'failed'
   readonly search: string
+  readonly generation: number
 }
 
 /** The search as it would be sent: trimmed, and nothing at all below the two-character minimum. */
@@ -147,6 +150,7 @@ export function useLibraryList(query: LibraryListQuery, fetchImpl?: typeof fetch
   const latestKey = React.useRef<string | null>(requestKey)
   const requestedKey = React.useRef<string | null>(null)
   const bodyRef = React.useRef<LibraryQuery | null>(body)
+  const generationRef = React.useRef(0)
 
   React.useEffect(() => {
     latestKey.current = requestKey
@@ -162,11 +166,13 @@ export function useLibraryList(query: LibraryListQuery, fetchImpl?: typeof fetch
         result.page.campaign_id !== askedCampaign ||
         result.page.category !== askedCategory
       ) {
-        setLoaded({ key, status: 'error', items: [], nextCursor: null, more: 'idle', search: body.search })
+        setLoaded({ key, status: 'error', items: [], nextCursor: null, more: 'idle', search: body.search, generation: 0 })
         return
       }
+      generationRef.current += 1
       setLoaded({
-        key, status: 'ready', items: result.page.items, nextCursor: result.page.next_cursor, more: 'idle', search: body.search,
+        key, status: 'ready', items: result.page.items, nextCursor: result.page.next_cursor, more: 'idle',
+        search: body.search, generation: generationRef.current,
       })
     })
   }, [requestKey, body, fetchImpl])
@@ -218,7 +224,10 @@ export function useLibraryList(query: LibraryListQuery, fetchImpl?: typeof fetch
   else if (read === null) state = { status: 'loading' }
   else if (read.status === 'error') state = { status: 'error' }
   else {
-    state = { status: 'ready', items: read.items, nextCursor: read.nextCursor, more: read.more, search: read.search }
+    state = {
+      status: 'ready', items: read.items, nextCursor: read.nextCursor, more: read.more, search: read.search,
+      generation: read.generation,
+    }
   }
 
   return { state, retry, loadMore, removeItem }

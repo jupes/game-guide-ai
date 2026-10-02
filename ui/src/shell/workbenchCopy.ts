@@ -68,3 +68,79 @@ export const WORKBENCH_COPY = {
   skipToConversation: 'Skip to conversation',
   skipToDocument: 'Skip to document',
 } as const
+
+/**
+ * The Campaign Library (agent-forge-harness-1kg.6.4; interactions ADR section 6 and
+ * 12.2). The empty and loading copy that the ADR quotes is quoted; the design lane
+ * draws no library screen, so every other string is INFERRED, listed in the PR body
+ * so the owner can overrule it, and lives here so `cub` can replace it without
+ * touching a component.
+ *
+ * Titles, search text and field text are GM-private (X-7): they are ARGUMENTS here,
+ * rendered and announced, never a key, an id, a storage value or a log field.
+ */
+export const LIBRARY_COPY = {
+  title: 'Campaign Library',
+  close: 'Close library',
+  back: 'Back',
+  tabs: 'Library categories',
+
+  /** Per category: the tab, the list's name, and the noun the sentences use. */
+  category: {
+    npcs: { tab: 'NPCs', noun: 'NPCs' },
+    bestiary: { tab: 'Bestiary', noun: 'the bestiary' },
+    documents: { tab: 'Documents', noun: 'documents' },
+    'session-log': { tab: 'Session log', noun: 'session notes' },
+  },
+
+  search: (noun: string): string => `Search ${noun}`,
+  searchInvalid: "Search can't include some of those characters.",
+  sort: 'Sort',
+  recent: 'Recently updated',
+  name: 'Name A–Z',
+  show: 'Show',
+  active: 'Active',
+  archived: 'Archived',
+  type: 'Type',
+  allTypes: 'All types',
+
+  // ── Empty states (section 12.2) ──
+  empty: {
+    npcs: 'No NPCs yet. Run /npc or press New.',
+    bestiary: 'Nothing in the bestiary yet. Run /monster and save it.',
+    documents: 'No documents yet. Press New to write one.',
+    'session-log': 'No session notes yet. Run /recap at the end of a session.',
+  },
+  noMatch: (search: string): string => `Nothing matches "${search}"`,
+  clear: 'Clear',
+  archivedEmpty: (noun: string): string => `Nothing archived in ${noun}.`,
+
+  // ── Loading and errors ──
+  loading: (noun: string): string => `Loading ${noun}…`,
+  loadFailed: (noun: string): string => `Couldn't load ${noun}`,
+  retry: 'Retry',
+  loadMore: 'Load more',
+  loadingMore: 'Loading…',
+  moreFailed: "Couldn't load more",
+
+  // ── New ──
+  new: 'New',
+  newNamed: (typeLabel: string): string => `New ${typeLabel}`,
+  creating: 'Creating…',
+  created: (name: string): string => `Created ${name}`,
+  createFailed: "Couldn't create the document. Nothing was saved.",
+  createRefused: "Couldn't create the document.",
+  storageFull: "This account's document storage is full. Archive and delete documents to make room.",
+  throttled: 'Too many changes at once. Wait a moment and try again.',
+
+  // ── Restore ──
+  restore: 'Restore',
+  restoreNamed: (title: string): string => `Restore ${title}`,
+  restored: (title: string): string => `Restored ${title}`,
+  restoreFailed: (title: string): string => `Couldn't restore ${title}. Nothing changed.`,
+  gone: "That document isn't available.",
+
+  // ── Announcements ──
+  found: (count: number, more: boolean): string => (more ? `${count}+ found` : count === 0 ? 'Nothing found' : `${count} found`),
+  moreLoaded: (count: number): string => `${count} more loaded`,
+} as const
