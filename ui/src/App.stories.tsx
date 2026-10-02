@@ -128,8 +128,9 @@ export const SignedIn: Story = {
 
 /**
  * The whole entry path by keyboard alone: Tab to the CTA, press Enter, and the
- * workspace replaces the landing screen. Starts on Landing explicitly -- see
- * the SignedIn story's note (agent-forge-harness-y40, R8).
+ * tavern replaces the landing screen (30c: the CTA opens it for every signed-in
+ * account); then Back to chat, by keyboard too, opens the workspace. Starts on
+ * Landing explicitly -- see the SignedIn story's note (agent-forge-harness-y40, R8).
  */
 export const EnteredByKeyboard: Story = {
   decorators: [withShell({ authStatus: 'authenticated', screen: 'landing' })],
@@ -141,9 +142,14 @@ export const EnteredByKeyboard: Story = {
 
     await userEvent.keyboard('{Enter}')
 
+    await expect(await canvas.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await expect(canvas.queryByRole('button', { name: /enter the tavern/i })).not.toBeInTheDocument()
+    canvas.getByRole('button', { name: 'Back to chat' }).focus()
+    await userEvent.keyboard('{Enter}')
+
     await expect(await canvas.findByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument()
     await expect(canvas.getByText('Ask the Sage…')).toBeInTheDocument()
-    await expect(canvas.queryByRole('button', { name: /enter the tavern/i })).not.toBeInTheDocument()
+    await expect(canvas.queryByRole('heading', { name: 'Your Campaigns' })).not.toBeInTheDocument()
   },
 }
 
@@ -256,6 +262,10 @@ export const SignedInPhone390: Story = {
     const canvas = within(canvasElement)
     await expectNoPageOverflow()
     await userEvent.click(canvas.getByRole('button', { name: /enter the tavern/i }))
+    // 30c: the CTA opens the tavern; it must fit the phone too, then Back to chat enters the workspace.
+    await canvas.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await expectNoPageOverflow()
+    await userEvent.click(canvas.getByRole('button', { name: 'Back to chat' }))
     const menu = await canvas.findByRole('button', { name: 'Open navigation' })
     await expectNoPageOverflow()
     await expectWorkspaceFits(canvasElement)

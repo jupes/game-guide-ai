@@ -3,12 +3,21 @@
  * it; 30c PR-1 builds its body).
  *
  * The GM's campaigns as cards, newest activity first, concluded ones folded
- * into a disclosure at the foot, and a Begin anew card that creates one. Only
- * an account that can use campaigns reaches it (`useCampaign().enabled`); any
- * other is sent to Landing before paint. It reads nothing from the URL, writes
- * nothing to web storage or the page title, and has exactly one live region:
- * the status node, mounted empty with the list and given the messages in
+ * into a disclosure at the foot, and a Begin anew card that creates one. Every
+ * signed-in account reaches it (PR-2): an account that can use campaigns
+ * (`useCampaign().enabled`, today a dm) gets all of that, and every account
+ * gets "Your seats" -- the tables where it holds a seat, read from `GET /seats`.
+ * A player with no seat gets the spec's E-1 panel; the header's New Campaign is
+ * then shown locked, with its reason, never hidden. It reads nothing from the
+ * URL, writes nothing to web storage or the page title, and has exactly one live
+ * region: the status node, mounted empty with the list and given the messages in
  * the spec's section 3.4 (one at the start of a read, one at its end).
+ *
+ * - Seats (ID-17, ID-21 to ID-28): informational cards with nothing to press. A
+ *   confirmed seat whose table is live reads "Live now" as plain text, never a
+ *   link, because no table page exists yet (`1kg.7.4`, SEC-43). An unconfirmed
+ *   seat reads "Waiting for your GM to confirm your seat".
+ * - One Retry serves both reads: it re-asks whichever of campaigns and seats failed.
  *
  * - Read once per visit, every page (the order is the client's, and
  *   "Concluded (N)" counts them all), with a hard ceiling of
@@ -36,13 +45,23 @@ import { useCurrentUser } from './currentUser'
 import { MODES } from './modes'
 import { TavernActionButton } from './TavernActionButton'
 import { TavernCampaignCard } from './TavernCampaignCard'
-import { TAVERN_MAX_PAGES, TAVERN_PAGE_SIZE, latestConversation, orderCampaigns } from './tavernOrder'
+import { TavernNoSeats } from './TavernNoSeats'
+import { TavernSeatCard } from './TavernSeatCard'
+import { TAVERN_MAX_PAGES, TAVERN_PAGE_SIZE, latestConversation, orderCampaigns, orderSeats } from './tavernOrder'
+import { useTavernSeats } from './useTavernSeats'
 import './TavernScreen.css'
 
 // Copy (74j I-12): constants the design lane (`cub`, `30c`) may replace.
 const HEADING = 'Your Campaigns'
 const SUBHEAD = 'Pick up where the story left off, or begin anew.'
+const SEATS_SUBHEAD = 'The tables where you have a seat.'
 const NEW_CAMPAIGN = 'New Campaign'
+const NEW_CAMPAIGN_LOCKED = 'Creating campaigns is not available to your account yet'
+const SEATS_HEADING = 'Your seats'
+const SEATS_LOADING = 'Loading your seats…'
+const SEATS_LOADED = 'Seats loaded'
+const SEATS_FAILED = "Couldn't load your seats"
+const SHOW_MORE_SEATS = 'Show more seats'
 const CONTINUE_WITHOUT = 'Continue without a campaign'
 const BACK_TO_CHAT = 'Back to chat'
 const SHOW_MORE = 'Show more campaigns'
@@ -58,8 +77,9 @@ const UNAVAILABLE = 'That campaign is no longer available'
 
 export function TavernScreen(): React.JSX.Element | null {
   const { enabled, selection, loadCampaigns, clearCampaign } = useCampaign()
-  const { navIntent, mode, setMode, setConversationId, enterWorkspace, backToWorkspace, backToLanding } = useAppNav()
+  const { navIntent, mode, setMode, setConversationId, enterWorkspace, backToWorkspace } = useAppNav()
   const { user } = useCurrentUser()
+  const lockedReasonId = React.useId()
   const heading = React.useRef<HTMLHeadingElement>(null)
   const nameField = React.useRef<HTMLInputElement | HTMLTextAreaElement>(null)
   // What a continuation checks when it resolves: this screen is still
@@ -67,13 +87,12 @@ export function TavernScreen(): React.JSX.Element | null {
   const live = React.useRef({ mounted: false, userId: user.id })
   const [arrivedInApp] = React.useState(navIntent === 'push')
 
-  // 74j I-5 and critic 6: an account that cannot use campaigns leaves before
-  // paint, with no history entry, and never in the GM channel.
+  // 74j critic 6: an account that cannot use campaigns is never in the GM
+  // channel. It no longer leaves the screen (30c PR-2, ID-22): the tavern is
+  // every signed-in account's, and a player's holds its seats.
   React.useLayoutEffect(() => {
-    if (enabled) return
-    if (mode === 'gm') setMode('sage')
-    backToLanding('replace')
-  }, [enabled, mode, setMode, backToLanding])
+    if (!enabled && mode === 'gm') setMode('sage')
+  }, [enabled, mode, setMode])
 
   React.useLayoutEffect(() => {
     live.current.userId = user.id
@@ -97,8 +116,6 @@ export function TavernScreen(): React.JSX.Element | null {
     if (arrivedInApp) heading.current?.focus()
   }, [arrivedInApp])
 
-  if (!enabled) return null
-
   const pressedAs = user.id
   const stillHere = (): boolean => live.current.mounted && live.current.userId === pressedAs
 
@@ -121,15 +138,28 @@ export function TavernScreen(): React.JSX.Element | null {
     enterWorkspace(threadMode)
     setConversationId(id)
   }
+  const askTheSage = (): void => {
+    if (!stillHere()) return
+    enterWorkspace('sage')
+  }
 
   return (
     <main className="tavern-screen">
       <div className="tavern-screen__column">
         <header className="tavern-screen__header">
           <h1 ref={heading} tabIndex={-1} className="tavern-screen__heading">{HEADING}</h1>
-          <p className="tavern-screen__subhead">{SUBHEAD}</p>
+          <p className="tavern-screen__subhead">{enabled ? SUBHEAD : SEATS_SUBHEAD}</p>
           <div className="tavern-screen__actions">
-            <Button variant="filled" icon="add" onClick={() => nameField.current?.focus()}>{NEW_CAMPAIGN}</Button>
+            {enabled ? (
+              <Button variant="filled" icon="add" onClick={() => nameField.current?.focus()}>{NEW_CAMPAIGN}</Button>
+            ) : (
+              <>
+                <TavernActionButton variant="filled" icon="add" ariaDisabled ariaDescribedBy={lockedReasonId} onPress={() => {}}>
+                  {NEW_CAMPAIGN}
+                </TavernActionButton>
+                <span id={lockedReasonId} className="tavern__sr-only">{NEW_CAMPAIGN_LOCKED}</span>
+              </>
+            )}
             {selection.kind !== 'none' && (
               <Button variant="outlined" onClick={continueWithout}>{CONTINUE_WITHOUT}</Button>
             )}
@@ -144,6 +174,7 @@ export function TavernScreen(): React.JSX.Element | null {
           stillHere={stillHere}
           onSelected={onSelected}
           openThread={openThread}
+          askTheSage={askTheSage}
         />
       </div>
     </main>
@@ -157,19 +188,24 @@ interface TavernCampaignsProps {
   stillHere: () => boolean
   onSelected: () => void
   openThread: (id: string, mode: ChatMode) => void
+  askTheSage: () => void
 }
 
 /** What a commit should focus once the store's answer has rendered. */
 type FocusTarget = { readonly kind: 'toggle' } | { readonly kind: 'prep'; readonly id: string }
 
 function TavernCampaigns({
-  heading, nameField, arrivedInApp, stillHere, onSelected, openThread,
+  heading, nameField, arrivedInApp, stillHere, onSelected, openThread, askTheSage,
 }: TavernCampaignsProps): React.JSX.Element {
-  const { list, loadCampaigns, loadMoreCampaigns, selectCampaign, setConcluded } = useCampaign()
+  const { enabled, list, loadCampaigns, loadMoreCampaigns, selectCampaign, setConcluded, readSeats } = useCampaign()
   const store = useConversationStore()
+  // Declared before the effects below, so a visit's seat read is issued first.
+  const seats = useTavernSeats(readSeats)
   const ids = React.useId()
   const regionId = `${ids}-concluded`
   const [now] = React.useState(() => new Date())
+  const [shownSeats, setShownSeats] = React.useState(TAVERN_PAGE_SIZE)
+  const [retrying, setRetrying] = React.useState({ campaigns: false, seats: false })
   // Pages read this visit: the first read is page 1, and each page that starts
   // after it adds one (counted from the render that sees its read begin).
   const [pages, setPages] = React.useState(0)
@@ -202,8 +238,8 @@ function TavernCampaigns({
 
   // A fresh account's list is idle across the remount: it still has to be read.
   React.useEffect(() => {
-    if (list.kind === 'idle') loadCampaigns()
-  }, [list.kind, loadCampaigns])
+    if (enabled && list.kind === 'idle') loadCampaigns()
+  }, [enabled, list.kind, loadCampaigns])
 
   // ID-11: follow the cursor until the list is whole, or the ceiling.
   React.useEffect(() => {
@@ -212,18 +248,28 @@ function TavernCampaigns({
     loadMoreCampaigns()
   }, [list, pages, loadMoreCampaigns])
 
-  const failed = list.kind === 'failed' || (list.kind === 'ready' && list.moreFailed)
-  const reading = list.kind === 'loading' || (list.kind === 'ready' && list.loadingMore)
+  const campaignsFailed = list.kind === 'failed' || (list.kind === 'ready' && list.moreFailed)
+  const campaignsReading = list.kind === 'loading' || (list.kind === 'ready' && list.loadingMore)
   // Only a read this visit started counts: a revisit's stale list is not complete.
   const complete = armed && list.kind === 'ready' && !list.loadingMore
     && (list.nextCursor === null || pages >= TAVERN_MAX_PAGES || list.moreFailed)
-  const [retryShown, pressRetry] = useRetrying(failed, reading)
+  // One Retry for both reads (ID-21). Which of them it was pressed for is kept
+  // while it runs, so each read's failure line stays up until its own read answers.
+  const [retryShown, pressRetry] = useRetrying(campaignsFailed || seats.failed, campaignsReading || seats.reading)
+  if (!retryShown && (retrying.campaigns || retrying.seats)) setRetrying({ campaigns: false, seats: false })
+  const campaignsLine = campaignsFailed || (retryShown && retrying.campaigns)
+  const seatsLine = seats.failed || (retryShown && retrying.seats)
   // Past the ceiling with a cursor left: Load more reads one page a press, and
   // stays mounted through that press (pages then exceeds the ceiling).
   const atCeiling = list.kind === 'ready' && list.nextCursor !== null && !list.moreFailed
     && pages >= TAVERN_MAX_PAGES && (pages > TAVERN_MAX_PAGES || !list.loadingMore)
 
-  const listNote = !armed ? '' : failed ? LOAD_FAILED : complete ? LOADED : LOADING
+  // A campaign account's start is its campaign read and its end waits for the
+  // seat read too (one message at each end); a player's is the seat read alone.
+  const campaignNote = !armed ? '' : campaignsFailed ? LOAD_FAILED
+    : complete ? (seats.failed ? SEATS_FAILED : seats.complete ? LOADED : LOADING) : LOADING
+  const seatNote = !seats.started ? '' : seats.failed ? SEATS_FAILED : seats.complete ? SEATS_LOADED : SEATS_LOADING
+  const listNote = enabled ? campaignNote : seatNote
   const announcement = track === 'note' ? note : listNote
 
   const announce = (text: string): void => {
@@ -295,7 +341,11 @@ function TavernCampaigns({
     setShown(visibleActive + TAVERN_PAGE_SIZE)
   }
 
-  const where = complete && items.length === 0 ? latestConversation(store) : null
+  const orderedSeats = React.useMemo(() => orderSeats(seats.items), [seats.items])
+  // A player with no seat at the end of a good read (E-1); a campaign account's
+  // seats never replace its own campaigns' states.
+  const noSeats = !enabled && seats.complete && orderedSeats.length === 0
+  const where = (enabled ? complete && items.length === 0 : noSeats) ? latestConversation(store) : null
   const whereMode = where === null ? undefined : MODES.find((m) => m.mode === where.mode)
 
   const card = (campaign: Campaign, variant: 'active' | 'dormant' | 'concluded'): React.JSX.Element => (
@@ -351,14 +401,48 @@ function TavernCampaigns({
         </>
       )}
       {complete && items.length === 0 && <p className="tavern-screen__message">{EMPTY}</p>}
+
+      {!enabled && seats.reading && orderedSeats.length === 0 && (
+        <>
+          <ul className="tavern-screen__grid" aria-hidden="true">
+            <li className="tavern-screen__skeleton" />
+            <li className="tavern-screen__skeleton" />
+          </ul>
+          <p className="tavern-screen__message">{SEATS_LOADING}</p>
+        </>
+      )}
+      {noSeats && <TavernNoSeats titleId={`${ids}-no-seats`} onAskTheSage={askTheSage} />}
+      {orderedSeats.length > 0 && (
+        <section className="tavern-screen__seats">
+          <h2 className="tavern-screen__section-title">{SEATS_HEADING}</h2>
+          <ul className="tavern-screen__grid" aria-label={SEATS_HEADING}>
+            {orderedSeats.slice(0, shownSeats).map((seat) => (
+              <li key={seat.campaign_id}>
+                <TavernSeatCard seat={seat} now={now} />
+              </li>
+            ))}
+          </ul>
+          {orderedSeats.length > shownSeats && (
+            <div className="tavern-screen__actions">
+              <Button variant="text" onClick={() => setShownSeats(shownSeats + TAVERN_PAGE_SIZE)}>{SHOW_MORE_SEATS}</Button>
+            </div>
+          )}
+        </section>
+      )}
+
       {retryShown && (
         <div className="tavern-screen__row">
-          <p className="tavern-screen__message">{LOAD_FAILED}</p>
-          <PendingButton busy={reading} landing={heading} onPress={() => {
+          {campaignsLine && <p className="tavern-screen__message">{LOAD_FAILED}</p>}
+          {seatsLine && <p className="tavern-screen__message">{SEATS_FAILED}</p>}
+          <PendingButton busy={campaignsReading || seats.reading} landing={heading} onPress={() => {
             pressRetry()
             setTrack('list')
-            if (list.kind === 'failed') loadCampaigns()
-            else loadMoreCampaigns()
+            setRetrying({ campaigns: campaignsFailed, seats: seats.failed })
+            if (campaignsFailed) {
+              if (list.kind === 'failed') loadCampaigns()
+              else loadMoreCampaigns()
+            }
+            if (seats.failed) seats.retry()
           }}>Retry</PendingButton>
         </div>
       )}
@@ -371,7 +455,7 @@ function TavernCampaigns({
         </div>
       )}
 
-      <BeginAnewCard onCreated={onSelected} onAnnounce={announce} nameFieldRef={nameField} />
+      {enabled && <BeginAnewCard onCreated={onSelected} onAnnounce={announce} nameFieldRef={nameField} />}
 
       {concluded.length > 0 && (
         <section className="tavern-screen__concluded">

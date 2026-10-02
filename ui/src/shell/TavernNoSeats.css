@@ -1,0 +1,47 @@
+/* ── TavernNoSeats (agent-forge-harness-30c, PR-2) ────────────────────────────
+   The spec's E-1 panel: a dashed outline, a decorative gold-leaf book, a title,
+   a line and one button. Tokens only, so both themes come with them. The icon is
+   decoration (gold leaf is about 2.3:1 on light, ID-18): the title carries the
+   meaning. Nothing here sizes a button (ds/touchTargetLeak.test.ts). */
+
+.tavern-no-seats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--aether-space-3);
+  padding: var(--aether-space-6);
+  border: 2px dashed var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-card);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+}
+
+.tavern-no-seats__icon {
+  font-size: 38px;
+  color: var(--aether-gold-leaf);
+}
+
+.tavern-no-seats__title {
+  margin: 0;
+  font-family: var(--aether-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.tavern-no-seats__body {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.tavern-no-seats__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aether-space-3);
+}
+
+@media (width < 600px) {
+  .tavern-no-seats { padding: var(--aether-space-4); }
+  .tavern-no-seats__actions { flex-direction: column; align-items: stretch; align-self: stretch; }
+}

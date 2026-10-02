@@ -14,6 +14,7 @@ import {
   getCampaign,
   getConversation,
   listCampaigns,
+  listSeats,
   reopenCampaign,
 } from './campaignApi'
 
@@ -134,6 +135,78 @@ describe('listCampaigns', () => {
     expect(await listCampaigns(null, recorder({ status: 503 }).fetchImpl)).toStrictEqual({ kind: 'failed' })
     expect(onUnauthorized).not.toHaveBeenCalled()
     expect(await listCampaigns(null, recorder({ status: 401 }).fetchImpl)).toStrictEqual({ kind: 'unauthorized' })
+    expect(onUnauthorized).toHaveBeenCalledTimes(1)
+  })
+})
+
+const SEAT = {
+  schema_version: 1,
+  campaign_id: 'cmp_S1',
+  campaign_name: 'The Hollow Crown',
+  alias: 'Brannoc',
+  accepted_at: '2026-09-20T18:00:00Z',
+  confirmed: true,
+  tone: null,
+  game_system: 'dnd5e',
+  avatar_icon: 'sailing',
+  avatar_tone: 'ember',
+  concluded: false,
+  last_played_at: null,
+  live: false,
+}
+const seatPage = (items: unknown[], next: string | null = null) => ({ schema_version: 1, items, next_cursor: next })
+
+describe('listSeats (30c PR-2)', () => {
+  it('GETs /seats with the cookie and no body, and follows an opaque cursor', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: seatPage([]) })
+    await listSeats(null, fetchImpl)
+    await listSeats('Zm9v_-1', fetchImpl)
+
+    expect(calls.map((c) => [c.method, c.url, c.credentials, c.body])).toEqual([
+      ['GET', '/seats', 'include', null],
+      ['GET', '/seats?cursor=Zm9v_-1', 'include', null],
+    ])
+  })
+
+  it('reads each seat on its own: an unreadable one is dropped and counted, never empties the page', async () => {
+    const newer = { ...SEAT, campaign_id: 'cmp_N', schema_version: 2 }
+    const broken = { ...SEAT, campaign_id: 'cmp_X', campaign_name: '' }
+    const { fetchImpl } = recorder({
+      status: 200,
+      body: seatPage([SEAT, newer, broken, { ...SEAT, campaign_id: 'cmp_S2', live: true }], 'next'),
+    })
+
+    const result = await listSeats(null, fetchImpl)
+
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    expect(result.items.map((s) => s.campaign_id)).toEqual(['cmp_S1', 'cmp_S2'])
+    expect(result.items[1].live).toBe(true)
+    expect(result.dropped).toBe(2)
+    expect(result.nextCursor).toBe('next')
+  })
+
+  it.each<[string, Answer]>([
+    ['a newer envelope', { status: 200, body: { schema_version: 2, items: [], next_cursor: null } }],
+    ['no next_cursor', { status: 200, body: { schema_version: 1, items: [] } }],
+    ['more than 50 items', { status: 200, body: seatPage(Array(51).fill(SEAT)) }],
+    ['an HTML page', { status: 200, raw: '<!doctype html>' }],
+    ['a 403', { status: 403, body: REFUSAL }],
+    ['a 404', { status: 404, body: REFUSAL }],
+    ['a 503', { status: 503 }],
+    ['a network failure', 'network'],
+  ])('%s is failed', async (_label, answer) => {
+    const { fetchImpl } = recorder(answer)
+    expect(await listSeats(null, fetchImpl)).toStrictEqual({ kind: 'failed' })
+  })
+
+  it('a 401 is the centralized sign-out; a 503 is not', async () => {
+    const onUnauthorized = vi.fn()
+    setUnauthorizedHandler(onUnauthorized)
+
+    expect(await listSeats(null, recorder({ status: 503 }).fetchImpl)).toStrictEqual({ kind: 'failed' })
+    expect(onUnauthorized).not.toHaveBeenCalled()
+    expect(await listSeats(null, recorder({ status: 401 }).fetchImpl)).toStrictEqual({ kind: 'unauthorized' })
     expect(onUnauthorized).toHaveBeenCalledTimes(1)
   })
 })

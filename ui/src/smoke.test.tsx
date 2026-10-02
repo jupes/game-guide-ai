@@ -128,8 +128,8 @@ describe('App-flow smoke test (CP-F6.2)', () => {
     // Step 1: Landing is visible.
     expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
 
-    // Step 2: Click "Enter the Tavern" → enters workspace (sage mode by default).
-    await userEvent.click(screen.getByText('Enter the Tavern'))
+    // Step 2: The Sage chip → enters workspace in sage mode (30c PR-2: the CTA now opens the tavern).
+    await userEvent.click(screen.getByRole('button', { name: 'Sage' }))
 
     // WorkspaceShell should now be visible (Landing text is gone).
     expect(screen.queryByText('Enter the Tavern')).not.toBeInTheDocument()
