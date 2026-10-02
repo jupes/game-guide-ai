@@ -94,8 +94,8 @@ fi
 #
 # A comma list of registry tool ids ("npc,loot"). Each id is checked against
 # KNOWN_TOOL_IDS BEFORE docker or gcloud runs, and an unknown one fails the
-# deploy: the service would otherwise refuse to start on it, leaving the previous
-# revision serving while the job looked green. KNOWN_TOOL_IDS cannot import the
+# deploy: the service would otherwise refuse to start on it, and the deploy
+# would fail late, after the image was pushed. KNOWN_TOOL_IDS cannot import the
 # registry, so a test (tests/test_deploy_contract.py) pins it to `ToolId`.
 # An id with no server executor yet (docs/deploy-gcp.md section 15) is valid and
 # inert: it answers 409 tool_disabled.
@@ -118,6 +118,15 @@ for _tool in ${_requested_tools[@]+"${_requested_tools[@]}"}; do
   _tool="${_tool#"${_tool%%[![:space:]]*}"}"   # trim leading whitespace
   _tool="${_tool%"${_tool##*[![:space:]]}"}"   # trim trailing whitespace
   [ -n "$_tool" ] || continue
+  # An id is one word. Without this, "monster loot" (two ids that sit next to
+  # each other in KNOWN_TOOL_IDS) matches the substring test below, passes, and
+  # the service then refuses to boot on it.
+  case "$_tool" in
+    *[[:space:]]*)
+      echo "WORKBENCH_ENABLED_TOOLS names a tool the registry does not have; use a comma list of: ${KNOWN_TOOL_IDS// /, }" >&2
+      exit 2
+      ;;
+  esac
   case " ${KNOWN_TOOL_IDS} " in
     *" ${_tool} "*) ;;
     *)

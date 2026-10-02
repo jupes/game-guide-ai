@@ -1115,8 +1115,8 @@ a repeated id are tidied. `scripts/deploy.sh` checks every id against the regist
 tool ids **before** `docker` or `gcloud` runs, and a name it does not know fails the
 deploy with exit code 2 naming the variable and listing the valid ids (it never prints
 the value you gave: the repository is public, so Actions logs are public). The service
-checks the same list at start and refuses to boot on an unknown id, which would leave
-the previous revision serving while the job looked green; the early check is what
+checks the same list at start and refuses to boot on an unknown id, which would make
+the deploy fail late, after the image was pushed; the early check is what
 prevents that.
 
 **Verify it.** After the deploy, ask the running service what it was given (the proxy
