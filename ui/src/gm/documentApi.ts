@@ -19,19 +19,27 @@
  *   cannot read because it is newer (a newer schema or an unknown type, X-8) is
  *   `unsupported`, which is not an outage and is never retried.
  *
- * Nothing logs; nothing here writes.
+ * Nothing logs. The one write is the seal (1kg.7.3), which changes no text.
  */
 
 import { notifyUnauthorized } from '../api'
 import { isOpaqueId } from '../shell/workspaceFragment'
 import { HISTORY_PAGE_SIZE } from './canvasStatus'
 import {
+  CharacterSheetLinkSchema,
+  CONTRACT_VERSION,
+  DOC_TYPE_VERSION,
+  DOCUMENT_TYPE_IDS,
+  type DocumentTypeId,
   DocumentHistoryPageSchema,
+  DocumentVersionSnapshotSchema,
   LibraryPageSchema,
   LibraryQuerySchema,
   parseDocument,
+  type CharacterSheetLink,
   type Document,
   type DocumentHistoryPage,
+  type DocumentVersionSnapshot,
   type LibraryPage,
   type LibraryQuery,
 } from './contracts'
@@ -47,6 +55,20 @@ export type DocumentReadResult =
   /** 403, 404 or a malformed id: one state, whichever it was. */
   | { readonly kind: 'unavailable' }
   /** 5xx, a network failure, an unreadable or mismatched body: worth a retry. */
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+export type VersionReadResult =
+  | { readonly kind: 'ok'; readonly snapshot: DocumentVersionSnapshot }
+  /** A newer schema or a type this client does not know (X-8): never shown as another type. */
+  | { readonly kind: 'unsupported' }
+  | { readonly kind: 'unavailable' }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+export type LinkReadResult =
+  | { readonly kind: 'ok'; readonly link: CharacterSheetLink }
+  | { readonly kind: 'unavailable' }
   | { readonly kind: 'failed' }
   | { readonly kind: 'unauthorized' }
 
@@ -82,15 +104,9 @@ function documentPath(campaignId: string, documentId: string): string {
   return `/campaigns/${encodeURIComponent(campaignId)}/documents/${encodeURIComponent(documentId)}`
 }
 
-/** `GET /campaigns/{cid}/documents/{did}`. The answer must name the campaign and
- * document asked for, so a body that belongs elsewhere is never shown (LIB-25). */
-export async function getDocument(
-  campaignId: string,
-  documentId: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<DocumentReadResult> {
-  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
-  const res = await send(fetchImpl, documentPath(campaignId, documentId))
+/** Reads a document answer. The body must name the campaign and document asked for,
+ * so one that belongs elsewhere is never shown (LIB-25). */
+async function readDocumentAnswer(res: Response | null, campaignId: string, documentId: string): Promise<DocumentReadResult> {
   if (res === null) return { kind: 'failed' }
   if (res.status === UNAUTHORIZED) {
     notifyUnauthorized()
@@ -106,6 +122,95 @@ export async function getDocument(
   const document = parsed.value
   if (document.campaign_id !== campaignId || document.document_id !== documentId) return { kind: 'failed' }
   return { kind: 'ok', document }
+}
+
+/** `GET /campaigns/{cid}/documents/{did}`. The answer must name the campaign and
+ * document asked for, so a body that belongs elsewhere is never shown (LIB-25). */
+export async function getDocument(
+  campaignId: string,
+  documentId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DocumentReadResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
+  return readDocumentAnswer(await send(fetchImpl, documentPath(campaignId, documentId)), campaignId, documentId)
+}
+
+/**
+ * `POST /campaigns/{cid}/documents/{did}/seal` (1kg.7.3): seal the current text as a
+ * version a reveal can pin (CANVAS-34). Idempotent on the server, which reads no body;
+ * `{}` is sent as JSON only so the origin check (SEC-7) sees a well-formed request.
+ * The answer is the document, and its `version` is the sealed one.
+ */
+export async function sealDocument(
+  campaignId: string,
+  documentId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DocumentReadResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
+  const res = await send(fetchImpl, `${documentPath(campaignId, documentId)}/seal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  return readDocumentAnswer(res, campaignId, documentId)
+}
+
+function namesAnotherEra(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false
+  const { schema_version: version, type, type_version: typeVersion } = raw as {
+    schema_version?: unknown
+    type?: unknown
+    type_version?: unknown
+  }
+  const newer = typeof version === 'number' && version > CONTRACT_VERSION
+  const known = typeof type === 'string' && (DOCUMENT_TYPE_IDS as readonly string[]).includes(type)
+  const newerType = known && typeof typeVersion === 'number' && typeVersion > DOC_TYPE_VERSION[type as DocumentTypeId]
+  return newer || (typeof type === 'string' && !known) || newerType
+}
+
+/** `GET /campaigns/{cid}/documents/{did}/versions/{n}` (1kg.7.3): the text of one version, which a live reveal is pinned to (REVEAL-8). */
+export async function getDocumentVersion(
+  campaignId: string,
+  documentId: string,
+  number: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<VersionReadResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId) || !Number.isInteger(number) || number < 1) {
+    return { kind: 'unavailable' }
+  }
+  const res = await send(fetchImpl, `${documentPath(campaignId, documentId)}/versions/${number}`)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (!res.ok) return { kind: 'failed' }
+  const raw = await bodyOf(res)
+  const snapshot = DocumentVersionSnapshotSchema.safeParse(raw)
+  if (!snapshot.success) return { kind: namesAnotherEra(raw) ? 'unsupported' : 'failed' }
+  if (snapshot.data.document_id !== documentId) return { kind: 'failed' }
+  return { kind: 'ok', snapshot: snapshot.data }
+}
+
+/** `GET /campaigns/{cid}/documents/{did}/link` (1kg.7.3): the seat a character sheet is linked to, ids only. */
+export async function getCharacterSheetLink(
+  campaignId: string,
+  documentId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LinkReadResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
+  const res = await send(fetchImpl, `${documentPath(campaignId, documentId)}/link`)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (!res.ok) return { kind: 'failed' }
+  const link = CharacterSheetLinkSchema.safeParse(await bodyOf(res))
+  if (!link.success || link.data.document_id !== documentId) return { kind: 'failed' }
+  return { kind: 'ok', link: link.data }
 }
 
 /** `GET /campaigns/{cid}/documents/{did}/versions?limit=20[&cursor=…]`, newest first. */

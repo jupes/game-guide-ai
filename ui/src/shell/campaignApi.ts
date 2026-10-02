@@ -30,7 +30,9 @@ import {
   ConversationPatchRequestSchema,
   parseConversation,
   parseConversationPage,
+  SeatPageSchema,
   type Campaign,
+  type Seat,
   type Conversation,
 } from '../gm/contracts'
 import { isOpaqueId } from './workspaceFragment'
@@ -288,4 +290,28 @@ export async function renameThread(
   if (!res.ok) return { kind: 'failed' }
   const conversation = parseConversation(await bodyOf(res))
   return conversation.kind === 'ok' ? { kind: 'renamed', conversation: conversation.value } : { kind: 'failed' }
+}
+
+export type SeatListResult =
+  | { readonly kind: 'ok'; readonly items: readonly Seat[] }
+  /** Any refusal or outage reads alike here: the sheet offers Retry, and Whole table stays usable. */
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+/**
+ * `GET /campaigns/{id}/participants?limit=50` (1kg.7.3): the seats a GM can name in a
+ * reveal. One page only: a campaign holds at most 40 seats (SEC-50(3)) and a page
+ * holds up to 50, so a second page cannot exist. Removed seats are left out by the server.
+ */
+export async function listSeats(campaignId: string, fetchImpl: typeof fetch = fetch): Promise<SeatListResult> {
+  if (!isOpaqueId(campaignId)) return { kind: 'failed' }
+  const res = await send(fetchImpl, `/campaigns/${encodeURIComponent(campaignId)}/participants?limit=${CAMPAIGN_PAGE_MAX_ITEMS}`)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (!res.ok) return { kind: 'failed' }
+  const page = SeatPageSchema.safeParse(await bodyOf(res))
+  return page.success ? { kind: 'ok', items: page.data.items } : { kind: 'failed' }
 }

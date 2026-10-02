@@ -1920,6 +1920,20 @@ function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
   }
 }
 
+/**
+ * Whether a field's value is something a player could be shown: the client twin
+ * of the server's `reveals._present` (1kg.7.3). A reveal sheet offers a row only
+ * when this holds, so it never ticks a field the server would refuse as empty.
+ * An `asset` is present as the GM-side reference; the table's per-slot handle is
+ * minted by the server, so there is nothing to check beyond its being set. Every
+ * other kind is judged by the projection's own shape, so the two cannot disagree
+ * about what "present and non-empty" means (REVEAL-5, ED-9).
+ */
+export function presentForReveal(kind: FieldKind, value: unknown): boolean {
+  if (kind === 'asset') return value !== null && value !== undefined
+  return projectionValueSchema(kind).safeParse(value).success
+}
+
 /** One masked field as a player sees it: the key, and the text. The heading is
  * NOT on the wire — a table client renders the registry's label for
  * `(type, key)`, which its bundle already holds (`labelFor` in `registry.ts`) —
