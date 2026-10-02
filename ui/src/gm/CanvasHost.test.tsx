@@ -11,9 +11,10 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { installMatchMediaWidth, type MatchMediaWidthStub } from '../testing/matchMediaWidth'
 import {
-  campaignFixture, defaultWorkbenchRoute, flush, historyBody, live, mountSelected, run, type Route,
+  campaignFixture, defaultWorkbenchRoute, flush, historyBody, live, mountSelected, revealPicture, run, seatBody, type Call, type Route,
 } from '../testing/workbenchHarness'
 import { CanvasHost } from './CanvasHost'
+import { ANA, BRANN, liveFixture } from './revealFixtures'
 
 const open = (documentId: string, title: string | null = null) =>
   live.actions.openDocument({ documentId, title }, { gesture: true })
@@ -59,6 +60,132 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
+// ── The reveal indicators (1kg.7.3; brief 5; tests 30 to 32) ─────────────────
+
+const isRevealGet = (call: Call): boolean => call.method === 'GET' && /\/reveals$/.test(call.url)
+const isStopPost = (call: Call): boolean => call.method === 'POST' && /\/reveals\/stop$/.test(call.url)
+
+/** The reveal read answers `body` with `status`; everything else is the default. */
+const revealRead = (body: unknown, status = 200): Route => (call) =>
+  isRevealGet(call) ? { status, body } : defaultWorkbenchRoute(call)
+
+describe('the reveal indicators answer from the server, never from a guess (REVEAL-13)', () => {
+  it('while the first picture loads it says so: not GM ONLY, not unknown, no Open, and Stop stays (I-10)', async () => {
+    const { server } = await mountSelected(host, { route: deferring(/\/reveals$/) })
+    await run(() => open('doc_a'))
+    expect(await screen.findByText('Checking what the table sees…')).toBeInTheDocument()
+    expect(screen.getByText('CHECKING')).toBeInTheDocument()
+    expect(screen.queryByText('GM ONLY')).toBeNull()
+    expect(screen.queryByText(/Reveal state unknown/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Reveal to party' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop showing' })).toBeInTheDocument()
+    server.calls.find((call) => isRevealGet(call))?.reply({ status: 200, body: revealPicture(null) })
+    await flush()
+    expect(await screen.findByText('GM ONLY')).toBeInTheDocument()
+  })
+
+  it('a failed read says it cannot confirm, offers no Open control, and keeps Stop (test 30)', async () => {
+    await mountSelected(host, { route: revealRead({}, 503) })
+    await run(() => open('doc_a'))
+    await waitFor(() => expect(screen.getAllByText('Reveal state unknown — reconnecting').length).toBeGreaterThan(0))
+    // Mutation: defaulting the badge to GM ONLY on failure.
+    expect(screen.queryByText('GM ONLY')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Reveal to party$/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Change what the table sees' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop showing' })).toBeInTheDocument()
+  })
+
+  it('a document the table is not seeing, in a live session, is GM ONLY with Reveal to party', async () => {
+    await mountSelected(host, { route: revealRead(revealPicture({ table: liveFixture('doc_other', ['name']) })) })
+    await run(() => open('doc_a'))
+    expect(await screen.findByText('GM ONLY')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Reveal to party' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop showing' })).toBeNull()
+  })
+
+  it('a live document reads Revealed, flags its fields, badges REVEALED and offers Stop (test 31)', async () => {
+    const picture = revealPicture({ table: liveFixture('doc_a', ['name', 'qualifier', 'voice']) })
+    await mountSelected(host, { route: revealRead(picture) })
+    await run(() => open('doc_a'))
+    expect(await screen.findByText('Revealed · Name & voice, Qualifier · to the table')).toBeInTheDocument()
+    expect(screen.getByText('REVEALED')).toBeInTheDocument()
+    expect(screen.queryByText('GM ONLY')).toBeNull()
+    expect(screen.getAllByText('The table can see this').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByRole('button', { name: 'Stop showing' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Change what the table sees' })).toBeInTheDocument()
+  })
+
+  it('a stale copy adds the earlier-version note, and a copy waiting on its seat adds the waiting note', async () => {
+    const stale = revealPicture({ table: liveFixture('doc_a', ['name'], { stale_text: true }) })
+    await mountSelected(host, { route: revealRead(stale) })
+    await run(() => open('doc_a'))
+    expect(await screen.findByText('Table is seeing an earlier version')).toBeInTheDocument()
+  })
+
+  it('a copy waiting for a seat says so in the header, and its fields never claim a player can see them', async () => {
+    const picture = revealPicture({ participants: { [BRANN.participant_id]: liveFixture('doc_a', ['name'], { pending_delivery: true }) } })
+    const route: Route = (call) => {
+      if (/\/participants/.test(call.url)) return { status: 200, body: seatBody([BRANN, ANA]) }
+      return revealRead(picture)(call)
+    }
+    await mountSelected(host, { route })
+    await run(() => open('doc_a'))
+    expect(await screen.findByText('Waiting until you confirm the seat')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByText('Waiting to show Brann')).toBeInTheDocument())
+    expect(screen.queryByText('Brann can see this')).toBeNull()
+    expect(screen.getByText('Revealed · Name · to Brann')).toBeInTheDocument()
+  })
+
+  it('a document revealed to one player names them on its marked fields', async () => {
+    const picture = revealPicture({ participants: { [BRANN.participant_id]: liveFixture('doc_a', ['name']) } })
+    const route: Route = (call) => (/\/participants/.test(call.url) ? { status: 200, body: seatBody([BRANN]) } : revealRead(picture)(call))
+    await mountSelected(host, { route })
+    await run(() => open('doc_a'))
+    await waitFor(() => expect(screen.getByText('Brann can see this')).toBeInTheDocument())
+  })
+
+  it('Open starts the sheet for this document, recording what had focus', async () => {
+    const user = userEvent.setup()
+    await mountSelected(host)
+    await run(() => open('doc_a'))
+    const button = await screen.findByRole('button', { name: 'Reveal to party' })
+    await user.click(button)
+    expect(live.reveals.sheet).toEqual({ documentId: 'doc_a' })
+    expect(live.reveals.openerRef.current).toBe(button)
+  })
+})
+
+describe('Stop showing (test 32, X-3)', () => {
+  const liveRoute = (extra: Route = defaultWorkbenchRoute): Route => (call) =>
+    isRevealGet(call) ? { status: 200, body: revealPicture({ table: liveFixture('doc_a', ['name']) }) } : extra(call)
+
+  it('is sent at once, with no confirmation, and moves no focus', async () => {
+    const user = userEvent.setup()
+    const route = liveRoute((call) => (isStopPost(call) ? 'defer' : defaultWorkbenchRoute(call)))
+    const { server } = await mountSelected(host, { route })
+    await run(() => open('doc_a'))
+    const stop = await screen.findByRole('button', { name: 'Stop showing' })
+    stop.focus()
+    await user.click(stop)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await waitFor(() => expect(server.calls.filter(isStopPost)).toHaveLength(1))
+    expect(JSON.parse(server.calls.filter(isStopPost)[0].body ?? '{}')).toMatchObject({ scope: 'document', document_id: 'doc_a' })
+    expect(stop).toHaveFocus()
+    // Open is withdrawn for the document while its Stop is unacknowledged (REVEAL-22).
+    expect(screen.queryByRole('button', { name: 'Change what the table sees' })).toBeNull()
+  })
+
+  it("reads Couldn't stop showing — retrying once a Stop has failed", async () => {
+    const user = userEvent.setup()
+    const route = liveRoute((call) => (isStopPost(call) ? { status: 503, body: {} } : defaultWorkbenchRoute(call)))
+    await mountSelected(host, { route })
+    await run(() => open('doc_a'))
+    await user.click(await screen.findByRole('button', { name: 'Stop showing' }))
+    expect(await screen.findByText("Couldn't stop showing — retrying")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop showing' })).toBeInTheDocument()
+  })
+})
+
 describe('each state of the column (2.6)', () => {
   it('renders nothing while the canvas is closed', async () => {
     const { view } = await mountSelected(host)
@@ -92,20 +219,20 @@ describe('each state of the column (2.6)', () => {
     expect(view.container.querySelector('.canvas-host')).not.toHaveAttribute('aria-busy')
   })
 
-  it('an open document is read-only: no Edit anywhere, no field assistant, no Reveal or Export yet (I-1)', async () => {
+  it('an open document is read-only: no Edit anywhere, no field assistant, and no Export; Reveal to party is there (I-1, 1kg.7.3 test 29)', async () => {
     await mountSelected(host)
     await run(() => open('doc_a'))
+    await screen.findByRole('button', { name: 'Reveal to party' })
     expect(screen.queryAllByRole('button', { name: /^Edit / })).toEqual([])
     expect(screen.queryByRole('textbox')).toBeNull()
-    expect(screen.queryByRole('button', { name: /reveal/i })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Export' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Close canvas' })).toBeInTheDocument()
   })
 
-  it('says GM ONLY: no reveal-write route exists on this base, so nothing is revealed (C-8, I-8)', async () => {
+  it('says GM ONLY only once the picture confirms the document is not live (C-8, REVEAL-13, test 30)', async () => {
     await mountSelected(host)
     await run(() => open('doc_a'))
-    expect(screen.getByText('GM ONLY')).toBeInTheDocument()
+    await screen.findByText('GM ONLY')
     expect(screen.queryByText(/Reveal state unknown/)).toBeNull()
   })
 

@@ -189,6 +189,12 @@ describe('the reveal badge and markers are props (REVEAL-13)', () => {
     expect(screen.getByText('The table can see this')).toBeInTheDocument()
   })
 
+  it('1kg.7.3: passes the note the owner gave to each marked field', () => {
+    show({ revealBadge: 'REVEALED', revealedFields: ['voice', 'wants'], revealedNote: 'Brann can see this' })
+    expect(screen.getAllByText('Brann can see this')).toHaveLength(2)
+    expect(screen.queryByText('The table can see this')).not.toBeInTheDocument()
+  })
+
   it('says GM ONLY when nothing was passed, which is the safe reading', () => {
     show()
     expect(screen.getByText('GM ONLY')).toBeInTheDocument()

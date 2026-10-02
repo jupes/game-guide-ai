@@ -43,6 +43,7 @@ interface Options {
   assistantEditing?: boolean
   changed?: boolean
   revealed?: boolean
+  revealedNote?: string
   onDraft?: (key: string, value: FieldValue) => void
   onCommit?: (key: string, value: FieldValue) => void
   onRetry?: (key: string) => void
@@ -653,6 +654,17 @@ describe('the reveal marker', () => {
   it('shows nothing by itself', () => {
     show('voice')
     expect(screen.queryByText('The table can see this')).not.toBeInTheDocument()
+  })
+
+  it('says what the owner says it is (1kg.7.3): a named player, or a copy still waiting', () => {
+    show('voice', { revealed: true, revealedNote: 'Brann can see this' })
+    expect(screen.getByText('Brann can see this')).toBeInTheDocument()
+    expect(screen.queryByText('The table can see this')).not.toBeInTheDocument()
+  })
+
+  it('without a note it falls back to the table wording', () => {
+    show('voice', { revealed: true, revealedNote: undefined })
+    expect(screen.getByText('The table can see this')).toBeInTheDocument()
   })
 })
 

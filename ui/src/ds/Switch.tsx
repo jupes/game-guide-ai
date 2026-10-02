@@ -9,6 +9,8 @@ export interface SwitchProps {
   /** Render a check/close icon inside the handle. */
   icons?: boolean
   ariaLabel?: string
+  /** The id of the element that describes this switch (a warning, a reason). */
+  ariaDescribedBy?: string
   style?: React.CSSProperties
   className?: string
 }
@@ -19,6 +21,7 @@ export function Switch({
   disabled = false,
   icons = false,
   ariaLabel,
+  ariaDescribedBy,
   style,
   className,
 }: SwitchProps): React.JSX.Element {
@@ -40,6 +43,7 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       disabled={disabled}
       onClick={handleClick}
       data-checked={String(checked)}

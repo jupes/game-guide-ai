@@ -208,6 +208,8 @@ export interface GameDocumentProps {
    * REVEAL-13 forbids reading an unconfirmed state as "nothing revealed".
    */
   revealBadge?: string | null
+  /** What each revealed field's marker says (1kg.7.3): `Brann can see this`. Omitted, `The table can see this`. */
+  revealedNote?: string
   /** Rendered for a `cites_corpus` type only: plain text, no links, no images. */
   sources?: readonly Source[]
   onFieldDraft?: (key: string, value: FieldValue) => void
@@ -240,6 +242,7 @@ export function GameDocument({
   assistantEditing = [],
   revealedFields = [],
   revealBadge,
+  revealedNote,
   sources = [],
   onFieldDraft,
   onFieldCommit,
@@ -377,6 +380,7 @@ export function GameDocument({
         assistantEditing={holding.has(field.key)}
         changed={changed.has(field.key)}
         revealed={revealed.has(field.key)}
+        revealedNote={revealedNote}
         documentName={name}
         campaignId={gameDocument.campaign_id}
         onDraft={onFieldDraft}
