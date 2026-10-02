@@ -1,0 +1,297 @@
+/* ── RevealSheet ─────────────────────────────────────────────────────────────
+   1kg.7.3. A centred dialog on the wide and medium layouts, a full-screen sheet
+   below 768px. Tokens only, so both themes follow the palette; a focus ring on
+   every control; the touch floor on every control; no horizontal scroll at 375px.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gm-reveal__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--aether-z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--aether-space-4);
+  /* The scrim token is opaque; a modal dims the page rather than hiding it, so
+     the transparency is mixed into the token instead of hard-coded. */
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 55%, transparent);
+}
+
+.gm-reveal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+  width: min(560px, 100%);
+  max-width: 560px;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--aether-space-5);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-sheet);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-level3);
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+}
+
+.gm-reveal__heading {
+  margin: 0;
+  font-family: var(--aether-font-display);
+  font-size: var(--md-sys-typescale-headline-small-size);
+  font-weight: var(--md-sys-typescale-headline-small-weight);
+  overflow-wrap: anywhere;
+}
+
+.gm-reveal__heading:focus-visible,
+.gm-reveal__button:focus-visible,
+.gm-reveal__choice input:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+/* The sheet's own status node: read aloud, never drawn. */
+.gm-reveal__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: none;
+}
+
+.gm-reveal__statusline,
+.gm-reveal__body,
+.gm-reveal__hint {
+  margin: 0;
+  font-size: 14px;
+  color: var(--md-sys-color-on-surface-variant);
+  overflow-wrap: anywhere;
+}
+
+.gm-reveal__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.gm-reveal__group:disabled {
+  opacity: 0.6;
+}
+
+.gm-reveal__legend {
+  padding: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* The LABEL carries the touch floor, not the 16px input inside it. */
+.gm-reveal__choice {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-3);
+  min-height: var(--aether-touch-min);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.gm-reveal__choice input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--md-sys-color-primary);
+}
+
+.gm-reveal__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+  min-width: 0;
+}
+
+.gm-reveal__rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gm-reveal__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-1);
+  padding: var(--aether-space-2) 0;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.gm-reveal__row:last-child {
+  border-bottom: none;
+}
+
+.gm-reveal__row[data-disabled] .gm-reveal__row-label {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-reveal__row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-3);
+  min-height: var(--aether-touch-min);
+}
+
+.gm-reveal__row-label {
+  font-size: 14px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.gm-reveal__warning,
+.gm-reveal__reason {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-reveal__warning {
+  color: var(--md-sys-color-error);
+  font-weight: 700;
+}
+
+.gm-reveal__reason {
+  font-style: italic;
+}
+
+/* The exact text a player would see. Plain text in a text node, wrapped as written. */
+.gm-reveal__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--aether-space-2) var(--aether-space-3);
+  border-left: 3px solid var(--md-sys-color-primary);
+  background: var(--md-sys-color-surface-container);
+  border-radius: 0 var(--aether-radius-button) var(--aether-radius-button) 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.gm-reveal__preview-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.gm-reveal__preview-text {
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gm-reveal__notice {
+  margin: 0;
+  font-size: 13px;
+  color: var(--md-sys-color-on-surface);
+  overflow-wrap: anywhere;
+}
+
+.gm-reveal__notice[data-tone='error'] {
+  color: var(--md-sys-color-error);
+  font-weight: 700;
+}
+
+.gm-reveal__preparing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+}
+
+.gm-reveal__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+}
+
+.gm-reveal__bar {
+  display: block;
+  height: 14px;
+  border-radius: var(--aether-radius-button);
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.gm-reveal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--aether-space-2);
+  margin-top: var(--aether-space-2);
+}
+
+.gm-reveal__spacer {
+  flex: 1;
+}
+
+.gm-reveal__button {
+  min-height: var(--aether-touch-min);
+  padding: 0 16px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-button);
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--md-sys-motion-duration-short3) var(--md-sys-motion-easing-standard);
+}
+
+.gm-reveal__button--primary {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.gm-reveal__button--stop {
+  border-color: var(--md-sys-color-error);
+  color: var(--md-sys-color-error);
+}
+
+.gm-reveal__button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.gm-reveal__button[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* A full-screen sheet below 768px, with no horizontal scroll. */
+@media (max-width: 767px) {
+  .gm-reveal__scrim {
+    padding: 0;
+  }
+
+  .gm-reveal {
+    width: 100%;
+    max-width: none;
+    max-height: 100%;
+    height: 100dvh;
+    border-radius: 0;
+    border: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gm-reveal__button {
+    transition: none;
+  }
+}
