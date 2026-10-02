@@ -187,8 +187,9 @@ describe('identity reset (R8)', () => {
     // A cold load never lands ON the workspace (R6) -- reach it the same way
     // a real signed-in user would, by entering it from Landing. This also
     // exercises R4's `push` for a real navigation before the 401 reset below
-    // exercises its `replace`.
-    await userEvent.click(await screen.findByRole('button', { name: /enter the tavern/i }))
+    // exercises its `replace`. (30c: a dm's Enter the Tavern opens /tavern, so
+    // the way into the workspace is the Sage chip: the same `enterWorkspace`.)
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     expect(await screen.findByRole('main')).toBeInTheDocument()
     expect(window.location.pathname).toBe('/workspace')
 

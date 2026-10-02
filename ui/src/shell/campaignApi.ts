@@ -178,6 +178,37 @@ export async function createCampaign(
   return campaign.success ? { kind: 'created', campaign: campaign.data } : { kind: 'failed' }
 }
 
+/** `POST /campaigns/{id}/conclude` or `/reopen`: bodiless, so no Content-Type
+ * is sent (there is nothing to describe), and the server's answer is the
+ * campaign as it now stands. A 403 or a 404 is one state (SEC-3). */
+async function setConcluded(
+  campaignId: string,
+  verb: 'conclude' | 'reopen',
+  fetchImpl: typeof fetch,
+): Promise<CampaignReadResult> {
+  if (!isOpaqueId(campaignId)) return { kind: 'unavailable' }
+  const res = await send(fetchImpl, `/campaigns/${encodeURIComponent(campaignId)}/${verb}`, { method: 'POST' })
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (!res.ok) return { kind: 'failed' }
+  const campaign = CampaignSchema.safeParse(await bodyOf(res))
+  return campaign.success ? { kind: 'ok', campaign: campaign.data } : { kind: 'failed' }
+}
+
+/** Mark the caller's own campaign concluded. Idempotent on the server. */
+export function concludeCampaign(campaignId: string, fetchImpl: typeof fetch = fetch): Promise<CampaignReadResult> {
+  return setConcluded(campaignId, 'conclude', fetchImpl)
+}
+
+/** Reopen a concluded campaign. Idempotent on the server. */
+export function reopenCampaign(campaignId: string, fetchImpl: typeof fetch = fetch): Promise<CampaignReadResult> {
+  return setConcluded(campaignId, 'reopen', fetchImpl)
+}
+
 /** `GET /conversations/{id}`, for the restore check only (I-6): it never
  * claims, unlike the legacy `/messages` read, which must never be called for a
  * campaign thread. The caller decides whether the row belongs where the

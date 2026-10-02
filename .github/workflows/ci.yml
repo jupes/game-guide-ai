@@ -401,6 +401,10 @@ jobs:
           # scripts/deploy.sh REPLACES the service's whole env on every deploy.
           GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_REDIRECT_URI: ${{ vars.GOOGLE_OAUTH_REDIRECT_URI }}
+          # GM tools (po56): none run while this repository VARIABLE is unset or empty.
+          # A comma list of tool ids ("npc,loot"), validated by scripts/deploy.sh before
+          # gcloud runs. Which ids work: docs/deploy-gcp.md section 15.
+          WORKBENCH_ENABLED_TOOLS: ${{ vars.WORKBENCH_ENABLED_TOOLS }}
         run: |
           if [ ! -x scripts/deploy.sh ]; then
             echo "DEPLOY_TARGET is set but scripts/deploy.sh is missing or not executable." >&2

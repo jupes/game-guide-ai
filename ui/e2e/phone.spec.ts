@@ -83,7 +83,7 @@ test('a player signs in and asks a question on a 390px phone', async ({ page, ac
   await signIn(page, accounts[0])
   await expectNoPageOverflow(page)
 
-  await page.getByRole('button', { name: 'Enter the Tavern', exact: true }).click()
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
 
   // Narrow layout: the sidebar is a drawer behind the TopBar's menu button.
   const menu = page.getByRole('button', { name: 'Open navigation', exact: true })

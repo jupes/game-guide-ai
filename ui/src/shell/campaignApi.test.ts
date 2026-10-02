@@ -8,7 +8,15 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setUnauthorizedHandler } from '../api'
-import { createCampaign, getCampaign, getConversation, listCampaigns, listSeats } from './campaignApi'
+import {
+  concludeCampaign,
+  createCampaign,
+  getCampaign,
+  getConversation,
+  listCampaigns,
+  listSeats,
+  reopenCampaign,
+} from './campaignApi'
 
 interface Recorded {
   url: string
@@ -313,5 +321,56 @@ describe('listSeats', () => {
     expect(await listSeats('../x', fetchImpl)).toEqual({ kind: 'failed' })
     expect(calls).toHaveLength(0)
     expect((await listSeats('cmp_A', fetchImpl)).kind).toBe('ok')
+  })
+})
+
+// ── 30c PR-1: conclude and reopen (A-1 to A-6) ──────────────────────────────
+
+const CONCLUDED = { ...CAMPAIGN, concluded_at: '2026-09-20T10:00:00Z' }
+
+describe.each([
+  ['concludeCampaign', concludeCampaign, 'conclude'],
+  ['reopenCampaign', reopenCampaign, 'reopen'],
+] as const)('%s', (_name, call, verb) => {
+  it(`A-1 POSTs /campaigns/{id}/${verb} with the cookie, no body and no content type`, async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: CONCLUDED })
+    await call('cmp_A', fetchImpl)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ url: `/campaigns/cmp_A/${verb}`, method: 'POST', body: null, credentials: 'include' })
+    expect(calls[0].headers['content-type']).toBeUndefined()
+  })
+
+  it('A-2 a malformed id makes no request (SEC-4), with a positive control', async () => {
+    const { fetchImpl, calls } = recorder({ status: 200, body: CONCLUDED })
+    expect(await call('cmp/A', fetchImpl)).toStrictEqual({ kind: 'unavailable' })
+    expect(await call('../campaigns', fetchImpl)).toStrictEqual({ kind: 'unavailable' })
+    expect(calls).toHaveLength(0)
+    await call('cmp_A', fetchImpl)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('A-3 a 401 is the centralized sign-out, once', async () => {
+    const onUnauthorized = vi.fn()
+    setUnauthorizedHandler(onUnauthorized)
+    expect(await call('cmp_A', recorder({ status: 401 }).fetchImpl)).toStrictEqual({ kind: 'unauthorized' })
+    expect(onUnauthorized).toHaveBeenCalledTimes(1)
+  })
+
+  it.each<[string, Answer, string]>([
+    ['a 404', { status: 404, body: REFUSAL }, 'unavailable'],
+    ['a 403', { status: 403, body: REFUSAL }, 'unavailable'],
+    ['a 503', { status: 503 }, 'failed'],
+    ['a 500 with a body', { status: 500, body: REFUSAL }, 'failed'],
+    ['a network failure', 'network', 'failed'],
+    ['an unreadable body', { status: 200, raw: '<html>not json' }, 'failed'],
+  ])('A-4 and A-5 %s is %s, and names nothing', async (_label, answer, kind) => {
+    expect(await call('cmp_A', recorder(answer).fetchImpl)).toStrictEqual({ kind })
+  })
+
+  it('A-6 returns the campaign the server answered with, read through the contract', async () => {
+    expect(await call('cmp_A', recorder({ status: 200, body: CONCLUDED }).fetchImpl)).toStrictEqual({ kind: 'ok', campaign: CONCLUDED })
+    // A body the contract refuses is a failure, never a half-read campaign.
+    expect(await call('cmp_A', recorder({ status: 200, body: { ...CONCLUDED, seat_count: -1 } }).fetchImpl)).toStrictEqual({ kind: 'failed' })
+    expect(await call('cmp_A', recorder({ status: 200, body: { ...CONCLUDED, schema_version: 2 } }).fetchImpl)).toStrictEqual({ kind: 'failed' })
   })
 })

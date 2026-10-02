@@ -1,0 +1,122 @@
+/* ── TavernCampaignCard (agent-forge-harness-30c, PR-1) ──────────────────────
+   One owned campaign. Tokens only, so both themes come with them. Nothing here
+   sizes a button (ds/touchTargetLeak.test.ts): the DS 44px floor does that work.
+   The phone query is PHONE_MEDIA (shell/breakpoints.ts). */
+
+.tavern-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+  min-width: 0;
+}
+
+.tavern-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--aether-space-3);
+  min-width: 0;
+}
+
+.tavern-card__title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.tavern-card__name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--aether-space-2);
+  min-width: 0;
+}
+
+.tavern-card__name {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--aether-font-display);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.tavern-card__tone {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--aether-font-ui);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.tavern-card__overline {
+  display: flex;
+  align-items: center;
+  gap: var(--aether-space-1);
+  margin: 0;
+  font-family: var(--aether-font-ui);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  font-weight: var(--md-sys-typescale-label-medium-weight);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+}
+
+.tavern-card__overline .material-symbols-rounded {
+  font-size: 16px;
+}
+
+.tavern-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+}
+
+.tavern-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--aether-space-2);
+}
+
+/* Dormant (ID-18): the surface and the words carry the meaning; the gold-leaf
+   border is decoration only, because gold leaf is about 2.3:1 on light. */
+.tavern-card--dormant {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  border: 2px solid var(--aether-gold-leaf);
+}
+
+.tavern-card--dormant .tavern-card__tone {
+  color: inherit;
+}
+
+.tavern-card--concluded .tavern-card__name {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* Start Session is locked, not removed: still focusable, visibly unavailable. */
+.tavern-card__actions .aether-btn[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (width < 600px) {
+  .tavern-card__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* Visually hidden, still announced (ChatPane's `.chat-pane__sr-only`): the
+   campaign name after a repeated action's label, and the lock's reason. Here
+   rather than in TavernScreen.css so a card renders right on its own. */
+.tavern__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
