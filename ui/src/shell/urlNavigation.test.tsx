@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { AppNavProvider, useAppNav } from './AppNav'
 import { UrlNavigation } from './UrlNavigation'
 import { startScreen } from './routes'
+import { clearGoogleOutcome, getGoogleOutcome } from './googleOutcome'
 
 /** Minimal consumer: renders the active screen as text (queryable by role,
  * with no dependency on any real screen component) and exposes the three
@@ -36,6 +37,7 @@ function renderAt(url: string) {
 }
 
 afterEach(() => {
+  clearGoogleOutcome()
   vi.restoreAllMocks()
   window.history.replaceState({}, '', '/')
 })
@@ -135,5 +137,39 @@ describe('Back/Forward', () => {
     window.history.back()
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('landing'))
     expect(window.location.pathname).toBe('/')
+  })
+})
+
+// lvs7 -- the Google callback redirects to `/` or `/profile` with `?google=<code>`.
+describe('the Google outcome code (lvs7)', () => {
+  it('is taken into the store and scrubbed from the bar, keeping path, other pairs and fragment', () => {
+    renderAt('/profile?google=linked&k=v#section=a')
+    expect(getGoogleOutcome()?.code).toBe('linked')
+    expect(getGoogleOutcome()?.arrivedOn).toBe('profile')
+    expect(screen.getByRole('status')).toHaveTextContent('profile')
+    expect(window.location.pathname).toBe('/profile')
+    expect(window.location.search).toBe('?k=v')
+    expect(window.location.hash).toBe('#section=a')
+  })
+
+  it('survives the cold-load path correction without putting the code back', () => {
+    renderAt('/workspace?google=no_account')
+    expect(getGoogleOutcome()?.code).toBe('no_account')
+    expect(window.location.pathname).toBe('/')
+    expect(window.location.search).toBe('')
+  })
+
+  it('an unrecognised code is held as the failed outcome, never as the raw value', () => {
+    renderAt('/?google=%3Cb%3Ex')
+    expect(getGoogleOutcome()?.code).toBe('failed')
+    expect(JSON.stringify(getGoogleOutcome())).not.toContain('<b>')
+    expect(window.location.search).toBe('')
+  })
+
+  it('a bar with no google pair is left exactly as it was', () => {
+    renderAt('/?q=1#a=2')
+    expect(getGoogleOutcome()).toBeNull()
+    expect(window.location.search).toBe('?q=1')
+    expect(window.location.hash).toBe('#a=2')
   })
 })

@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useAppNav } from './AppNav'
 import { pathForScreen, routeForPath } from './routes'
 import { scrubReservedFragmentKeys } from './inviteToken'
+import { captureGoogleOutcome } from './googleOutcome'
 
 /**
  * UrlNavigation -- binds AppNav's screen state to the browser URL
@@ -26,6 +27,11 @@ export function UrlNavigation(): null {
   // runs, because `pathForScreen(initialScreen)` already differs from
   // `location.pathname` exactly when a correction is needed.
   React.useEffect(() => {
+    // Sign in with Google (lvs7): the callback redirects here with `?google=<code>`.
+    // Take the code into the outcome store and remove it from the address bar,
+    // keeping the path, every other query pair and the fragment as they are.
+    // Runs BEFORE the screen-sync effect below, which appends `location.search`.
+    captureGoogleOutcome()
     const currentHash = window.location.hash.startsWith('#')
       ? window.location.hash.slice(1)
       : window.location.hash

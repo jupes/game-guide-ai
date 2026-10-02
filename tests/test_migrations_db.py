@@ -1724,3 +1724,111 @@ def test_the_documents_composite_key_leaves_every_document_write_a_no_key_update
                 unit.conn.execute("SET LOCAL lock_timeout = '200ms'")
                 write(unit)
         holder.rollback()
+
+
+# ── 0023: Sign in with Google (lvs7) ─────────────────────────────────────────
+
+
+def _google_migration() -> Migration:
+    return next(m for m in PACKAGED if m.name == "google_identities")
+
+
+def test_0023_adds_has_password_true_to_every_existing_account(dsn):
+    """The expansion is safe next to the previous build: accounts that already exist
+    read as having a password, and so do ones the previous build goes on creating."""
+    before = tuple(m for m in PACKAGED if m.version < _google_migration().version)
+    assert before and mig.migrate(dsn, packaged=before).state == "current"
+    with connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO auth.users (email, password_hash, role) VALUES ('old@example.com', 'hash', 'dm')"
+        )
+    assert mig.migrate(dsn).applied == (_google_migration().filename,)
+    with connect(dsn) as conn:
+        assert conn.execute(
+            "SELECT has_password FROM auth.users WHERE email = 'old@example.com'"
+        ).fetchone() == (True,)
+        # An insert that does not name the column, as the previous build's does.
+        conn.execute("INSERT INTO auth.users (email, password_hash, role) VALUES ('new@example.com', 'h', 'player')")
+        assert conn.execute("SELECT has_password FROM auth.users WHERE email = 'new@example.com'").fetchone() == (True,)
+        assert conn.execute(
+            "SELECT data_type, is_nullable, column_default FROM information_schema.columns "
+            "WHERE table_schema = 'auth' AND table_name = 'users' AND column_name = 'has_password'"
+        ).fetchone() == ("boolean", "NO", "true")
+
+
+def _new_user(conn, email: str) -> int:
+    return conn.execute(
+        "INSERT INTO auth.users (email, password_hash, role) VALUES (%s, 'h', 'dm') RETURNING id", (email,)
+    ).fetchone()[0]
+
+
+def test_0023_the_database_refuses_what_the_store_refuses(dsn):
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        user = _new_user(conn, "u@example.com")
+        other = _new_user(conn, "o@example.com")
+        conn.execute(
+            "INSERT INTO auth.identities (provider, subject, user_id, email_at_link) "
+            "VALUES ('google', 'sub-1', %s, 'g@example.com')", (user,)
+        )
+
+    def refused(sql: str, params: tuple, error: type[Exception]) -> None:
+        with connect(dsn) as conn, pytest.raises(error):
+            conn.execute(sql, params)
+
+    insert = "INSERT INTO auth.identities (provider, subject, user_id, email_at_link) VALUES (%s, %s, %s, %s)"
+    refused(insert, ("github", "s", other, "g@example.com"), psycopg.errors.CheckViolation)
+    refused(insert, ("google", "", other, "g@example.com"), psycopg.errors.CheckViolation)
+    refused(insert, ("google", "s" * 256, other, "g@example.com"), psycopg.errors.CheckViolation)
+    refused(insert, ("google", "s2", other, "ab"), psycopg.errors.CheckViolation)
+    refused(insert, ("google", "s2", other, "e" * 255), psycopg.errors.CheckViolation)
+    refused(insert, ("google", "sub-1", other, "g@example.com"), psycopg.errors.UniqueViolation)
+    refused(insert, ("google", "sub-2", user, "g@example.com"), psycopg.errors.UniqueViolation)
+    refused(insert, ("google", "sub-3", 2_000_000_000, "g@example.com"), psycopg.errors.ForeignKeyViolation)
+    with connect(dsn) as conn:
+        conn.execute(insert, ("google", "s" * 255, other, "e" * 254))  # the boundaries are accepted
+
+    event = (
+        "INSERT INTO auth.identity_events (user_id, provider, action, decision, reason_code) "
+        "VALUES (%s, %s, %s, %s, %s)"
+    )
+    refused(event, (user, "google", "sign_in", "allowed", "no_account"), psycopg.errors.CheckViolation)
+    refused(event, (user, "google", "sign_in", "refused", None), psycopg.errors.CheckViolation)
+    refused(event, (user, "google", "sign_in", "refused", ""), psycopg.errors.CheckViolation)
+    refused(event, (user, "google", "sign_in", "refused", "r" * 41), psycopg.errors.CheckViolation)
+    refused(event, (user, "google", "sign_out", "allowed", None), psycopg.errors.CheckViolation)
+    refused(event, (user, "github", "sign_in", "allowed", None), psycopg.errors.CheckViolation)
+    with connect(dsn) as conn:
+        conn.execute(event, (user, "google", "sign_in", "allowed", None))
+        conn.execute(event, (None, "google", "sign_up", "refused", "r" * 40))
+
+
+def test_0023_deleting_an_account_removes_its_identity_and_keeps_its_events(dsn):
+    mig.migrate(dsn)
+    with connect(dsn) as conn:
+        user = _new_user(conn, "gone@example.com")
+        conn.execute(
+            "INSERT INTO auth.identities (provider, subject, user_id, email_at_link) "
+            "VALUES ('google', 'sub-gone', %s, 'g@example.com')", (user,)
+        )
+        conn.execute(
+            "INSERT INTO auth.identity_events (user_id, provider, action, decision) "
+            "VALUES (%s, 'google', 'sign_in', 'allowed')", (user,)
+        )
+        conn.execute("DELETE FROM auth.users WHERE id = %s", (user,))
+        assert conn.execute("SELECT count(*) FROM auth.identities WHERE subject = 'sub-gone'").fetchone() == (0,)
+        assert conn.execute(
+            "SELECT count(*) FROM auth.identity_events WHERE user_id = %s", (user,)
+        ).fetchone() == (1,), "the record of a sign-in outlives the account it describes"
+
+
+def test_0023_is_pinned_in_the_manifest_and_verifies_clean(dsn):
+    migration = _google_migration()
+    pinned = {
+        line.split()[0]: line.split()[1]
+        for line in (mig.packaged_root().joinpath("manifest.txt").read_text(encoding="utf-8")).splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    assert pinned[migration.filename] == migration.checksum
+    mig.migrate(dsn)
+    assert mig.migrate(dsn, mode=Mode.VERIFY).state == "current"

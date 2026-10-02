@@ -6,7 +6,7 @@
  * result so the UI never throws on a bad day.
  */
 
-import type { ZodType } from 'zod'
+import { z, type ZodType } from 'zod'
 import {
   ChatResponseSchema,
   MessagesResponseSchema,
@@ -714,4 +714,53 @@ export async function getMe(fetchImpl: typeof fetch = fetch): Promise<AuthResult
   const parsed = await parseJson<AuthUser>(res)
   if (parsed === null) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', user: parsed }
+}
+
+// ── Sign in with Google (lvs7) — mirrors service/google_signin_api.py ────────
+// The page never talks to Google. These two reads go to OUR server; the sign-in
+// itself is a link or a native form POST (shell/GoogleSignInButton.tsx).
+
+/** The signed-in account's own Google link, as `GET /auth/google/link` says it. */
+export interface GoogleLinkStatus {
+  linked: boolean
+  email: string | null
+  hasPassword: boolean
+}
+
+/** Whether the service offers Google sign-in at all.
+ *
+ * The feature is OFF on a service that has no client id: every Google route is
+ * a 404 there. So the ONLY answer that draws a button is a 200 whose body is
+ * exactly `{"available": true}`; a 404, any other status, a network failure and
+ * any other body all mean "no button". It never throws. */
+export async function googleAvailable(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const res = await fetchImpl('/auth/google/available')
+    if (!res.ok) return false
+    const body = await parseJson<unknown>(res)
+    return typeof body === 'object' && body !== null && (body as { available?: unknown }).available === true
+  } catch {
+    return false
+  }
+}
+
+const GoogleLinkResponseSchema = z.object({
+  linked: z.boolean(),
+  email: z.string().nullable(),
+  has_password: z.boolean(),
+})
+
+/** Profile's view of the account's Google link, or `null` when it cannot be
+ * read (signed out, the feature is off, the service is down, a malformed body).
+ * `null` is "show nothing", never "not linked". */
+export async function getGoogleLink(fetchImpl: typeof fetch = fetch): Promise<GoogleLinkStatus | null> {
+  try {
+    const res = await fetchImpl('/auth/google/link', { credentials: 'include' })
+    if (!res.ok) return null
+    const body = await parseJson(res, GoogleLinkResponseSchema)
+    if (body === null) return null
+    return { linked: body.linked, email: body.email, hasPassword: body.has_password }
+  } catch {
+    return null
+  }
 }

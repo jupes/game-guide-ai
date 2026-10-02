@@ -80,6 +80,16 @@
 
   /* ---- Surface tints used by elevation ---- */
   --md-sys-color-surface-tint: #9c3b1b;
+
+  /* ---- Third-party brand: "Sign in with Google" button (lvs7) ----
+     Google publishes these exact values for its sign-in button
+     (developers.google.com/identity/branding-guidelines): the LIGHT button on
+     the light theme, the DARK button on the dark one. They are not Aetheril
+     palette colours and must not be re-toned; they live here so no component
+     stylesheet carries a hex literal. */
+  --aether-google-btn-bg: #ffffff;
+  --aether-google-btn-border: #747775;
+  --aether-google-btn-text: #1f1f1f;
 }
 
 [data-theme="dark"] {
@@ -142,4 +152,9 @@
   --aether-gold-leaf: #d9b25a;
 
   --md-sys-color-surface-tint: #ffb59b;
+
+  /* Google dark button (see the light block above). */
+  --aether-google-btn-bg: #131314;
+  --aether-google-btn-border: #8e918f;
+  --aether-google-btn-text: #e3e3e3;
 }

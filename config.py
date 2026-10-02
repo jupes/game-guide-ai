@@ -288,6 +288,43 @@ SESSION_COOKIE_SAMESITE: SameSite = _samesite("SESSION_COOKIE_SAMESITE", "lax")
 # Default lifetime of a minted invite link (admin CLI --ttl-days overrides).
 INVITE_TTL_DAYS: int = _int("INVITE_TTL_DAYS", 14)
 
+# --- Sign in with Google (lvs7) ---------------------------------------------
+# A server-side OpenID Connect authorization-code flow with PKCE: the browser only
+# NAVIGATES to Google and back, so no Google script runs on our pages and the CSP
+# and COOP stay as they are (docs/adr/google-sign-in.md). OFF unless all three of
+# the first values are set and valid: every /auth/google route then answers 404.
+#
+# The client id is public (it is in the URL the browser visits). The client secret
+# is a secret: Secret Manager in Cloud Run (scripts/deploy.sh --set-secrets), the
+# git-ignored .env locally. It is read here only so service/google_oidc.py can put
+# it in one token-exchange request body; it is never logged, echoed or put in a URL.
+GOOGLE_OAUTH_CLIENT_ID: str = _str("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+GOOGLE_OAUTH_CLIENT_SECRET: str = _str("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+# Where Google sends the browser back: exactly <origin>/auth/google/callback, and the
+# origin the testers browse (the flow cookie lives on it). Validated, without
+# crashing the service, by service/google_oidc.py.
+GOOGLE_OAUTH_REDIRECT_URI: str = _str("GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+# A bound on every call to Google. The client itself uses tighter, per-phase
+# timeouts (service/google_oidc.py); this is the ceiling no phase may exceed.
+GOOGLE_OAUTH_HTTP_TIMEOUT_S: float = _seconds("GOOGLE_OAUTH_HTTP_TIMEOUT_S", 10.0)
+
+
+def _clock_skew(name: str, default: int) -> int:
+    """How far an ID token's `iat` / `exp` may be off our clock, in seconds: 0 to
+    120. Rejected at import, because a larger value quietly widens how long a
+    stolen token stays acceptable."""
+    value = _int(name, default)
+    if not 0 <= value <= 120:
+        raise ValueError(f"{name} must be from 0 to 120 seconds, got {value!r}")
+    return value
+
+
+GOOGLE_OAUTH_CLOCK_SKEW_S: int = _clock_skew("GOOGLE_OAUTH_CLOCK_SKEW_S", 60)
+# The flow cookie carries state, nonce and the PKCE verifier between the start and the
+# callback. A constant, not a variable: it is a name and a lifetime, not a tuning knob.
+GOOGLE_FLOW_COOKIE_NAME: str = "gga_oidc"
+GOOGLE_FLOW_TTL_S: int = 600
+
 # --- Password hashing cost + capacity (x5bz.2) ------------------------------
 # argon2id parameters. 64 MiB / t=3 / p=4 matches argon2-cffi's defaults and
 # RFC 9106's interactive-login guidance. Declared explicitly because peak memory

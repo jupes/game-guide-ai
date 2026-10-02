@@ -980,6 +980,10 @@ EXPECTED_LEGACY_ROUTES = {
     ("GET", "/conversations/{conversation_id}/attachments"),
     ("POST", "/conversations/{conversation_id}/attachments"),
     ("POST", "/auth/signup"), ("POST", "/auth/login"), ("POST", "/auth/logout"), ("GET", "/auth/me"),
+    # lvs7: Sign in with Google. Legacy posture (no `dm` gate; a signed-out visitor
+    # is its audience), and every one of them is a 404 while the feature is off.
+    ("GET", "/auth/google/available"), ("GET", "/auth/google/start"), ("POST", "/auth/google/start"),
+    ("GET", "/auth/google/callback"), ("GET", "/auth/google/link"),
     # 1kg.2.7: Cloud Scheduler's route. Not a Workbench GM route — no session,
     # no `dm` gate — so legacy posture; it authenticates with the scheduler's
     # credential and, without it, matches nothing (`service/job_driver.py`).

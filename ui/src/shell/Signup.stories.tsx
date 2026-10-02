@@ -200,3 +200,67 @@ export const Edge599: Story = {
   ...atViewport('edge599'),
   play: async ({ canvasElement }) => expectPhoneSignup(canvasElement, 'edge599'),
 }
+
+// ── Sign in with Google (lvs7 pr-b) ──────────────────────────────────────────
+
+function googleAvailableStub(): () => () => void {
+  return stubFetch((url) =>
+    url.endsWith('/auth/google/available')
+      ? json({ available: true })
+      : json({ detail: 'Unknown invite link.' }, 400),
+  )
+}
+
+/** Feature off: the password form is the only way in, and nothing mentions Google. */
+export const GoogleOff: Story = {
+  beforeEach: stubFetch(() => json({ detail: 'Not Found' }, 404)),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('button', { name: 'Create account' })).toBeEnabled()
+    await expect(canvas.queryByText(/google/i)).not.toBeInTheDocument()
+  },
+}
+
+/**
+ * Feature on. The invite rides in the POST body of a native form -- never in
+ * an href or the address bar -- and the email form is still there.
+ */
+export const GoogleOn: Story = {
+  beforeEach: googleAvailableStub(),
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement)
+    const button = await canvas.findByRole('button', { name: 'Sign up with Google' })
+    const form = button.closest('form')
+    if (form === null) throw new Error('the Google button is not in a form')
+    await expect(form).toHaveAttribute('method', 'post')
+    await expect(form).toHaveAttribute('action', '/auth/google/start')
+    await expect(form.querySelector('input[name="intent"]')).toHaveValue('invite')
+    await expect(form.querySelector('input[name="invite"]')).toHaveValue(args.invite)
+    await expect(canvasElement.querySelector('[href]')).toBeNull()
+    await expect(button.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
+    await expect(canvas.getByRole('button', { name: 'Create account' })).toBeEnabled()
+  },
+}
+
+export const GoogleOnDark: Story = {
+  globals: { theme: 'dark' },
+  beforeEach: googleAvailableStub(),
+  play: async ({ canvasElement }) => {
+    const button = await within(canvasElement).findByRole('button', { name: 'Sign up with Google' })
+    await expect(getComputedStyle(button).backgroundColor).toBe('rgb(19, 19, 20)')
+  },
+}
+
+export const GoogleOnPhone320: Story = {
+  ...atViewport('phone320'),
+  beforeEach: googleAvailableStub(),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    const canvas = within(canvasElement)
+    const button = await canvas.findByRole('button', { name: 'Sign up with Google' })
+    const card = canvasElement.querySelector('.auth-screen__card')
+    if (!(card instanceof HTMLElement)) throw new Error('no signup card')
+    await expectNoPageOverflow()
+    await expectSpans(button, card)
+  },
+}

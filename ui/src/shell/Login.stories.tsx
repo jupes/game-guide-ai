@@ -12,6 +12,7 @@ import { json, pending, stubFetch, withShell } from '../../.storybook/shellHarne
 import { expectTouchTarget } from '../../.storybook/touchTarget'
 import { atViewport, expectLeftEdge, expectNoPageOverflow, expectSpans, expectTheme, expectViewport, type ViewportName } from '../../.storybook/viewports'
 import { Login } from './Login'
+import { clearGoogleOutcome, setGoogleOutcome } from './googleOutcome'
 
 const meta = {
   title: 'Shell/Login',
@@ -223,5 +224,101 @@ export const DarkPhone320WithError: Story = {
     await userEvent.keyboard('{Enter}')
     await expect(await canvas.findByRole('alert')).toBeVisible()
     await expectPhoneSignIn(canvasElement, 'phone320')
+  },
+}
+
+// ── Sign in with Google (lvs7 pr-b) ──────────────────────────────────────────
+// The control exists only when the service says `{"available": true}`. These
+// stories answer that one question and nothing else; every other request gets
+// the sign-in refusal the stories above use.
+
+function googleAvailableStub(): () => () => void {
+  return stubFetch((url) =>
+    url.endsWith('/auth/google/available')
+      ? json({ available: true })
+      : json({ detail: 'Email or password is incorrect.' }, 401),
+  )
+}
+
+/** Feature off: nothing about Google is drawn, and nothing is left disabled. */
+export const GoogleOff: Story = {
+  beforeEach: stubFetch(() => json({ detail: 'Not Found' }, 404)),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    await expect(canvas.queryByText(/google/i)).not.toBeInTheDocument()
+  },
+}
+
+/** Feature on: a link above the email form, "or" between, the form untouched. */
+export const GoogleOn: Story = {
+  beforeEach: googleAvailableStub(),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const link = await canvas.findByRole('link', { name: 'Sign in with Google' })
+    await expect(link).toHaveAttribute('href', '/auth/google/start')
+    await expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
+    await expect(canvas.getByText('or')).toBeVisible()
+    await expect(canvas.getByRole('button', { name: 'Sign in' })).toBeEnabled()
+    await expect(canvas.getByRole('textbox', { name: 'Email' })).toBeVisible()
+  },
+}
+
+export const GoogleOnDark: Story = {
+  globals: { theme: 'dark' },
+  beforeEach: googleAvailableStub(),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const link = await canvas.findByRole('link', { name: 'Sign in with Google' })
+    await expectTheme('dark')
+    await expect(getComputedStyle(link).backgroundColor).toBe('rgb(19, 19, 20)')
+  },
+}
+
+/** What the callback sends someone back with when no account matched. */
+export const GoogleNoAccount: Story = {
+  beforeEach: () => {
+    const restore = googleAvailableStub()()
+    setGoogleOutcome({ search: '?google=no_account', pathname: '/' })
+    return () => {
+      clearGoogleOutcome()
+      restore()
+    }
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByRole('alert')).toHaveTextContent(
+      "We couldn't find an account for that Google sign-in.",
+    )
+    await expect(await canvas.findByRole('link', { name: 'Sign in with Google' })).toBeVisible()
+  },
+}
+
+export const GoogleNoAccountDark: Story = {
+  globals: { theme: 'dark' },
+  beforeEach: () => {
+    const restore = googleAvailableStub()()
+    setGoogleOutcome({ search: '?google=no_account', pathname: '/' })
+    return () => {
+      clearGoogleOutcome()
+      restore()
+    }
+  },
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole('alert')).toBeVisible()
+  },
+}
+
+export const GoogleOnPhone320: Story = {
+  ...atViewport('phone320'),
+  beforeEach: googleAvailableStub(),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone320')
+    const canvas = within(canvasElement)
+    const link = await canvas.findByRole('link', { name: 'Sign in with Google' })
+    const card = canvasElement.querySelector('.auth-screen__card')
+    if (!(card instanceof HTMLElement)) throw new Error('no sign-in card')
+    await expectNoPageOverflow()
+    await expectSpans(link, card)
   },
 }

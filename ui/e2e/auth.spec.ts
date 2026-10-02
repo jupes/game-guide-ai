@@ -3,7 +3,7 @@
  * the invite deep-link, and what a REFUSED sign-in says.
  */
 
-import { expect, test } from './fixtures'
+import { expect, signIn, test } from './fixtures'
 
 test('the root of a signed-out browser is the sign-in screen, and the workspace is not reachable from it', async ({
   page,
@@ -116,4 +116,63 @@ test('a refused sign-in shows an error, and says exactly the same thing whether 
 
   // Still signed out, both times.
   await expect(page.getByRole('button', { name: 'Enter the Tavern' })).toHaveCount(0)
+})
+
+// ── Sign in with Google (lvs7 pr-b) ──────────────────────────────────────────
+// This stack has Google OFF (no GOOGLE_OAUTH_CLIENT_ID). The property worth
+// holding is that "off" is invisible: no button, no disabled stub, no mention
+// anywhere a person signs in, signs up or edits their profile, and every Google
+// route is an ordinary 404 through nginx. A Google-ON end to end needs a fake
+// identity provider in service/e2e_app.py and is a separate bead.
+
+const isAvailabilityCheck = (response: { url(): string }): boolean =>
+  response.url().endsWith('/auth/google/available')
+
+test('with Google off, the sign-in screen draws no Google control', async ({ page }) => {
+  // Registered BEFORE the navigation: the question is asked as the page mounts,
+  // and an absence asserted before it is answered would pass for the wrong reason.
+  const answered = page.waitForResponse(isAvailabilityCheck)
+  await page.goto('/')
+  expect((await answered).status()).toBe(404)
+  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible()
+  await expect(page.getByText(/google/i)).toHaveCount(0)
+  await expect(page.getByRole('link', { name: /with Google/i })).toHaveCount(0)
+})
+
+test('with Google off, the invite screen draws no Google control', async ({ page }) => {
+  const answered = page.waitForResponse(isAvailabilityCheck)
+  await page.goto('/#invite=not-a-real-invite')
+  expect((await answered).status()).toBe(404)
+  await expect(page.getByRole('button', { name: 'Create account' })).toBeVisible()
+  await expect(page.getByText(/google/i)).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /with Google/i })).toHaveCount(0)
+})
+
+test('with Google off, the profile page has no Google section', async ({ page, accounts }) => {
+  await page.goto('/')
+  await signIn(page, accounts[0])
+  const answered = page.waitForResponse(isAvailabilityCheck)
+  await page.goto('/profile')
+  expect((await answered).status()).toBe(404)
+  await expect(page.getByRole('heading', { name: 'Profile' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Google account' })).toHaveCount(0)
+  await expect(page.getByText(/google/i)).toHaveCount(0)
+})
+
+test('with Google off, every Google route is a plain 404 through nginx, never a redirect', async ({
+  request,
+}) => {
+  const unknown = await request.get('/auth/does-not-exist', { maxRedirects: 0 })
+  expect(unknown.status()).toBe(404)
+  for (const path of [
+    '/auth/google/available',
+    '/auth/google/start',
+    '/auth/google/callback',
+    '/auth/google/link',
+  ]) {
+    const response = await request.get(path, { maxRedirects: 0 })
+    expect(response.status(), path).toBe(404)
+    // Byte-equal to a path that was never a route: nothing says this one exists.
+    expect(await response.text(), path).toBe(await unknown.text())
+  }
 })

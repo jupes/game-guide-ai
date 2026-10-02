@@ -38,6 +38,53 @@ DATABASE_URL_SECRET="${DATABASE_URL_SECRET:-database-url}"
 # every live session — that is the intended "log everyone out" lever.
 SESSION_SECRET_SECRET="${SESSION_SECRET_SECRET:-session-secret}"
 
+# ── Sign in with Google (lvs7) ─────────────────────────────────────────────────
+# OPTIONAL, and OFF unless GOOGLE_OAUTH_CLIENT_ID is set (a CI repository
+# VARIABLE, not a secret: the id is in the URL the browser visits). Off means
+# the service answers 404 on every /auth/google route and the UI draws no button.
+#
+# It is carried HERE, in the same --set-env-vars / --set-secrets flags as
+# everything else, because both flags REPLACE the service's whole set on every
+# deploy (the 1kg.9.5 release-review finding): a value set with
+# `gcloud run services update` alone is wiped by the next CI deploy.
+#
+# The client SECRET is never a variable of this script. It lives in Secret
+# Manager and reaches the service as a --set-secrets reference, like the
+# session secret; the variable below is the secret's NAME. The repository is
+# public, so Actions logs are public and `run` prints whole commands: a value
+# put in the name variable would be printed inside --set-secrets, which is why
+# a name that looks like a client secret is refused, and so is a deploy
+# environment that carries the secret itself.
+GOOGLE_OAUTH_CLIENT_ID="${GOOGLE_OAUTH_CLIENT_ID:-}"
+GOOGLE_OAUTH_REDIRECT_URI="${GOOGLE_OAUTH_REDIRECT_URI:-}"
+GOOGLE_OAUTH_CLIENT_SECRET_SECRET="${GOOGLE_OAUTH_CLIENT_SECRET_SECRET:-google-oauth-client-secret}"
+GOOGLE_SECRET_REF=""
+GOOGLE_ENV=""
+GOOGLE_NOTE="off"
+if [ -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]; then
+  echo "GOOGLE_OAUTH_CLIENT_SECRET must not be set in the deploy environment: the client secret is read from Secret Manager (GOOGLE_OAUTH_CLIENT_SECRET_SECRET names it)" >&2
+  exit 2
+fi
+if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ] || [ -n "$GOOGLE_OAUTH_REDIRECT_URI" ]; then
+  # None of the three values is echoed in an error: they end up in a public log.
+  if [[ ! "$GOOGLE_OAUTH_CLIENT_ID" =~ ^[A-Za-z0-9.-]+\.apps\.googleusercontent\.com$ ]]; then
+    echo "GOOGLE_OAUTH_CLIENT_ID is missing or is not a Google client id (…apps.googleusercontent.com)" >&2
+    exit 2
+  fi
+  if [[ ! "$GOOGLE_OAUTH_REDIRECT_URI" =~ ^https://[A-Za-z0-9.-]+/auth/google/callback$ ]]; then
+    echo "GOOGLE_OAUTH_REDIRECT_URI is missing or is not https://<host>/auth/google/callback" >&2
+    exit 2
+  fi
+  if [[ ! "$GOOGLE_OAUTH_CLIENT_SECRET_SECRET" =~ ^[A-Za-z][A-Za-z0-9_-]{0,254}$ ]] \
+     || [[ "$GOOGLE_OAUTH_CLIENT_SECRET_SECRET" == GOCSPX-* ]]; then
+    echo "GOOGLE_OAUTH_CLIENT_SECRET_SECRET must be a Secret Manager secret NAME, never a client secret" >&2
+    exit 2
+  fi
+  GOOGLE_SECRET_REF=",GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET_SECRET}:latest"
+  GOOGLE_ENV=",GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID},GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI}"
+  GOOGLE_NOTE="on (client secret from Secret Manager secret ${GOOGLE_OAUTH_CLIENT_SECRET_SECRET})"
+fi
+
 # Who may INVOKE the service (Cloud Run IAM), independent of the app's own auth:
 #   preserve (default) — pass no IAM flag, so an existing service keeps whatever
 #                        mode it is in. A service that does not exist yet is
@@ -101,6 +148,7 @@ fi
 echo "Deploy plan: service=${SERVICE} sha=${SHA}"
 echo "  image=${IMAGE}"
 echo "  access=${ACCESS_NOTE}"
+echo "  google=${GOOGLE_NOTE}"
 if [ "$DRY_RUN" = "1" ]; then
   echo "  (dry-run: printing commands, executing nothing)"
 fi
@@ -147,8 +195,8 @@ run gcloud run deploy "${SERVICE}" \
   --port 8000 \
   ${IAM_FLAGS[@]+"${IAM_FLAGS[@]}"} \
   --add-cloudsql-instances "${CLOUDSQL_INSTANCE}" \
-  --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest,SESSION_SECRET=${SESSION_SECRET_SECRET}:latest" \
-  --set-env-vars "AUTH_TRUSTED_PROXY_HOPS=1,GCP_PROJECT=${PROJECT}" \
+  --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest,SESSION_SECRET=${SESSION_SECRET_SECRET}:latest${GOOGLE_SECRET_REF}" \
+  --set-env-vars "AUTH_TRUSTED_PROXY_HOPS=1,GCP_PROJECT=${PROJECT}${GOOGLE_ENV}" \
   --timeout 300 \
   --max-instances 2 \
   --memory 1Gi \
