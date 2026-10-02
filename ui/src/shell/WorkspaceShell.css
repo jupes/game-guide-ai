@@ -1,12 +1,18 @@
 /* ── WorkspaceShell ──────────────────────────────────────────────────────────
-   Wide (>= 768px): TopBar over LeftNav + main chat area, two columns.
-   Narrow (< 768px, LAYOUT-3, agent-forge-harness-0rn): one column; LeftNav is
-   an off-canvas modal drawer. The structural switch keys on `data-layout`,
-   which WorkspaceShell sets from useShellLayout (NARROW_MEDIA), so the
-   presentation and the dialog semantics come from the same query.
+   Wide (>= 1024px): TopBar over LeftNav + main chat area; with a document open,
+   a 56px rail + the chat (472px) + the canvas (1kg.6.3).
+   Medium (768 to 1023px, LAYOUT-2): one column and the 56px rail; LeftNav is the
+   off-canvas modal drawer.
+   Narrow (< 768px, LAYOUT-3, agent-forge-harness-0rn): one column and no rail; the
+   drawer opens from TopBar.
+   The structural switch keys on `data-layout` and `data-nav`, which WorkspaceShell
+   sets from useShellLayout and its nav-presentation table, so the presentation and
+   the dialog semantics come from the same query. No stylesheet here repeats a
+   boundary except the phone rule (PHONE_MEDIA, breakpoints.test.ts).
    ─────────────────────────────────────────────────────────────────────────── */
 
 .workspace-shell {
+  position: relative; /* the skip links are positioned against the shell */
   display: flex;
   flex-direction: column;
   height: 100dvh; /* LAYOUT-8: a phone's collapsing toolbar overflows 100vh */
@@ -22,6 +28,7 @@
 .workspace-shell__body {
   display: flex;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -44,16 +51,17 @@
   outline: none;
 }
 
-/* ── Narrow: the drawer ───────────────────────────────────────────────────────
-   Closed, the host is not rendered at all (display: none), so nothing in it
-   is in the tab order or the accessibility tree. Open, it is a fixed panel
-   over a scrim, and it scrolls as a whole, so a short screen (a phone in
-   landscape, or a laptop at 200% zoom) still reaches the account footer. */
-.workspace-shell[data-layout="narrow"] .workspace-shell__nav {
+/* ── The drawer (narrow and medium, and wide while a document is open) ────────
+   Wherever LeftNav is not the sidebar (`data-nav` is `rail` or `hidden`), closed,
+   the host is not rendered at all (display: none), so nothing in it is in the tab
+   order or the accessibility tree. Open, it is a fixed panel over a scrim — above
+   the rail, where there is one — and it scrolls as a whole, so a short screen (a
+   phone in landscape, or a laptop at 200% zoom) still reaches the account footer. */
+.workspace-shell:is([data-nav="hidden"], [data-nav="rail"]) .workspace-shell__nav {
   display: none;
 }
 
-.workspace-shell[data-layout="narrow"] .workspace-shell__nav[data-open] {
+.workspace-shell:is([data-nav="hidden"], [data-nav="rail"]) .workspace-shell__nav[data-open] {
   display: flex;
   flex-direction: column;
   position: fixed;
@@ -68,7 +76,7 @@
   box-shadow: var(--md-sys-elevation-level3);
 }
 
-.workspace-shell[data-layout="narrow"] .workspace-shell__nav[data-open]:focus-visible {
+.workspace-shell:is([data-nav="hidden"], [data-nav="rail"]) .workspace-shell__nav[data-open]:focus-visible {
   outline: 3px solid var(--md-sys-color-secondary);
   outline-offset: -3px;
 }
@@ -76,7 +84,7 @@
 /* LeftNav fills the drawer and never shrinks below its content: `height:
    auto` overrides LeftNav's own `height: 100%`, which would otherwise become
    the flex basis and squeeze the conversation list to nothing. */
-.workspace-shell[data-layout="narrow"] .left-nav {
+.workspace-shell:is([data-nav="hidden"], [data-nav="rail"]) .left-nav {
   width: 100%;
   height: auto;
   flex: 1 0 auto;
@@ -126,11 +134,136 @@
   outline-offset: 2px;
 }
 
+/* ── The Workbench (1kg.6.3) ──────────────────────────────────────────────────
+   `<main>` holds one .workbench row. Without a canvas the chat column is today's
+   layout exactly (main keeps its padding). With one, main's padding moves INTO the
+   chat column, so the canvas can run to the edges (I-12, C-15).
+
+   C-1: an author `display: flex` beats the UA's `[hidden] { display: none }`, so the
+   canvas column states it; and the chat column is a flex column too, so ChatPane's
+   `height: 100%` chain survives the two wrapper divs and the transcript still
+   scrolls with the composer in view. */
+.workbench {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workbench__chat,
+.workbench__canvas {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.workbench__chat {
+  flex: 1;
+}
+
+.workbench__chat > .chat-pane {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.workbench__canvas {
+  flex: 1 1 auto;
+}
+
+.workbench__canvas[hidden] {
+  display: none;
+}
+
+.workspace-shell__main[data-canvas] {
+  padding: 0;
+}
+
+.workbench[data-canvas] .workbench__chat {
+  box-sizing: border-box;
+  padding: 24px;
+}
+
+/* Wide, with a canvas: the chat is 472px (padding included) beside the canvas, which
+   takes the rest, behind a hairline (I-12: 56 + 472 + 480 fits 1024px). */
+.workspace-shell[data-layout="wide"] .workbench[data-canvas] .workbench__chat {
+  flex: 0 0 472px;
+  padding: 24px 16px;
+}
+
+.workspace-shell[data-layout="wide"] .workbench__canvas {
+  border-inline-start: 1px solid var(--md-sys-color-outline-variant);
+}
+
+/* C-2: in a single column showing the canvas, the chat column is concealed, not
+   `hidden` or inert. Everything but ChatPane's one status node is removed from the
+   layout and the tab order (display: none), so a GM reading the canvas still hears
+   "Answer received" and "Answer failed". The column holds nothing else, so it needs
+   no `overflow: hidden` (which would clip that one node's 1px box, a crossing the
+   canvas stories rightly report). */
+.workbench[data-canvas] .workbench__chat[data-concealed] {
+  flex: 0 0 0;
+  padding: 0;
+}
+
+.workbench__chat[data-concealed] .chat-pane > :not(.chat-pane__arrival) {
+  display: none;
+}
+
+/* ── Skip links (I-17, C-14) ───────────────────────────────────────────────────
+   The first focusable thing in the shell, visible only on focus. */
+.workspace-shell__skip {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  z-index: var(--aether-z-toast);
+}
+
+.workspace-shell__skip-link {
+  position: absolute;
+  inset-block-start: 8px;
+  inset-inline-start: 8px;
+  min-height: var(--aether-touch-min);
+  padding: 0 16px;
+  border: 2px solid var(--md-sys-color-primary);
+  border-radius: var(--aether-radius-button);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transform: translateY(-300%);
+}
+
+.workspace-shell__skip-link:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+  transform: none;
+}
+
+.workspace-shell__skip-link + .workspace-shell__skip-link {
+  inset-inline-start: 200px;
+}
+
 /* ── Phone (agent-forge-harness-0rn) ─────────────────────────────────────────
    Under 600px the chat's 24px padding costs a 320px screen 15% of its width;
-   the gutter is the design system's phone margin. */
+   the gutter is the design system's phone margin. With a canvas, the padding
+   belongs to the chat column (C-15), and the canvas runs edge to edge. */
 @media (width < 600px) {
   .workspace-shell__main {
     padding: var(--aether-gutter);
+  }
+
+  .workbench[data-canvas] .workbench__chat {
+    padding: var(--aether-gutter);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-shell__skip-link {
+    transition: none;
   }
 }

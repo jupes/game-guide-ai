@@ -30,7 +30,6 @@
   box-shadow: var(--md-sys-elevation-level3);
   font-family: var(--aether-font-ui);
   color: var(--md-sys-color-on-surface);
-  animation: loss-guard-in var(--md-sys-motion-duration-short4) var(--md-sys-motion-easing-standard);
 }
 
 .loss-guard:focus-visible {
@@ -124,17 +123,4 @@
 
 .workspace-shell[data-nav="hidden"] .loss-guard__button {
   width: 100%;
-}
-
-@keyframes loss-guard-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loss-guard {
-    animation: none;
-  }
 }

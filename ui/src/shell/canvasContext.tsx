@@ -108,8 +108,11 @@ export interface CanvasActions {
   readonly titleRef: React.RefObject<HTMLHeadingElement | null>
   /** The `Conversation` region, which ChatPane sets so the shell never queries the DOM for it. */
   readonly chatRegionRef: React.RefObject<HTMLElement | null>
+  /** How ChatPane hands over its `Conversation` region (a callback, so no ref is written from a component). */
+  readonly setChatRegion: (element: HTMLElement | null) => void
   /** The control that opened the nav drawer; the shell sets it (C-3a). */
   readonly drawerOpenerRef: React.RefObject<HTMLElement | null>
+  readonly setDrawerOpener: (element: HTMLElement | null) => void
 }
 
 /** The Workbench exists only for a `dm`, in the GM channel, with a campaign selected (X-9). */
@@ -525,7 +528,9 @@ const INERT_ACTIONS: CanvasActions = {
   openerRef: inertRef(),
   titleRef: inertRef(),
   chatRegionRef: inertRef(),
+  setChatRegion: () => {},
   drawerOpenerRef: inertRef(),
+  setDrawerOpener: () => {},
 }
 
 const CanvasStateContext = React.createContext<CanvasState | null>(null)
@@ -536,7 +541,18 @@ export interface CanvasProviderProps {
   fetchImpl?: typeof fetch
 }
 
+/**
+ * The one provider for a Workbench. Nested inside another it passes its children
+ * through: two stores would be two canvases, so a second mount (the shell inside a
+ * test harness that already holds the provider, say) reuses the first.
+ */
 export function CanvasProvider({ children, fetchImpl }: CanvasProviderProps): React.JSX.Element {
+  const parent = React.useContext(CanvasActionsContext)
+  if (parent !== null) return <>{children}</>
+  return <CanvasProviderRoot fetchImpl={fetchImpl}>{children}</CanvasProviderRoot>
+}
+
+function CanvasProviderRoot({ children, fetchImpl }: CanvasProviderProps): React.JSX.Element {
   const campaign = useCampaign()
   const { documentKey, setDocumentKey, onDocumentLink } = useCampaignDocument()
   const active = useWorkbenchActive()
@@ -546,6 +562,12 @@ export function CanvasProvider({ children, fetchImpl }: CanvasProviderProps): Re
   const titleRef = React.useRef<HTMLHeadingElement | null>(null)
   const chatRegionRef = React.useRef<HTMLElement | null>(null)
   const drawerOpenerRef = React.useRef<HTMLElement | null>(null)
+  const setChatRegion = React.useCallback((element: HTMLElement | null): void => {
+    chatRegionRef.current = element
+  }, [])
+  const setDrawerOpener = React.useCallback((element: HTMLElement | null): void => {
+    drawerOpenerRef.current = element
+  }, [])
   const [store] = React.useState(
     () => new CanvasStore({ composer: composerRef, opener: openerRef, title: titleRef, drawerOpener: drawerOpenerRef }, fetchImpl),
   )
@@ -590,9 +612,11 @@ export function CanvasProvider({ children, fetchImpl }: CanvasProviderProps): Re
       openerRef,
       titleRef,
       chatRegionRef,
+      setChatRegion,
       drawerOpenerRef,
+      setDrawerOpener,
     }),
-    [store],
+    [store, setChatRegion, setDrawerOpener],
   )
 
   return (

@@ -192,11 +192,14 @@ export interface MountOptions {
   strict?: boolean
   /** Extra providers between the canvas and the surface (a model catalog, say). */
   wrap?: (children: React.ReactNode) => React.ReactNode
+  /** Route the global `fetch` through the same server, for surfaces that call `api.ts` directly (the whole shell). */
+  stubGlobalFetch?: boolean
 }
 
 /** Signed in as a dm (or `role`), at `/workspace`, with the real providers. `ui` receives the server so a surface can be handed its `fetchImpl`. */
 export async function mountWorkbench(ui: (server: StubServer) => React.ReactElement, options: MountOptions = {}) {
   const server = stubServer(options.route)
+  if (options.stubGlobalFetch === true) vi.stubGlobal('fetch', server.fetchImpl)
   const signal = channels()
   window.history.replaceState(null, '', `/workspace${options.hash ?? ''}`)
   vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'ok', user: { email: GM_EMAIL, role: options.role ?? 'dm' } })

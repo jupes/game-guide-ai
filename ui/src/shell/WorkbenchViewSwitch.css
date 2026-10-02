@@ -1,0 +1,47 @@
+/* ── WorkbenchViewSwitch ─────────────────────────────────────────────────────
+   Chat / Canvas (LAYOUT-5). A two-segment control under the channels. Tokens only,
+   so both themes follow the palette; segments are 44 px tall. No width media
+   query: the shell renders it only where it is needed (breakpoints.ts).
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.workbench-switch {
+  display: flex;
+  box-sizing: border-box;
+  margin: var(--aether-space-1) var(--aether-gutter);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+  overflow: hidden;
+}
+
+.workbench-switch__segment {
+  flex: 1;
+  min-height: var(--aether-touch-min);
+  padding: 0 var(--aether-space-4);
+  border: none;
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--aether-font-ui);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.workbench-switch__segment + .workbench-switch__segment {
+  border-inline-start: 1px solid var(--md-sys-color-outline);
+}
+
+.workbench-switch__segment[aria-pressed="true"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+@media (hover: hover) {
+  .workbench-switch__segment[aria-pressed="false"]:hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+.workbench-switch__segment:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: -3px;
+}

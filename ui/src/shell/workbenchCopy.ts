@@ -61,6 +61,7 @@ export const WORKBENCH_COPY = {
   documentsRetry: 'Retry',
 
   // ── Skip links (I-17, C-14) ──
+  skipLinks: 'Skip links',
   skipToConversation: 'Skip to conversation',
   skipToDocument: 'Skip to document',
 } as const

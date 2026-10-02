@@ -13,7 +13,9 @@
  * The widths are the design's (drawn at 390, checked at 320), the ADR's (375,
  * 768, 1280), both sides of each boundary (599/600, 767/768), a folding
  * phone's 280 px cover screen, and a phone in landscape (667x375), which is
- * narrow by width but short.
+ * narrow by width but short. The Workbench (1kg.6.3) adds the medium layout's
+ * 768 and 900 (LAYOUT-2), the wide layout's lower edge, 1024, and a phone in
+ * landscape at 812x375, which is MEDIUM by width and very short (C-15).
  */
 import { expect, within } from 'storybook/test'
 
@@ -26,8 +28,11 @@ const SIZES = {
   edge600: [600, 900],
   landscape667: [667, 375],
   narrow767: [767, 1024],
-  wide768: [768, 1024],
+  medium768: [768, 1024],
+  medium900: [900, 1024],
+  wide1024: [1024, 768],
   wide1280: [1280, 800],
+  landscape812: [812, 375],
 } as const satisfies Record<string, readonly [number, number]>
 
 export type ViewportName = keyof typeof SIZES

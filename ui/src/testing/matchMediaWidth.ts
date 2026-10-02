@@ -7,9 +7,10 @@
  * range queries, `(width < Npx)`, against it, so a test names a width
  * (375, 768, 900, 1023, 1024, 1280) and gets the layout a browser would.
  *
- * Only the `(width < Npx)` form is understood, because it is the only form the
- * shell queries (breakpoints.ts). Any other query throws, so a new query
- * cannot silently evaluate to "does not match".
+ * Only the `(width < Npx)` form is evaluated, because it is the only width form the
+ * shell queries (breakpoints.ts). Any other query (the theme's
+ * `prefers-color-scheme`, say) does not match, and is recorded in `queries` so a test
+ * can see it was asked.
  *
  * Install it in `beforeEach` and restore it in `afterEach`, never in
  * `test-setup.ts`: jsdom's missing `matchMedia` is what keeps every other test
@@ -35,8 +36,7 @@ const RANGE_QUERY = /^\(width < (\d+)px\)$/
 
 function evaluate(media: string, width: number): boolean {
   const match = RANGE_QUERY.exec(media)
-  if (match === null) throw new Error(`matchMediaWidth cannot evaluate ${media}`)
-  return width < Number(match[1])
+  return match !== null && width < Number(match[1])
 }
 
 export function installMatchMediaWidth(initialWidth: number): MatchMediaWidthStub {
@@ -48,7 +48,6 @@ export function installMatchMediaWidth(initialWidth: number): MatchMediaWidthStu
 
   window.matchMedia = (media: string): MediaQueryList => {
     queries.push(media)
-    evaluate(media, width)
     const set = listeners.get(media) ?? new Set<ChangeListener>()
     listeners.set(media, set)
     const list = {

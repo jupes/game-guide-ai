@@ -19,6 +19,7 @@
  */
 
 import * as React from 'react'
+import { useCanvasActions, useCanvasState } from './canvasContext'
 import { wrapTab } from './focusTrap'
 import { WORKBENCH_COPY } from './workbenchCopy'
 import './LossGuardDialog.css'
@@ -105,5 +106,26 @@ export function LossGuardDialog({
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * The dialog as the shell mounts it: open exactly while the canvas provider's guard
+ * is waiting for the GM, wired to its three answers. Rendered at the shell root, as
+ * a sibling of the chrome and the body (C-11), so `inert` on them never reaches it.
+ */
+export function LossGuardHost(): React.JSX.Element | null {
+  const { guardDialog } = useCanvasState()
+  const { guard } = useCanvasActions()
+  if (guardDialog === null) return null
+  return (
+    <LossGuardDialog
+      title={guardDialog.title}
+      retryable={guardDialog.retryable}
+      busy={guardDialog.busy}
+      onKeep={guard.keep}
+      onRetry={guard.retry}
+      onDiscard={guard.discard}
+    />
   )
 }

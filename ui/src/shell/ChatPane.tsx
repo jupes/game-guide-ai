@@ -17,7 +17,7 @@ import { StatBlockCard } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
 import { SuggestionCards } from '../components/SuggestionCards'
 import { Markdown } from '../components/Markdown'
-import { CHAT_TEXT_MAX_CHARS, codePointLength } from '../gm/contracts'
+import { CHAT_TEXT_MAX_CHARS, codePointLength, type DocumentLink } from '../gm/contracts'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
@@ -42,6 +42,7 @@ import {
   uploadAttachment as defaultUploadAttachment,
 } from '../api'
 import { useCampaign } from './campaignContext'
+import { useCanvasActions } from './canvasContext'
 import { useCampaignThreads } from './campaignThreads'
 import type {
   Attachment,
@@ -347,6 +348,26 @@ function ChatPaneBody({
 
   // Autoscroll (pp6q.1.3). A fresh thread starts at the bottom by definition.
   const feedRef = React.useRef<HTMLDivElement>(null)
+  // 1kg.6.3: the Workbench canvas. `Open in canvas` on a tool result is an explicit
+  // gesture (CANVAS-3); nothing else in this pane ever opens or closes a document
+  // (CANVAS-4/18). The composer and the Conversation region are handed over as refs,
+  // so the canvas can return focus to the composer and the shell can skip to the
+  // conversation without querying the DOM. These are the stable canvas ACTIONS, so a
+  // document loading, opening or closing never re-renders this pane (C-13).
+  const { openDocument, composerRef, setChatRegion } = useCanvasActions()
+  const openFromLink = React.useCallback(
+    (link: DocumentLink): void => {
+      void openDocument({ documentId: link.document_id, title: link.title }, { gesture: true })
+    },
+    [openDocument],
+  )
+  const setFeed = React.useCallback(
+    (element: HTMLDivElement | null): void => {
+      feedRef.current = element
+      setChatRegion(element)
+    },
+    [setChatRegion],
+  )
   const [atBottom, setAtBottom] = React.useState(true)
 
   // Load earlier (1kg.3.6): the feed's height just before a press, captured
@@ -555,7 +576,7 @@ function ChatPaneBody({
           the role by name. */}
       <div
         className="chat-pane__exchanges aether-parchment"
-        ref={feedRef}
+        ref={setFeed}
         onScroll={handleFeedScroll}
         role="region"
         aria-label="Conversation"
@@ -588,6 +609,7 @@ function ChatPaneBody({
             loadingEarlier={timeline.loadingEarlier}
             earlierError={timeline.earlierError}
             onLoadEarlier={handleLoadEarlier}
+            onOpenDocument={openFromLink}
           />
         ) : (
           exchanges.map((exchange) => (
@@ -800,6 +822,7 @@ function ChatPaneBody({
           disabled={conversationId === null}
         />
         <TextField
+          ref={composerRef}
           multiline
           autoGrow
           rows={1}
