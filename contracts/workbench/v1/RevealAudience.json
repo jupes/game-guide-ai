@@ -14,9 +14,23 @@
     {
       "name": "three participants, one disclosure in three copies",
       "value": { "kind": "participants", "participant_ids": ["pt_4c1b9e7a", "pt_11aa22bb", "pt_33cc44dd"] }
+    },
+    {
+      "name": "everyone seated",
+      "value": { "kind": "everyone_seated" }
     }
   ],
   "invalid": [
+    {
+      "name": "everyone seated with a recipient list",
+      "why": "TA-5, threat model 15.11: the server expands everyone-seated at Confirm from the seats it holds, so the shape carries no recipient list a client could widen or narrow",
+      "value": { "kind": "everyone_seated", "participant_ids": ["pt_4c1b9e7a"] }
+    },
+    {
+      "name": "an everyone kind that is not everyone seated",
+      "why": "closed vocabulary: the only everyone is everyone_seated, which the server expands to confirmed seats; there is no everyone that reaches an unconfirmed seat or a guest",
+      "value": { "kind": "everyone" }
+    },
     {
       "name": "an empty recipient list",
       "why": "O-3: a disclosure has at least one copy; an empty list is a Stop wearing a Confirm's shape",

@@ -130,6 +130,13 @@ log = logging.getLogger(__name__)
 #: How many times a Confirm or a Stop is tried when it loses a deadlock (ID-17).
 DEADLOCK_ATTEMPTS: Final = 3
 
+#: Whether a table can be shown an asset. No table asset-handle route exists
+#: (`/table/assets/{handle}`, SEC-15, SEC-16), so a Confirm that names an asset
+#: key such as `portrait` is refused: the alternatives are an emit that fails
+#: closed while the GM believes the asset is shown, or a GM-side `AssetRef` on
+#: the table's wire (1kg.7.2, ID-7). The bead that builds that route flips this.
+TABLE_ASSETS_SERVED: Final = False
+
 #: A wait that ran out: the campaign lock's `lock_timeout` or the transaction's
 #: bound (RQ-4, RQ-8). Busy, never a refusal.
 _BUSY: Final = (psycopg.errors.LockNotAvailable, psycopg.errors.TransactionTimeout)
@@ -165,6 +172,15 @@ class Displayed:
 
 
 @dataclass(frozen=True)
+class GmReveal:
+    """The GM's picture and the documents whose masked text now differs from the
+    pinned version (ID-5). `stale` holds document ids only."""
+
+    picture: RevealPicture
+    stale: frozenset[str]
+
+
+@dataclass(frozen=True)
 class StopDocument:
     """Stop every copy of one document."""
 
@@ -189,8 +205,9 @@ def check_mask(doc_type: DocumentTypeId, data: Mapping[str, Any], mask: Sequence
     own per-kind rule (`workbench_contracts._PROJECTION_VALUE`): text non-blank
     after trimming, a list with at least one item and no blank one, an abilities
     block with at least one score, an entry with both a name and a text, an
-    integer that is a number. An asset is present when its value is not null;
-    the per-slot handle is `1kg.8.1.3`'s. **Never reads a registry default.**
+    integer that is a number. An asset is present when its value is not null,
+    **and is at fault while `TABLE_ASSETS_SERVED` is False**: nothing can mint
+    a table handle for it yet. **Never reads a registry default.**
 
     A key that is not field-key shaped is at fault too, and `MaskRefused` drops
     it from what it repeats, so a key that is really a sentence is never echoed.
@@ -207,7 +224,7 @@ def check_mask(doc_type: DocumentTypeId, data: Mapping[str, Any], mask: Sequence
         if kind is None or key in RESERVED_MASK_KEYS or FIELD_KEY.fullmatch(key) is None or key not in data:
             at_fault.add(key)
             continue
-        if not _present(kind, data[key]):
+        if (kind is FieldKind.ASSET and not TABLE_ASSETS_SERVED) or not _present(kind, data[key]):
             at_fault.add(key)
     return tuple(sorted(at_fault))
 
@@ -328,8 +345,9 @@ class Reveals:
             raise RevealNotFound() from None
         # 5. Validation: reads only, no row lock.
         mask, targets = self._validated(unit, command)
-        # 1kg.7.2 builds the projection here, from the sealed version and the
-        # mask, still before the session row is held (shared ADR section 4).
+        # No projection is built here: 1kg.7.2 builds it on each table read, from
+        # the pinned sealed version (ID-16; `check_mask` and the projection share
+        # `_PROJECTION_VALUE`, and a sealed version cannot change).
         # 6. The session row, owner in the locking statement.
         held = self._sessions.hold(unit, campaign_id, session.id, owner_id=owner_id)
         if held is None:
@@ -517,6 +535,45 @@ class Reveals:
         moment = aware(now, "a clock")
         with self._db.transaction() as unit:
             return self._reveals.picture(unit, campaign_id, owner_id=owner_id, now=moment)
+
+    def view(self, campaign_id: str, *, owner_id: int, now: datetime) -> GmReveal | None:
+        """The GM's read: the picture and its stale set. One transaction, no
+        lock; `stale_text` may lag the picture by one commit and is GM-only, and
+        nothing may depend on the two agreeing. `RevealNotFound` when the campaign
+        is not the owner's, None when it has no live session."""
+        moment = aware(now, "a clock")
+        with self._db.transaction() as unit:
+            if self._campaigns.get(unit, campaign_id, owner_id=owner_id) is None:
+                raise RevealNotFound()
+            picture = self._reveals.picture(unit, campaign_id, owner_id=owner_id, now=moment)
+            if picture is None:
+                return None
+            return GmReveal(picture, self._stale_in(unit, campaign_id, picture))
+
+    def stale_documents(self, campaign_id: str, picture: RevealPicture) -> frozenset[str]:
+        """The picture's stale set, read after a Confirm or a Stop committed and
+        never inside their transaction. One read-only transaction."""
+        with self._db.transaction() as unit:
+            return self._stale_in(unit, campaign_id, picture)
+
+    def _stale_in(self, unit: UnitOfWork, campaign_id: str, picture: RevealPicture) -> frozenset[str]:
+        """Documents whose masked values differ between the pinned version and
+        the document's current data (REVEAL-8: text, not version numbers). A
+        document that is gone is not stale. Two reads per distinct live document,
+        never per slot. Logs and raises nothing about content."""
+        shown: dict[str, tuple[int, tuple[str, ...]]] = {}
+        for entry in picture.entries:
+            if entry.live is not None:
+                shown.setdefault(entry.live.document_id, (entry.live.version, entry.live.mask))
+        stale: set[str] = set()
+        for document_id, (version, mask) in shown.items():
+            current = self._documents.get(unit, campaign_id, document_id)
+            pinned = self._documents.snapshot(unit, campaign_id, document_id, version)
+            if current is None or pinned is None:
+                continue
+            if any(current.data.get(key) != pinned.data.get(key) for key in mask):
+                stale.add(document_id)
+        return frozenset(stale)
 
     # ── Plumbing ─────────────────────────────────────────────────────────────
 

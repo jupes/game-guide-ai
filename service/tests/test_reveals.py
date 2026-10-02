@@ -23,13 +23,14 @@ from typing import Any
 import psycopg
 import pytest
 
+from service import reveals as reveals_module
 from service.audit_log import AuditAction, InMemoryAuditLog
 from service.campaign_store import InMemoryCampaignStore
 from service.db import InMemoryDatabase
 from service.document_store import InMemoryDocumentStore
 from service.participant_store import InMemoryParticipantStore
 from service.reveal_scope import TableAudience
-from service.reveal_store import InMemoryRevealStore, RevealBusy, RevealPicture
+from service.reveal_store import InMemoryRevealStore, RevealBusy, RevealNotFound, RevealPicture
 from service.reveals import (
     DisplayCommand,
     Reveals,
@@ -379,3 +380,68 @@ def test_the_audit_actions_the_service_writes_are_the_three_reveal_actions() -> 
     }
     assert written == {"REVEAL_DISPLAYED", "REVEAL_UPDATED", "REVEAL_STOPPED"}
     assert {AuditAction[name].value for name in written} == {"reveal.displayed", "reveal.updated", "reveal.stopped"}
+
+
+# ── 1kg.7.2: an asset key is refused while no table can be given a handle ────
+
+AN_ASSET = {"asset_id": "ast_" + "a" * 22, "media_type": "image", "alt": "A hooded woman"}
+
+
+def test_s1_an_asset_key_is_at_fault_until_a_table_asset_route_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ID-7: `TABLE_ASSETS_SERVED` is False, so a `portrait` that holds a perfectly
+    good asset is still refused at Confirm; the table-asset bead flips the constant."""
+    # kills: removing the asset clause
+    data = {"name": "V", "portrait": dict(AN_ASSET)}
+    assert reveals_module.TABLE_ASSETS_SERVED is False
+    assert check_mask(DocumentTypeId.NPC, data, ("portrait",)) == ("portrait",)
+    assert check_mask(DocumentTypeId.NPC, data, ("name", "portrait")) == ("portrait",)
+    monkeypatch.setattr(reveals_module, "TABLE_ASSETS_SERVED", True)
+    assert check_mask(DocumentTypeId.NPC, data, ("portrait",)) == ()
+    assert check_mask(DocumentTypeId.NPC, {"name": "V", "portrait": None}, ("portrait",)) == ("portrait",), (
+        "a null asset is absent either way"
+    )
+
+
+# ── 1kg.7.2: the GM's read ───────────────────────────────────────────────────
+
+
+def test_s2_the_read_is_not_found_for_a_stranger_and_none_without_a_session() -> None:
+    # kills: returning None for a foreign campaign
+    twin, _ = _twin()
+    service = twin.service()
+    now = datetime.now(UTC)
+    with pytest.raises(RevealNotFound):
+        service.view(twin.campaign, owner_id=2, now=now)
+    with pytest.raises(RevealNotFound):
+        service.view("cmp_" + "z" * 22, owner_id=1, now=now)
+    with twin.db.transaction() as unit:
+        quiet = twin.campaigns.create(unit, owner_id=1, name="Quiet").id
+    assert service.view(quiet, owner_id=1, now=now) is None
+
+    seen = service.view(twin.campaign, owner_id=1, now=now)
+    assert seen is not None and seen.stale == frozenset() and seen.picture.reveal_epoch == 0
+    twin.confirm(service)
+    shown = service.view(twin.campaign, owner_id=1, now=now)
+    assert shown is not None and [e.live is not None for e in shown.picture.entries] == [True]
+
+
+def test_s2_a_missing_document_is_not_stale_and_a_changed_one_is() -> None:
+    # kills: reading stale from version numbers; counting a missing document as stale
+    twin, _ = _twin()
+    service = twin.service()
+    twin.confirm(service)
+    now = datetime.now(UTC)
+    with twin.db.transaction() as unit:
+        twin.documents.write_fields(
+            unit, twin.campaign, twin.document, fields={"name": "Another"}, author=Author.GM, base_write_revision=None
+        )
+    stale = service.view(twin.campaign, owner_id=1, now=now)
+    assert stale is not None and stale.stale == frozenset({twin.document})
+    picture = stale.picture
+    with twin.db.transaction() as unit:
+        twin.documents.write_fields(
+            unit, twin.campaign, twin.document, fields={"name": "Vashti"}, author=Author.GM, base_write_revision=None
+        )
+    assert service.stale_documents(twin.campaign, picture) == frozenset()
+    elsewhere = service.stale_documents("cmp_" + "z" * 22, picture)
+    assert elsewhere == frozenset(), "a document that is not found is not stale"

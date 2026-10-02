@@ -256,7 +256,7 @@ A family whose *Schema families* status is **open** is not bound by the table
 below until it is marked done again. The table-session family is one: threat
 model §15.11 reopened it, and no build, deployed or not, has ever served or
 parsed one of its shapes, so there is no producer and consumer that have met for
-a bump to protect (`1kg.2.3`, DV-3).
+a bump to protect (`1kg.2.3`, DV-3). The reveal family is another: its TA-5 row added `everyone_seated`, and no build has served or parsed a reveal shape either (`1kg.7.2`, ID-4).
 
 | Change | Version |
 | --- | --- |
@@ -290,7 +290,7 @@ on both sides.
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, `CharacterSheetLink` (`q156`), and `conflict`, `document_unsupported`, `document_not_archived` and `link_taken` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
-| Reveal | **done** | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
+| Reveal | **open** — reopened by threat model §15.11's TA-5 row (`everyone_seated`); no build has served or parsed a reveal shape, so no bump is owed; marked done by `1kg.7.2` PR-2 (DV-3's precedent) | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealAnswer`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
 | Table sessions | **open** — reopened by threat model §15.11; not bound by the bump table until marked done again (see *Versioning and forward compatibility*) | `TableSession`, `TableSessionRequest`, `TableSessionAnswer`, `ScreenMintRequest`, `ScreenMintAnswer`, `TableLeaveRequest`, and `inactive`, `cross_site`, `screen_limit` and `live_elsewhere` on the error envelope. `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired (`1kg.2.3`). See *The table-session family* below |
 | Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
@@ -1395,9 +1395,29 @@ the rule it copies.
 
 | Shape | Says | Answered with |
 | --- | --- | --- |
-| `RevealAudience` | `table`, or **one or more participants by id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10). A reveal to one player is a list of one; there is no singular shape. Nothing ties an audience to a document type: under owner decision O-2 a participant audience is legal for **any** type, and the registry's `audience` flag now says only whose default reveal a type seeds | — (it is a member, not a request) |
-| `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) | **`RevealState`** — the GM's whole reveal picture, the new epoch included |
-| `RevealStopRequest` | Stop showing, by `scope`: a `document`, or `all` (REVEAL-6, REVEAL-7). **There is no slot scope** — see below. **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) | **`RevealState`**, the same |
+| `RevealAudience` | `table`, **one or more participants by id** — an identity, never a credential and never an alias (AUD-2, AUD-11, ED-10) — or `everyone_seated`. A reveal to one player is a list of one; there is no singular shape. `everyone_seated` carries **no recipient list** (TA-5, threat model §15.11): the server expands it at Confirm to the accepted, GM-confirmed, not-removed seats, so a client can neither widen nor narrow it, and a seat confirmed later does not join a display already made. Nothing ties an audience to a document type: under owner decision O-2 a participant audience is legal for **any** type, and the registry's `audience` flag now says only whose default reveal a type seeds | — (it is a member, not a request) |
+| `RevealRequest` | Confirm: the document, the **sealed** version the sheet displayed, the mask, the audience, and **both** the session it was composed for and that session's reveal epoch (REVEAL-5, ED-9). One shape covers reveal, update, replace and move — the server derives which. It names a session so that a number from last night can never match tonight. No campaign id: the session names the campaign and ownership is the route's (SEC-3) | **`RevealAnswer`** — the GM's whole reveal picture, the new epoch included |
+| `RevealStopRequest` | Stop showing, by `scope`: a `document`, or `all` (REVEAL-6, REVEAL-7). **There is no slot scope** — see below. **No epoch on any Stop** (X-3): a narrowing is never stale, never queued and never refused for state, so there is no number to be stale against, and sending one is an error. There is no Retract in v1 (ED-16) | **`RevealAnswer`**, the same |
+| `RevealAnswer` | The GM's reveal picture as a top-level answer: `schema_version` and `state`, a `RevealState` or `null` when the campaign has no live session. It exists because `RevealState` carries no `schema_version` and so cannot be a top-level payload (*Versioning*), and so that a Stop with no live session answers something other than a 409. Like `TableSessionAnswer` it holds ids, version numbers and mask keys, never field text | — (it is the answer) |
+
+### Routes (1kg.7.2)
+
+All three are Workbench GM routes: the origin check, the `dm` role, then the
+throttle, and one 404 for every stranger (SEC-3). Every answer is
+`Cache-Control: no-store`.
+
+| Route | Body | Answer |
+| --- | --- | --- |
+| `GET /campaigns/{campaign_id}/reveals` | — | `RevealAnswer`: the live session's picture with `stale_text` and `pending_delivery`, else `state: null`. Writes nothing and spends no budget |
+| `POST /campaigns/{campaign_id}/reveals` | `RevealRequest` | `RevealAnswer` with a state. Idempotent by `command_id`: a replay answers the current picture and writes nothing. `409 conflict` for a stale epoch, a session that is not live, or a campaign archived since composing; `422 validation_failed` naming `mask` (with `keys`, for a mask the document cannot honour), `audience`, `document_id` or `version`; `429 throttled_user` past the shared write budget; `503 backend_unavailable`, retryable |
+| `POST /campaigns/{campaign_id}/reveals/stop` | `RevealStopRequest` | `RevealAnswer`, with `state: null` when no session is live (nothing is written then). Never refused for state, and an archived campaign is still stopped. It spends its **own** budget (100 per 600 s per account), never the shared write budget, so autosaves cannot make a Stop fail: `429 throttled_user` with `Retry-After` past it |
+
+A mask that names `tags`, a withheld key such as `npc.true_identity`, a key blank
+in the pinned version, or an **asset key** (`portrait`) is a 422 whose `keys` are
+exactly the keys at fault. An asset key is refused while no table asset-handle
+route exists, because there would be no way to show it. A `422` is read as a `409`
+by the sheet (reload, keep the draft). `all`, a repeated key and a key that is not
+field-key shaped are refused by the body, before ownership, and carry no `keys`.
 
 **Why both are answered with the picture.** REVEAL-22 advances the reveal epoch
 on *every* narrowing, "on an empty slot too" — a Stop with nothing live, a
@@ -1452,7 +1472,7 @@ which slots hold it, and `all` is the workspace indicator's panic button.
 REVEAL-8's notice, and the comparison behind it is **of text, not of version
 numbers** — ten autosaves raise one notice and reverting the text clears it.
 
-`pending_delivery` is AUD-10: a reveal to a participant who is **not enrolled,
+`pending_delivery` is AUD-10 (**in `1kg.7.2` it is `held` only: a copy for a seat that is open, offered, or accepted and not yet confirmed; the connection half is `1kg.7.5`'s**): a reveal to a participant who is **not enrolled,
 or enrolled and not currently connected** confirms normally and waits, and never
 falls back to the table. Both cases are the same flag, because they are the same
 fact for the GM — *nobody is reading this yet* — and telling them apart on the
