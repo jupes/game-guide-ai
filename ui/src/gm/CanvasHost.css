@@ -120,3 +120,45 @@
     animation: none;
   }
 }
+
+/* ── The Archived banner (LIB-16) ────────────────────────────────────────── */
+
+/* A strip above the document, not a colour alone: an icon, a sentence and Restore. */
+.canvas-host__banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--aether-space-2) var(--aether-space-3);
+  padding: var(--aether-space-3) var(--aether-space-4);
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+}
+
+.canvas-host__banner-icon {
+  font-size: 24px;
+}
+
+.canvas-host__banner-text {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.canvas-host__banner-line,
+.canvas-host__banner-note {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.canvas-host__banner-note {
+  font-weight: 600;
+}
+
+.canvas-host__banner [aria-disabled="true"] {
+  opacity: 0.38;
+  cursor: default;
+}

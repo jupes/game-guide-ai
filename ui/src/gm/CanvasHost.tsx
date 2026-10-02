@@ -24,8 +24,13 @@
  * narrow layout the pane is full screen. Nothing here uses a width media query; the
  * shell's boundaries live in \`breakpoints.ts\`.
  *
- * Nothing here writes a document. A title, a summary or field text is GM-private (X-7):
+ * Nothing here edits a document. A title, a summary or field text is GM-private (X-7):
  * it is rendered and nothing more.
+ *
+ * Lifecycle (1kg.6.4, PR-2): an open document that is archived stays open under an
+ * `Archived` banner with **Restore** (LIB-16), and Restore re-reads it so the banner is
+ * the server's word. The unavailable and failed panels offer **Back to library** (section
+ * 12.2) beside Close.
  *
  * REVEAL-13 (1kg.7.3): the header, the badge and the field markers say what the server's
  * reveal picture says (`useReveals()`), through `revealPresentation`. While the first
@@ -37,13 +42,15 @@
 
 import * as React from 'react'
 import { Button } from '../ds/Button'
+import '../ds/Button.css'
 import { useShellLayout } from '../shell/breakpoints'
 import { useCanvasActions, useCanvasState } from '../shell/canvasContext'
+import { useLibraryPanel } from '../shell/libraryPanel'
 import { useReveals } from '../shell/revealContext'
-import { WORKBENCH_COPY } from '../shell/workbenchCopy'
+import { LIBRARY_COPY, WORKBENCH_COPY } from '../shell/workbenchCopy'
 import { CanvasPane, type CanvasLayout } from './CanvasPane'
 import type { Document, DocumentVersion } from './contracts'
-import { getDocumentHistory } from './documentApi'
+import { getDocumentHistory, unarchiveDocument } from './documentApi'
 import { documentTitle } from './documentTitle'
 import { GameDocument } from './GameDocument'
 import { documentTypeById } from './registry'
@@ -77,6 +84,66 @@ function useColumnWidth(ref: React.RefObject<HTMLElement | null>, enabled: boole
     return () => observer.disconnect()
   }, [ref, enabled])
   return width
+}
+
+type RestoreState = 'idle' | 'busy' | 'throttled' | 'failed'
+
+/** LIB-16: an archived document that is open says so, and Restore brings it back (the document only, never a reveal). */
+function ArchivedBanner({
+  document, title, fetchImpl,
+}: { document: Document; title: string; fetchImpl: typeof fetch | undefined }): React.JSX.Element {
+  const { bumpDocumentsVersion, refreshDocument, announce, titleRef } = useCanvasActions()
+  const [state, setState] = React.useState<RestoreState>('idle')
+  const { campaign_id: campaignId, document_id: documentId } = document
+
+  const restore = async (): Promise<void> => {
+    if (state === 'busy') return
+    setState('busy')
+    const result = await unarchiveDocument(campaignId, documentId, fetchImpl)
+    if (result.kind === 'ok' || result.kind === 'unavailable') {
+      if (result.kind === 'ok') {
+        bumpDocumentsVersion()
+        announce(LIBRARY_COPY.restored(title))
+      } else {
+        announce(LIBRARY_COPY.gone)
+      }
+      // The banner is the server's word: read the document again, which also removes this banner.
+      await refreshDocument(documentId)
+      setState('idle')
+      titleRef.current?.focus()
+    } else if (result.kind === 'throttled') {
+      setState('throttled')
+    } else if (result.kind === 'failed') {
+      setState('failed')
+    } else {
+      setState('idle')
+    }
+  }
+
+  return (
+    <div role="group" aria-label={WORKBENCH_COPY.archivedRegion} className="canvas-host__banner">
+      <span className="material-symbols-rounded canvas-host__banner-icon" aria-hidden="true">
+        inventory_2
+      </span>
+      <div className="canvas-host__banner-text">
+        <p className="canvas-host__banner-line">{WORKBENCH_COPY.archivedBanner}</p>
+        {state === 'throttled' && <p className="canvas-host__banner-note">{LIBRARY_COPY.throttled}</p>}
+        {state === 'failed' && <p className="canvas-host__banner-note">{LIBRARY_COPY.restoreFailed(title)}</p>}
+      </div>
+      <button
+        type="button"
+        className="aether-btn"
+        data-variant="tonal"
+        data-size="medium"
+        data-touch-target="true"
+        aria-disabled={state === 'busy' || undefined}
+        onClick={() => void restore()}
+      >
+        <span className="aether-btn__state" aria-hidden="true" />
+        <span className="aether-btn__label">{state === 'busy' ? LIBRARY_COPY.restoring : LIBRARY_COPY.restore}</span>
+      </button>
+    </div>
+  )
 }
 
 interface OpenCanvasProps {
@@ -190,6 +257,7 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
           : undefined
       }
     >
+      {document.archived && <ArchivedBanner document={document} title={title} fetchImpl={fetchImpl} />}
       <GameDocument
         document={document}
         readOnly
@@ -230,6 +298,7 @@ export interface CanvasHostProps {
 export function CanvasHost({ fetchImpl }: CanvasHostProps): React.JSX.Element | null {
   const { doc } = useCanvasState()
   const { closeDocument, retry, openerRef, composerRef } = useCanvasActions()
+  const library = useLibraryPanel()
   const shellLayout = useShellLayout()
   const rootRef = React.useRef<HTMLDivElement>(null)
   const width = useColumnWidth(rootRef, doc.kind !== 'closed')
@@ -239,6 +308,13 @@ export function CanvasHost({ fetchImpl }: CanvasHostProps): React.JSX.Element | 
   const close = async (): Promise<void> => {
     if (await closeDocument()) returnFocus(openerRef.current, composerRef.current)
   }
+
+  // Section 12.2: the way out of a state that is not a document is the library, on the tab last used.
+  const backToLibrary = (
+    <Button variant="text" icon="arrow_back" onClick={(event) => library.openLibrary(library.category, event.currentTarget)}>
+      {WORKBENCH_COPY.backToLibrary}
+    </Button>
+  )
 
   const layout: CanvasLayout =
     shellLayout === 'narrow' ? 'fullScreen' : width !== null && width < COMPACT_BELOW_PX ? 'compact' : 'wide'
@@ -273,6 +349,7 @@ export function CanvasHost({ fetchImpl }: CanvasHostProps): React.JSX.Element | 
           <Button variant="filled" onClick={() => void close()}>
             {WORKBENCH_COPY.close}
           </Button>
+          {backToLibrary}
         </Panel>
       )
       break
@@ -294,6 +371,7 @@ export function CanvasHost({ fetchImpl }: CanvasHostProps): React.JSX.Element | 
           <Button variant="text" onClick={() => void close()}>
             {WORKBENCH_COPY.close}
           </Button>
+          {backToLibrary}
         </Panel>
       )
       break

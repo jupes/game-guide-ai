@@ -62,7 +62,7 @@ test('a GM opens the Workbench, a document stays open, and the layout follows th
   await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'NPCs' }).click()
   await page
     .getByRole('region', { name: 'Campaign Library' })
-    .getByRole('button', { name: new RegExp(DOCUMENT_TITLE) })
+    .getByRole('button', { name: new RegExp(`^${DOCUMENT_TITLE}`) })
     .click()
   await expect(heading).toBeVisible()
   await expect(heading).toBeFocused()

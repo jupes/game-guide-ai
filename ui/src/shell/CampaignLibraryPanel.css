@@ -334,3 +334,70 @@
     transition: none;
   }
 }
+
+/* ── Row actions and the Undo toast (PR-2: LIB-16 to LIB-18) ────────────────── */
+
+/* The overflow trigger: a 44 px target at the row's end. */
+.library-row__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--aether-touch-min);
+  height: var(--aether-touch-min);
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer;
+}
+
+.library-row__more[aria-expanded="true"] {
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+}
+
+.library-row__more[aria-disabled="true"] {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.library-row__more:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+@media (hover: hover) {
+  .library-row__more:not([aria-disabled="true"]):hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+.library-panel__menu--row {
+  padding-inline-start: 12px;
+}
+
+/* The toast sits above the New control and below the list: a bordered strip, not a floating layer. */
+.library-panel__toast {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--aether-space-3);
+  padding: var(--aether-space-2) var(--aether-space-4);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-inverse-surface);
+  color: var(--md-sys-color-inverse-on-surface);
+}
+
+.library-panel__toast-text {
+  min-width: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+/* The DS text button's label is on-surface; on the inverse strip it takes the inverse accent. */
+.library-panel__toast .aether-btn {
+  color: var(--md-sys-color-inverse-primary);
+}

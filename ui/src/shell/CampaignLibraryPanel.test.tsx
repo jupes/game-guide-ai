@@ -149,7 +149,7 @@ describe('the status node (A-29, STATE-7)', () => {
     await screen.findByText('Ondrey')
     await user.click(tab('Bestiary'))
     await screen.findByText('Tidewarden')
-    await user.click(screen.getByRole('button', { name: /Tidewarden/ }))
+    await user.click(screen.getByRole('button', { name: /^Tidewarden/ }))
     await flush()
     expect(status()).toBeEmptyDOMElement()
   })
@@ -167,7 +167,7 @@ describe('every state of the list (§12.2)', () => {
 
   it.each([
     ['NPCs', 'No NPCs yet. Run /npc or press New.'],
-    ['Bestiary', 'Nothing in the bestiary yet. Run /monster and save it.'],
+    ['Bestiary', 'Nothing in the bestiary yet. Run /monster and save it, or press New.'],
     ['Documents', 'No documents yet. Press New to write one.'],
     ['Session log', 'No session notes yet. Run /recap at the end of a session.'],
   ])('%s with nothing in it reads the ADR copy', async (name, copy) => {
@@ -240,11 +240,11 @@ describe('every state of the list (§12.2)', () => {
     const list = await screen.findByRole('list', { name: 'NPCs' })
     expect(within(list).getAllByRole('listitem')).toHaveLength(2)
     expect(rowNames()).toEqual(['Ondrey', 'Brannoch'])
-    expect(within(list).getByRole('button', { name: /Ondrey/ })).toHaveTextContent('Ferryman')
+    expect(within(list).getByRole('button', { name: /^Ondrey/ })).toHaveTextContent('Ferryman')
     await user.click(tab('Documents'))
     const documents = await screen.findByRole('list', { name: 'Documents' })
-    expect(within(documents).getByRole('button', { name: /The Writ/ })).toHaveTextContent('Player Handout')
-    expect(within(documents).getByRole('button', { name: /The Drowned Crown/ })).toHaveTextContent('Lore Entry')
+    expect(within(documents).getByRole('button', { name: /^The Writ/ })).toHaveTextContent('Player Handout')
+    expect(within(documents).getByRole('button', { name: /^The Drowned Crown/ })).toHaveTextContent('Lore Entry')
   })
 })
 
@@ -252,7 +252,7 @@ describe('opening a document (LIB-9, I-3)', () => {
   it('opens it as a gesture with exactly one document GET, and at wide the panel stays open', async () => {
     const user = userEvent.setup()
     const { server } = await mountPanel(libraryRoute(ROWS))
-    await user.click(await screen.findByRole('button', { name: /Ondrey/ }))
+    await user.click(await screen.findByRole('button', { name: /^Ondrey/ }))
     await waitFor(() => expect(live.state.doc.kind).toBe('open'))
     expect(server.docCalls()).toHaveLength(1)
     expect(server.docCalls()[0].url).toBe('/campaigns/cmp_A/documents/doc_a')
@@ -262,7 +262,7 @@ describe('opening a document (LIB-9, I-3)', () => {
   it('records the row as the opener, so closing the canvas returns focus to it', async () => {
     const user = userEvent.setup()
     await mountPanel(libraryRoute(ROWS))
-    const row = await screen.findByRole('button', { name: /Ondrey/ })
+    const row = await screen.findByRole('button', { name: /^Ondrey/ })
     await user.click(row)
     await waitFor(() => expect(live.state.doc.kind).toBe('open'))
     expect(live.actions.openerRef.current).toBe(row)
@@ -271,7 +271,7 @@ describe('opening a document (LIB-9, I-3)', () => {
   it.each<ShellLayout>(['medium', 'narrow'])('at %s the panel closes behind the document', async (layout) => {
     const user = userEvent.setup()
     await mountPanel(libraryRoute(ROWS), { layout })
-    await user.click(await screen.findByRole('button', { name: /Ondrey/ }))
+    await user.click(await screen.findByRole('button', { name: /^Ondrey/ }))
     await waitFor(() => expect(live.state.doc.kind).toBe('open'))
     expect(panelApi.open).toBe(false)
   })
@@ -279,10 +279,10 @@ describe('opening a document (LIB-9, I-3)', () => {
   it('marks the open document’s row aria-current, and no other', async () => {
     const user = userEvent.setup()
     await mountPanel(libraryRoute(ROWS))
-    await user.click(await screen.findByRole('button', { name: /Ondrey/ }))
+    await user.click(await screen.findByRole('button', { name: /^Ondrey/ }))
     await waitFor(() => expect(live.state.doc.kind).toBe('open'))
-    expect(screen.getByRole('button', { name: /Ondrey/ })).toHaveAttribute('aria-current', 'true')
-    expect(screen.getByRole('button', { name: /Brannoch/ })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('button', { name: /^Ondrey/ })).toHaveAttribute('aria-current', 'true')
+    expect(screen.getByRole('button', { name: /^Brannoch/ })).not.toHaveAttribute('aria-current')
   })
 
   it('an archived document opens too (read-only, I-15)', async () => {
@@ -485,11 +485,14 @@ describe('New (LIB-12, STATE-3)', () => {
     expect(JSON.parse(server.createCalls()[0].body ?? '{}')).toMatchObject({ type: 'session-notes', data: { name: 'Untitled Session Notes' } })
   })
 
-  it('Bestiary has no New (I-2), and no stat block is offered anywhere', async () => {
+  it('Bestiary offers New Stat Block, which asks for a name, AC and HP (I-2 is lifted by PR-2); Documents never offers a stat block', async () => {
     const user = userEvent.setup()
-    await mountPanel(createRoute({ fallback: libraryRoute(ROWS) }), { category: 'bestiary' })
+    const { server } = await mountPanel(createRoute({ fallback: libraryRoute(ROWS) }), { category: 'bestiary' })
     await screen.findByText('Tidewarden')
-    expect(screen.queryByRole('button', { name: /^New/ })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'New Stat Block' }))
+    expect(screen.getByRole('dialog', { name: 'New stat block' })).toBeInTheDocument()
+    expect(server.createCalls()).toHaveLength(0)
+    await user.keyboard('{Escape}')
     await user.click(tab('Documents'))
     await screen.findByText('The Writ')
     await user.click(screen.getByRole('button', { name: 'New' }))

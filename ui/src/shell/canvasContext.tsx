@@ -91,6 +91,13 @@ export interface CanvasActions {
   closeDocument(): Promise<boolean>
   /** From `failed`: asks again. */
   retry(): void
+  /** Reads the open document again and replaces it in place, with no loading state and no focus move: after a
+   * lifecycle change (archive, restore, delete) the canvas must say what the server now says (LIB-16). Does
+   * nothing unless `documentId` is the open document. A document the server no longer has becomes `unavailable`.
+   * Never rejects. */
+  refreshDocument(documentId: string): Promise<void>
+  /** Speaks an outcome in the one canvas-level status node (`WorkbenchAnnouncer`). */
+  announce(text: string): void
   setView(view: WorkbenchView): void
   /** 1kg.6.5's field editors register here; PR-1 registers none. */
   registerDirtySource(source: CanvasDirtySource): () => void
@@ -274,6 +281,25 @@ class CanvasStore {
     void this.open({ documentId: doc.documentId, title: doc.title }, true, false).catch(() => {})
   }
 
+  refreshDocument = async (documentId: string): Promise<void> => {
+    try {
+      const { scopeKey } = this.snap
+      const { campaignId } = this
+      const { doc } = this.snap
+      if (scopeKey === null || campaignId === null || doc.kind !== 'open' || doc.document.document_id !== documentId) return
+      if (this.isDirty()) return
+      const seq = this.seq
+      const result = await getDocument(campaignId, documentId, this.fetchImpl)
+      const now = this.snap.doc
+      if (seq !== this.seq || this.snap.scopeKey !== scopeKey) return
+      if (now.kind !== 'open' || now.document.document_id !== documentId) return
+      if (result.kind === 'ok') this.set({ ...this.snap, doc: { kind: 'open', document: result.document } })
+      else if (result.kind === 'unavailable') this.set({ ...this.snap, doc: { kind: 'unavailable', documentId } })
+    } catch {
+      // C-17: nothing here rejects.
+    }
+  }
+
   private captureOpener(): Element | null {
     const active = document.activeElement
     const drawerOpener = this.refs.drawerOpener.current
@@ -403,7 +429,7 @@ class CanvasStore {
     this.set({ ...this.snap, documentsVersion: this.snap.documentsVersion + 1 })
   }
 
-  private announce(text: string): void {
+  announce = (text: string): void => {
     this.set({ ...this.snap, announcement: text, announcementTick: this.snap.announcementTick + 1 })
   }
 
@@ -520,6 +546,8 @@ const INERT_ACTIONS: CanvasActions = {
   openDocument: () => Promise.resolve(),
   closeDocument: () => Promise.resolve(true),
   retry: () => {},
+  refreshDocument: () => Promise.resolve(),
+  announce: () => {},
   setView: () => {},
   registerDirtySource: () => () => {},
   bumpDocumentsVersion: () => {},
@@ -604,6 +632,8 @@ function CanvasProviderRoot({ children, fetchImpl }: CanvasProviderProps): React
       openDocument: store.openDocument,
       closeDocument: store.closeDocument,
       retry: store.retry,
+      refreshDocument: store.refreshDocument,
+      announce: store.announce,
       setView: store.setView,
       registerDirtySource: store.registerDirtySource,
       bumpDocumentsVersion: store.bumpDocumentsVersion,
