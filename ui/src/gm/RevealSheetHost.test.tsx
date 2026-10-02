@@ -35,6 +35,8 @@ interface World {
   read: () => Reply
   /** `GET` of the canvas document itself; omitted, the default NPC. */
   canvas?: () => Reply
+  /** The table session's own answer; omitted, none. Its epoch is NOT the picture's, on purpose. */
+  session?: unknown
 }
 
 const sealedDocument = (version = 7, extra: Record<string, unknown> = {}) => ({
@@ -76,7 +78,7 @@ const route: Route = (call) => {
   const answer = (reply: Reply) => reply
   if (isGet(call, REVEALS)) return answer(world.read())
   if (world.canvas !== undefined && isGet(call, /\/documents\/doc_a$/)) return answer(world.canvas())
-  if (isGet(call, /\/table-session$/)) return { status: 200, body: tableSessionBody(null) }
+  if (isGet(call, /\/table-session$/)) return { status: 200, body: world.session ?? tableSessionBody(null) }
   if (isGet(call, /\/participants/)) return { status: 200, body: seatBody(world.seats) }
   if (isPost(call, SEAL)) return answer(world.seal())
   if (isGet(call, /\/versions\/\d+$/)) return answer(world.version(Number(call.url.split('/').pop())))
@@ -643,7 +645,11 @@ describe('a type this bundle does not know exactly yields no rows and no Confirm
 describe('the picture moves under an open sheet (Critic 8)', () => {
   it('adopts a new epoch, keeps the draft, says so, and the next Confirm carries it', async () => {
     const { server, user } = await openSheet({
-      worldOverrides: { confirm: () => ({ status: 200, body: revealPicture({ epoch: 6, table: liveFixture(DOC, ['name', 'voice'], { version: 7 }) }) }) },
+      worldOverrides: {
+        // The table session reports a different epoch than the picture: the Confirm must carry the PICTURE's.
+        session: tableSessionBody({ reveal_epoch: 99 }),
+        confirm: () => ({ status: 200, body: revealPicture({ epoch: 6, table: liveFixture(DOC, ['name', 'voice'], { version: 7 }) }) }),
+      },
     })
     await ready()
     await user.click(inDialog().getByRole('switch', { name: 'Qualifier' }))
