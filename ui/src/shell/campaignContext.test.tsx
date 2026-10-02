@@ -18,7 +18,7 @@ import { AppNavProvider, useAppNav, type AppNavState, type ChatMode } from './Ap
 import { CurrentUserProvider, useCurrentUser, type CurrentUserContextValue } from './currentUser'
 import {
   CampaignProvider, canUseCampaigns, useCampaign, useCampaignDocument, type CampaignContextValue,
-  type CampaignDocumentValue, type SwitchGuard,
+  type CampaignDocumentValue, type SeatReadOutcome, type SwitchGuard,
 } from './campaignContext'
 import type { IdentityChannelLike } from './identityBroadcast'
 import type { CampaignRestore } from './workspaceFragment'
@@ -891,6 +891,87 @@ describe('setConcluded (30c, P-1 to P-5)', () => {
     const dm = await mount({ route: concludeRoute })
     expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('done')
     expect(dm.server.lines()).toEqual(['POST /campaigns/cmp_A/conclude'])
+  })
+})
+
+describe('readSeats (30c PR-2, Q-1 to Q-6)', () => {
+  const SEAT = {
+    schema_version: 1, campaign_id: 'cmp_S1', campaign_name: 'The Hollow Crown', alias: 'Brannoc',
+    accepted_at: '2026-09-20T18:00:00Z', confirmed: true, tone: null, game_system: 'dnd5e', avatar_icon: 'sailing',
+    avatar_tone: 'ember', concluded: false, last_played_at: null, live: false,
+  }
+  const seatsPage = (items: unknown[], next: string | null = null) => ({ schema_version: 1, items, next_cursor: next })
+  const seatRoute: Route = (call) => (call.method === 'GET' && call.url.startsWith('/seats')
+    ? { status: 200, body: seatsPage([SEAT], call.url === '/seats' ? 'more' : null) }
+    : defaultRoute(call))
+
+  it('Q-1 a signed-in player (who cannot use campaigns) reads a page of its own seats, and a cursor rides the query', async () => {
+    const { server } = await mount({ role: 'player', route: seatRoute })
+    expect(live.c.enabled).toBe(false)
+    const first = await run(() => live.c.readSeats(null))
+    expect(first).toMatchObject({ kind: 'ok', nextCursor: 'more' })
+    expect(first.kind === 'ok' && first.items.map((s) => s.campaign_id)).toEqual(['cmp_S1'])
+    expect(await run(() => live.c.readSeats('more'))).toMatchObject({ kind: 'ok', nextCursor: null })
+    expect(server.lines()).toEqual(['GET /seats', 'GET /seats?cursor=more'])
+  })
+
+  it('Q-2 a dm reads its seats too, and nothing is kept in the campaign list', async () => {
+    const { server } = await mount({ route: seatRoute })
+    expect(await run(() => live.c.readSeats(null))).toMatchObject({ kind: 'ok' })
+    expect(server.lines()).toEqual(['GET /seats'])
+    expect(live.c.list).toEqual({ kind: 'idle' })
+  })
+
+  it('Q-3 a signed-out session makes no request and answers failed; a signed-in one (positive control) does', async () => {
+    const out = await mount({ me: { kind: 'error', status: 401, message: 'not signed in' }, route: seatRoute })
+    expect(live.user.authStatus).toBe('unauthenticated')
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
+    expect(out.server.calls).toHaveLength(0)
+    out.view.unmount()
+    const inn = await mount({ role: 'player', route: seatRoute })
+    expect(await run(() => live.c.readSeats(null))).toMatchObject({ kind: 'ok' })
+    expect(inn.server.lines()).toEqual(['GET /seats'])
+  })
+
+  it('Q-4 an answer that arrives after an account switch is dropped as failed, never shown to the new account', async () => {
+    const { server, signal } = await mount({
+      role: 'player',
+      route: (call) => (call.url.startsWith('/seats') ? 'defer' : defaultRoute(call)),
+    })
+    let outcome: SeatReadOutcome | null = null
+    act(() => { void live.c.readSeats(null).then((o) => { outcome = o }) })
+    const read = server.calls.find((c) => c.url === '/seats')
+    expect(read).toBeDefined()
+    await switchAccount(signal, BOB, 'player')
+    act(() => read?.reply({ status: 200, body: seatsPage([SEAT]) }))
+    await flush()
+    expect(outcome).toEqual({ kind: 'failed' })
+  })
+
+  it('Q-5 the inert default answers failed and makes no request', async () => {
+    const outside = stubServer(seatRoute)
+    vi.stubGlobal('fetch', outside.fetchImpl)
+    const held: { value?: CampaignContextValue } = {}
+    function Bare(): null {
+      const value = useCampaign()
+      React.useLayoutEffect(() => {
+        held.value = value
+      })
+      return null
+    }
+    render(<Bare />)
+    expect(await (held.value as CampaignContextValue).readSeats(null)).toEqual({ kind: 'failed' })
+    expect(outside.calls).toHaveLength(0)
+  })
+
+  it('Q-6 a 503, a network failure and an unreadable page are failed', async () => {
+    let reply: Reply = { status: 503 }
+    await mount({ role: 'player', route: (call) => (call.url.startsWith('/seats') ? reply : defaultRoute(call)) })
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
+    reply = 'network'
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
+    reply = { status: 200, body: { schema_version: 1, items: 'nope', next_cursor: null } }
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
   })
 })
 

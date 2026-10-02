@@ -60,10 +60,16 @@ type Story = StoryObj<typeof meta>
 type Canvas = ReturnType<typeof within>
 type Play = (canvas: Canvas) => Promise<void>
 
-function state(route: (url: string, init: RequestInit | undefined) => Response | Promise<Response>, play: Play): Story {
+type Route = (url: string, init: RequestInit | undefined) => Response | Promise<Response>
+/** The campaign states' network: every `GET /seats` answers `seats` (none unless a story seats the GM). */
+const withSeats = (route: Route, seats: () => Response | Promise<Response> = () => page([])): Route => (url, init) => (
+  url.startsWith('/seats') ? seats() : route(url, init)
+)
+
+function state(route: Route, play: Play): Story {
   return {
     decorators: [withCampaigns],
-    beforeEach: stubFetch(route),
+    beforeEach: stubFetch(withSeats(route)),
     play: async ({ canvasElement }) => {
       const canvas = within(canvasElement)
       await expect(await canvas.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeVisible()
@@ -208,3 +214,86 @@ export const WithSelectionDark = dark(WithSelection)
 
 export const PhoneBrandNew = onPhone(BrandNew)
 export const PhoneCouldNotLoad = onPhone(CouldNotLoad)
+
+// ── 30c PR-2: Your seats, and the player's tavern ────────────────────────────
+
+const seat = (id: string, name: string, over: Record<string, unknown> = {}) => ({
+  schema_version: 1, campaign_id: id, campaign_name: name, alias: 'Brannoc', accepted_at: day(2), confirmed: true,
+  tone: null, game_system: 'dnd5e', avatar_icon: 'castle', avatar_tone: 'gold', concluded: false,
+  last_played_at: null, live: false, ...over,
+})
+const SEATS = [
+  seat('cmp_s1', 'Gorath\u2019s Table', { live: true, tone: 'Mystery · Low magic', last_played_at: day(27) }),
+  seat('cmp_s2', 'The Pale Orchard', { confirmed: false, accepted_at: day(28), alias: 'Ysolde' }),
+  seat('cmp_s3', 'Lanterns at Low Tide', { last_played_at: '2026-09-04T12:00:00Z', avatar_tone: 'ember' }),
+  seat('cmp_s4', 'The Last Ferry', { concluded: true, last_played_at: day(1) }),
+]
+
+/** A player's tavern: the same screen, the seat network, and a player's shell. */
+function playerState(seats: () => Response | Promise<Response>, play: Play): Story {
+  return {
+    decorators: [withCampaigns, withShell({ screen: 'tavern', mode: 'sage', role: 'player' })],
+    beforeEach: stubFetch(withSeats(() => json({}, 404), seats)),
+    play: async ({ canvasElement }) => {
+      const canvas = within(canvasElement)
+      await expect(await canvas.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeVisible()
+      await play(canvas)
+    },
+  }
+}
+const PLAYER_HEADER = ['New Campaign', 'Back to chat']
+
+/** E-1 (ID-25): a player with no seat gets the panel; New Campaign is locked, never hidden. */
+export const PlayerNoSeats = playerState(() => page([]), async (canvas) => {
+  await expect(await canvas.findByRole('heading', { name: 'Campaigns are being built', level: 2 })).toBeVisible()
+  await expect(canvas.getByRole('button', { name: 'New Campaign' })).toHaveAttribute('aria-disabled', 'true')
+  await expect(canvas.queryByRole('heading', { name: 'Begin anew' })).toBeNull()
+  await expectTouchTargets(canvas, ['Ask the Sage', ...PLAYER_HEADER])
+})
+export const PlayerNoSeatsDark = dark(PlayerNoSeats)
+export const PhonePlayerNoSeats = onPhone(PlayerNoSeats)
+export const PhonePlayerNoSeatsDark = onPhone(PlayerNoSeats, 'dark')
+
+/** ID-17, ID-23, ID-24: a live table as plain text, a seat waiting on its GM, a quiet one and a concluded one. */
+export const PlayerSeats = playerState(() => page(SEATS), async (canvas) => {
+  await expect(await canvas.findByRole('heading', { name: 'Gorath\u2019s Table', level: 2 })).toBeVisible()
+  await expect(canvas.getByText('Live now')).toBeVisible()
+  await expect(canvas.getByText('Waiting for your GM to confirm your seat')).toBeVisible()
+  await expect(canvas.getByText(/^Last played 4 September/)).toBeVisible()
+  await expect(canvas.getByText('This table has concluded')).toBeVisible()
+  // Nothing in a seat card is a link or a button: no table page exists yet.
+  await expect(canvas.queryAllByRole('link')).toHaveLength(0)
+  await expectTouchTargets(canvas, PLAYER_HEADER)
+})
+export const PlayerSeatsDark = dark(PlayerSeats)
+export const PhonePlayerSeats = onPhone(PlayerSeats)
+export const PhonePlayerSeatsDark = onPhone(PlayerSeats, 'dark')
+
+export const PlayerSeatsLoading = playerState(() => pending(), async (canvas) => {
+  await expect(canvas.getByText('Loading your seats…', { selector: 'p:not([role])' })).toBeVisible()
+  await expectTouchTargets(canvas, PLAYER_HEADER)
+})
+
+export const PlayerSeatsCouldNotLoad = playerState(() => json({}, 503), async (canvas) => {
+  await expect(await canvas.findByRole('button', { name: 'Retry' })).toBeVisible()
+  await expect(canvas.getByText("Couldn't load your seats", { selector: 'p:not([role])' })).toBeVisible()
+  await expect(canvas.queryByRole('heading', { name: 'Campaigns are being built' })).toBeNull()
+  await expectTouchTargets(canvas, ['Retry', ...PLAYER_HEADER])
+})
+export const PlayerSeatsCouldNotLoadDark = dark(PlayerSeatsCouldNotLoad)
+
+/** A GM who also holds a seat at another table: its campaigns, then Your seats, then Begin anew. */
+export const GmWithSeats: Story = {
+  decorators: [withCampaigns],
+  beforeEach: stubFetch(withSeats(() => page(SEVERAL), () => page(SEATS))),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByRole('button', { name: 'Prep The Drowned Crown' })).toBeVisible()
+    await expect(await canvas.findByRole('heading', { name: 'Your seats', level: 2 })).toBeVisible()
+    await expect(canvas.getByText('Live now')).toBeVisible()
+    await expect(canvas.getByRole('heading', { name: 'Begin anew', level: 2 })).toBeVisible()
+    await expectTouchTargets(canvas, ['Prep The Drowned Crown', ...HEADER, 'Create campaign'])
+  },
+}
+export const GmWithSeatsDark = dark(GmWithSeats)
+export const PhoneGmWithSeats = onPhone(GmWithSeats)

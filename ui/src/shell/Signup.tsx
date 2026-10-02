@@ -33,7 +33,7 @@ export function Signup({ invite, onUseLogin }: SignupProps): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const { signIn } = useCurrentUser()
-  const { backToLanding } = useAppNav()
+  const { screen, backToLanding } = useAppNav()
 
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault()
@@ -49,7 +49,9 @@ export function Signup({ invite, onUseLogin }: SignupProps): React.JSX.Element {
     if (result.kind === 'ok') {
       onUseLogin() // the invite is spent — never offer it again
       signIn(result.user)
-      backToLanding()
+      // 30c PR-2 (ID-26): a sign-in over a cold-loaded /tavern stays there; every
+      // other screen resets to Landing as before.
+      if (screen !== 'tavern') backToLanding()
     } else {
       setError(result.message)
     }

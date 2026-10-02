@@ -3,7 +3,8 @@
  *
  * Rendered by App when the session check comes back unauthenticated and the
  * URL carries no invite token. On success, adopts the session via
- * useCurrentUser().signIn and resets the screen to landing.
+ * useCurrentUser().signIn and resets the screen to landing -- except over the
+ * tavern, which a cold load of the signed-out /tavern returns to (30c PR-2).
  */
 
 import * as React from 'react'
@@ -26,7 +27,7 @@ export function Login(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const { signIn } = useCurrentUser()
-  const { backToLanding } = useAppNav()
+  const { screen, backToLanding } = useAppNav()
 
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault()
@@ -40,7 +41,9 @@ export function Login(): React.JSX.Element {
     setSubmitting(false)
     if (result.kind === 'ok') {
       signIn(result.user)
-      backToLanding()
+      // 30c PR-2 (ID-26): a sign-in over a cold-loaded /tavern stays there; every
+      // other screen resets to Landing as before.
+      if (screen !== 'tavern') backToLanding()
     } else {
       setError(result.message)
     }

@@ -137,3 +137,16 @@
   .tavern-screen { padding: 24px 16px; }
   .tavern-screen__actions { flex-direction: column; align-items: stretch; }
 }
+
+/* Your seats (30c PR-2): the tables where the account holds a seat. */
+.tavern-screen__seats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+}
+
+/* A locked header action (a player's New Campaign) stays focusable and says why. */
+.tavern-screen__actions .aether-btn[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

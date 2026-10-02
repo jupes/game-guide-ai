@@ -35,7 +35,7 @@
  */
 
 import * as React from 'react'
-import { CampaignCreateRequestSchema, CONTRACT_VERSION, type Campaign } from '../gm/contracts'
+import { CampaignCreateRequestSchema, CONTRACT_VERSION, type Campaign, type PlayerSeat } from '../gm/contracts'
 import { AppNavContext, type AppNavState } from './AppNav'
 import {
   concludeCampaign,
@@ -43,6 +43,7 @@ import {
   getCampaign,
   getConversation,
   listCampaigns,
+  listSeats,
   reopenCampaign,
 } from './campaignApi'
 import { CampaignThreadsContext, ThreadStore } from './campaignThreads'
@@ -113,6 +114,12 @@ export type CreateOutcome =
 /** How a conclude or a reopen ended: `unavailable` is the one 403 or 404 state. */
 export type ConcludeOutcome = 'done' | 'unavailable' | 'failed'
 
+/** One page of the caller's own seats (30c PR-2). `failed` covers a refusal, an
+ * outage, an unreadable page and an answer for a previous account, which is dropped. */
+export type SeatReadOutcome =
+  | { readonly kind: 'ok'; readonly items: readonly PlayerSeat[]; readonly nextCursor: string | null }
+  | { readonly kind: 'failed' }
+
 /** The Workbench canvas's document key (1kg.6.3, CANVAS-30): one writer, one grammar. */
 export interface CampaignDocumentValue {
   /** The opaque id of the document the canvas is opening or showing; null when none. */
@@ -148,6 +155,10 @@ export interface CampaignContextValue {
    * nothing: the answer replaces the listed campaign and never touches the
    * selection or the scope (A-31(a)). A 403 or a 404 re-reads the first page. */
   setConcluded(campaignId: string, concluded: boolean): Promise<ConcludeOutcome>
+  /** One page of `GET /seats` for any signed-in account, whatever its role (a
+   * player's tavern, a GM's seat at another table). Nothing is kept here: the
+   * caller holds the pages. A signed-out or inert context makes no request. */
+  readSeats(cursor: string | null): Promise<SeatReadOutcome>
   registerSwitchGuard(guard: SwitchGuard): () => void
   isCurrentScope(key: string): boolean
 }
@@ -179,6 +190,9 @@ const UNAVAILABLE: CampaignSelection = { kind: 'unavailable' }
 const VETOED: CreateOutcome = { kind: 'vetoed' }
 const FAILED: CreateOutcome = { kind: 'failed' }
 const INVALID: CreateOutcome = { kind: 'invalid' }
+const SEATS_FAILED: SeatReadOutcome = { kind: 'failed' }
+/** The account key's prefix for no session: signed out, or the check not yet answered. */
+const SIGNED_OUT = 'none:'
 const WORKSPACE_PATH = pathForScreen('workspace')
 const NO_NAV: Nav = {
   screen: 'landing', mode: 'sage', conversationId: null,
@@ -689,6 +703,17 @@ class CampaignStore {
     return 'failed'
   }
 
+  readSeats = async (cursor: string | null): Promise<SeatReadOutcome> => {
+    // The account key says whether a session stands behind it: `none:` is
+    // signed out or still checking, and no request is made for it.
+    if (this.snap.account.startsWith(SIGNED_OUT)) return SEATS_FAILED
+    const epoch = this.epoch
+    const result = await listSeats(cursor, this.fetcher())
+    // An answer for a previous account is dropped, never shown to the new one.
+    if (epoch !== this.epoch || result.kind !== 'ok') return SEATS_FAILED
+    return { kind: 'ok', items: result.items, nextCursor: result.nextCursor }
+  }
+
   registerSwitchGuard = (guard: SwitchGuard): (() => void) => {
     this.guards = [...this.guards, guard]
     return () => {
@@ -729,6 +754,7 @@ const INERT: CampaignContextValue = {
   retrySelection: () => {},
   createCampaign: inertOutcome<CreateOutcome>(FAILED),
   setConcluded: inertOutcome<ConcludeOutcome>('failed'),
+  readSeats: inertOutcome<SeatReadOutcome>(SEATS_FAILED),
   registerSwitchGuard: () => () => {},
   isCurrentScope: () => false,
 }
@@ -758,7 +784,10 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
   const userId = currentUser?.user.id ?? 'guest'
   const enabled = authStatus === 'authenticated' && canUseCampaigns(currentUser?.user.role ?? 'player')
   const settled = authStatus === 'authenticated' || authStatus === 'unauthenticated'
-  const account = `${enabled ? 'campaigns' : 'none'}:${userId}`
+  // `member` is a signed-in account that cannot use campaigns (a player): it
+  // still reads its own seats (30c PR-2), so it is not the signed-out key.
+  const prefix = enabled ? 'campaigns' : authStatus === 'authenticated' ? 'member' : 'none'
+  const account = `${prefix}:${userId}`
   const [store] = React.useState(() => new CampaignStore(restore, fetchImpl, window, account, enabled))
   const getSnapshot = React.useCallback(() => store.snapshotFor(account, enabled), [store, account, enabled])
   const snap = React.useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
@@ -793,6 +822,7 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
     retrySelection: store.retrySelection,
     createCampaign: store.createCampaign,
     setConcluded: store.setConcluded,
+    readSeats: store.readSeats,
     registerSwitchGuard: store.registerSwitchGuard,
     isCurrentScope: store.isCurrentScope,
     // Only these four snapshot fields reach the value, so a change to the document key,
