@@ -11,7 +11,9 @@ import { setUnauthorizedHandler } from '../api'
 import { DOC_TYPE_VERSION, LIBRARY_CATEGORIES, type LibraryQuery } from './contracts'
 import { DOCUMENT_FIXTURES } from './documentFixtures'
 import {
+  archiveDocument,
   createDocument,
+  deleteDocument,
   getCharacterSheetLink,
   getDocument,
   getDocumentHistory,
@@ -482,5 +484,99 @@ describe('unarchiveDocument', () => {
     expect(calls).toHaveLength(0)
     await unarchiveDocument(CID, DID, fetchImpl)
     expect(calls).toHaveLength(1)
+  })
+})
+
+describe('createDocument with fields (LIB-12 stat block)', () => {
+  it('sends a stat block with its name, AC and HP in data, and refuses one without them with no request', async () => {
+    const { fetchImpl, calls } = recorder({ status: 201, body: { ...DOCUMENT_FIXTURES.statblock, campaign_id: CID, document_id: DID } })
+    const input = { commandId: COMMAND_ID, type: 'statblock', name: 'Tidewarden', fields: { ac: 14, hp: 52 } } as const
+    expect((await createDocument(CID, input, fetchImpl)).kind).toBe('ok')
+    expect(JSON.parse(calls[0].body ?? 'null').data).toEqual({ name: 'Tidewarden', ac: 14, hp: 52 })
+    const bare = await createDocument(CID, { commandId: COMMAND_ID, type: 'statblock', name: 'Tidewarden' }, fetchImpl)
+    expect(bare).toEqual({ kind: 'invalid' })
+    expect(calls).toHaveLength(1)
+  })
+})
+
+describe('archiveDocument', () => {
+  it('POSTs to the archive path with no body and no Content-Type, and a 204 is ok', async () => {
+    const { fetchImpl, calls } = recorder({ status: 204 })
+    expect(await archiveDocument(CID, DID, fetchImpl)).toEqual({ kind: 'ok' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(`/campaigns/${CID}/documents/${DID}/archive`)
+    expect(calls[0]).toMatchObject({ method: 'POST', body: null, credentials: 'include' })
+    expect(calls[0].headers['content-type']).toBeUndefined()
+  })
+
+  it.each([
+    ['403', { status: 403, body: errorBody('forbidden') }, 'unavailable'],
+    ['404', { status: 404, body: errorBody('not_found') }, 'unavailable'],
+    ['429', { status: 429, body: errorBody('rate_limited', true) }, 'throttled'],
+    ['503', { status: 503, body: errorBody('busy', true) }, 'failed'],
+    ['a network failure', 'network', 'failed'],
+  ] as Array<[string, Answer, string]>)('%s reads as %s', async (_label, answer, kind) => {
+    expect((await archiveDocument(CID, DID, recorder(answer).fetchImpl)).kind).toBe(kind)
+  })
+
+  it('a 401 is the centralized sign-out, once, and reads as unauthorized', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    expect(await archiveDocument(CID, DID, recorder({ status: 401 }).fetchImpl)).toEqual({ kind: 'unauthorized' })
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('a malformed id makes no request (SEC-4)', async () => {
+    const { fetchImpl, calls } = recorder({ status: 204 })
+    expect(await archiveDocument(CID, 'doc 1', fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(calls).toHaveLength(0)
+  })
+})
+
+describe('deleteDocument', () => {
+  it('POSTs the password in the JSON body and nowhere else (SEC-40, X-7), and a 204 is ok', async () => {
+    const { fetchImpl, calls } = recorder({ status: 204 })
+    expect(await deleteDocument(CID, DID, 'hunter2 for the win', fetchImpl)).toEqual({ kind: 'ok' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(`/campaigns/${CID}/documents/${DID}/delete`)
+    expect(calls[0].url).not.toMatch(/hunter|[?]/)
+    expect(calls[0]).toMatchObject({ method: 'POST', credentials: 'include' })
+    expect(calls[0].headers['content-type']).toBe('application/json')
+    expect(JSON.parse(calls[0].body ?? 'null')).toEqual({ schema_version: 1, password: 'hunter2 for the win' })
+  })
+
+  it.each([
+    ['403 reauth_failed', { status: 403, body: errorBody('reauth_failed') }, 'reauth_failed'],
+    ['403 with another code', { status: 403, body: errorBody('forbidden') }, 'unavailable'],
+    ['404', { status: 404, body: errorBody('not_found') }, 'unavailable'],
+    ['429', { status: 429, body: errorBody('rate_limited', true) }, 'throttled'],
+    ['409 document_not_archived', { status: 409, body: errorBody('document_not_archived') }, 'not_archived'],
+    ['409 with an unknown code', { status: 409, body: errorBody('something_new') }, 'failed'],
+    ['422', { status: 422, body: errorBody('validation_failed') }, 'failed'],
+    ['503', { status: 503, body: errorBody('busy', true) }, 'failed'],
+    ['a network failure', 'network', 'failed'],
+  ] as Array<[string, Answer, string]>)('%s reads as %s', async (_label, answer, kind) => {
+    expect((await deleteDocument(CID, DID, 'pw', recorder(answer).fetchImpl)).kind).toBe(kind)
+  })
+
+  it('an empty password is refused by the contract, so no request is made and it reads as reauth_failed', async () => {
+    const { fetchImpl, calls } = recorder({ status: 204 })
+    expect(await deleteDocument(CID, DID, '', fetchImpl)).toEqual({ kind: 'reauth_failed' })
+    expect(calls).toHaveLength(0)
+    await deleteDocument(CID, DID, 'pw', fetchImpl)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('a 401 is the centralized sign-out, once, and reads as unauthorized', async () => {
+    const handler = vi.fn()
+    setUnauthorizedHandler(handler)
+    expect(await deleteDocument(CID, DID, 'pw', recorder({ status: 401 }).fetchImpl)).toEqual({ kind: 'unauthorized' })
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
+  it('a malformed id makes no request (SEC-4)', async () => {
+    const { fetchImpl, calls } = recorder({ status: 204 })
+    expect(await deleteDocument('cmp_a/../b', DID, 'pw', fetchImpl)).toEqual({ kind: 'unavailable' })
+    expect(calls).toHaveLength(0)
   })
 })
