@@ -10,9 +10,12 @@
  * The grammar is `inviteToken.ts`'s: raw `name=value` pairs joined by `&`, each
  * pair's NAME decoded by `URLSearchParams` exactly as `scrubReservedFragmentKeys`
  * decodes it, each VALUE read as written (never percent-decoded). This module
- * owns two keys, `campaign` and `conversation`; `1kg.6.3` adds `document` here
- * and owns the module after this bead. `invite` and `token` stay reserved to
- * `inviteToken.ts` and are never written by anything in this file.
+ * owns three keys: `campaign`, `conversation` and, since agent-forge-harness-1kg.6.3,
+ * `document` (the Workbench canvas's open document). Like `conversation`, a
+ * `document` means nothing without its campaign, so it is read and written only
+ * alongside a well-formed `campaign`. `invite` and `token` stay reserved to
+ * `inviteToken.ts` and are never written by anything in this file; every OTHER
+ * key belongs to the one grammar this module defines (client-routing.md).
  */
 
 import { RESERVED_FRAGMENT_KEYS } from './inviteToken'
@@ -29,17 +32,19 @@ export function isOpaqueId(value: string): boolean {
 
 const CAMPAIGN_KEY = 'campaign'
 const CONVERSATION_KEY = 'conversation'
-const OWN_KEYS: readonly string[] = [CAMPAIGN_KEY, CONVERSATION_KEY]
+const DOCUMENT_KEY = 'document'
+const OWN_KEYS: readonly string[] = [CAMPAIGN_KEY, CONVERSATION_KEY, DOCUMENT_KEY]
 
-/** What the fragment says about the workspace. `conversationId` is non-null only
- * alongside a well-formed `campaignId`: a thread means nothing without its
- * campaign, and the server re-checks both (I-6). */
+/** What the fragment says about the workspace. `conversationId` and `documentId`
+ * are non-null only alongside a well-formed `campaignId`: a thread or a document
+ * means nothing without its campaign, and the server re-checks both (I-6). */
 export interface WorkspaceKeys {
   readonly campaignId: string | null
   readonly conversationId: string | null
+  readonly documentId: string | null
 }
 
-export const NO_WORKSPACE_KEYS: WorkspaceKeys = { campaignId: null, conversationId: null }
+export const NO_WORKSPACE_KEYS: WorkspaceKeys = { campaignId: null, conversationId: null, documentId: null }
 
 function withoutHash(hash: string): string {
   return hash.startsWith('#') ? hash.slice(1) : hash
@@ -81,26 +86,33 @@ export function readWorkspaceKeys(hash: string): WorkspaceKeys {
   const pairs = pairsOf(hash)
   const campaignId = firstWellFormed(pairs, CAMPAIGN_KEY)
   if (campaignId === null) return NO_WORKSPACE_KEYS
-  return { campaignId, conversationId: firstWellFormed(pairs, CONVERSATION_KEY) }
+  return {
+    campaignId,
+    conversationId: firstWellFormed(pairs, CONVERSATION_KEY),
+    documentId: firstWellFormed(pairs, DOCUMENT_KEY),
+  }
 }
 
 /** The fragment (without its `#`) that carries `keys` and every foreign pair of
  * `hash`, byte for byte and in order. Every occurrence of an own key is removed
  * -- duplicates and malformed ones included -- and so is every reserved pair
  * (`invite`, `token`), carried over or not: this writer may run before
- * `UrlNavigation`'s boot scrub, and must never write a credential back. The own
- * pairs are appended, `campaign` then `conversation`; an id that is not opaque,
- * or a `conversation` without a `campaign`, is not written. */
+ * `UrlNavigation`'s boot scrub, and must never write a credential back. An id that is not opaque,
+ * or a `conversation` or `document` without a `campaign`, is not written. The own
+ * pairs are appended `campaign`, `conversation`, `document`. */
 export function fragmentWithKeys(hash: string, keys: WorkspaceKeys): string {
   const kept = pairsOf(hash).filter((pair) => {
     const name = nameOf(pair)
     return !OWN_KEYS.includes(name) && !RESERVED_FRAGMENT_KEYS.includes(name)
   })
-  const { campaignId, conversationId } = keys
+  const { campaignId, conversationId, documentId } = keys
   if (campaignId !== null && isOpaqueId(campaignId)) {
     kept.push(`${CAMPAIGN_KEY}=${campaignId}`)
     if (conversationId !== null && isOpaqueId(conversationId)) {
       kept.push(`${CONVERSATION_KEY}=${conversationId}`)
+    }
+    if (documentId !== null && isOpaqueId(documentId)) {
+      kept.push(`${DOCUMENT_KEY}=${documentId}`)
     }
   }
   return kept.join('&')
@@ -124,10 +136,13 @@ export function replaceWorkspaceKeys(keys: WorkspaceKeys, win: Window = window):
 export interface CampaignRestore {
   readonly campaignId: string
   readonly conversationId: string | null
+  /** The Workbench canvas's document (1kg.6.3). Optional so a caller that predates
+   * the key (most tests and stories) reads as "none"; `readCampaignRestore` always sets it. */
+  readonly documentId?: string | null
 }
 
 export function readCampaignRestore(pathname: string, hash: string): CampaignRestore | null {
   if (pathname !== pathForScreen('workspace')) return null
-  const { campaignId, conversationId } = readWorkspaceKeys(hash)
-  return campaignId === null ? null : { campaignId, conversationId }
+  const { campaignId, conversationId, documentId } = readWorkspaceKeys(hash)
+  return campaignId === null ? null : { campaignId, conversationId, documentId }
 }

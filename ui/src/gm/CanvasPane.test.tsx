@@ -568,3 +568,60 @@ describe('every icon in the header is either labelled or hidden', () => {
     expect(screen.getByRole('button', { name: 'Close canvas' })).toHaveAttribute('data-touch-target', 'true')
   })
 })
+
+// ── 1kg.6.3: the title is a focus target, and a hidden opener is gone (C-3c) ──
+
+describe('titleRef (1kg.6.3, T-14)', () => {
+  it('receives the heading, which is focusable by script but not a tab stop', () => {
+    const titleRef = React.createRef<HTMLHeadingElement>()
+    render(pane({ titleRef }))
+    const heading = screen.getByRole('heading', { level: 2, name: 'Sister Ondrey Vashe' })
+    expect(titleRef.current).toBe(heading)
+    expect(heading).toHaveAttribute('tabindex', '-1')
+    titleRef.current?.focus()
+    expect(heading).toHaveFocus()
+  })
+
+  it('is optional: without it the heading is still focusable by script', () => {
+    render(pane())
+    expect(screen.getByRole('heading', { level: 2 })).toHaveAttribute('tabindex', '-1')
+  })
+})
+
+describe('CANVAS-32 — an opener that is connected but not visible is gone (C-3c)', () => {
+  function Harness({ visible }: { visible: boolean }): React.JSX.Element {
+    const opener = React.useRef<HTMLButtonElement>(null)
+    const composer = React.useRef<HTMLTextAreaElement>(null)
+    React.useEffect(() => {
+      const element = opener.current
+      if (element !== null) element.checkVisibility = () => visible
+    }, [visible])
+    return (
+      <>
+        <button type="button" ref={opener}>
+          Open in canvas
+        </button>
+        <textarea aria-label="Message the assistant" ref={composer} />
+        <CanvasPane
+          title="Sister Ondrey Vashe"
+          documentType="npc"
+          openerRef={opener}
+          composerRef={composer}
+          onRequestClose={() => true}
+        />
+      </>
+    )
+  }
+
+  it('falls back to the composer when the opener reports it is not visible', async () => {
+    render(<Harness visible={false} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Close canvas' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message the assistant' })).toHaveFocus())
+  })
+
+  it('positive control: the same opener, visible, takes focus back', async () => {
+    render(<Harness visible />)
+    await userEvent.click(screen.getByRole('button', { name: 'Close canvas' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Open in canvas' })).toHaveFocus())
+  })
+})

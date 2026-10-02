@@ -1,7 +1,7 @@
 /**
- * breakpoints — the shell's two width boundaries (agent-forge-harness-0rn).
+ * breakpoints — the shell's width boundaries (agent-forge-harness-0rn, 1kg.6.3).
  *
- * Two numbers, from two sources, each an EXCLUSIVE upper bound:
+ * Three numbers, from two sources, each an EXCLUSIVE upper bound:
  * - 600 px is the bead's phone rule (one column, 44 px targets, the meter
  *   reduced to its number). Every width media query in `ui/src/shell/*.css`
  *   is written as exactly `PHONE_MEDIA`; `breakpoints.test.ts` pins the CSS
@@ -10,6 +10,9 @@
  *   sidebar, and LeftNav is an off-canvas drawer. The shell reads it through
  *   `useShellLayout` and keys its CSS on `data-layout`, so no stylesheet
  *   repeats it.
+ * - 1024 px is LAYOUT-1/2's edge between the medium layout (one column, a 56 px
+ *   navigation rail) and the wide one (the full Workbench). Same rule: queried
+ *   here, never written in CSS.
  *
  * Range syntax (`width < N`) reads exactly as the rules are written and leaves
  * no fractional-pixel gap, which `max-width: 599px` would at 599.5 px.
@@ -21,35 +24,42 @@ import * as React from 'react'
 export const PHONE_MAX_WIDTH_PX = 600
 /** Interactions ADR LAYOUT-3: the narrow layout is below 768 px (exclusive bound). */
 export const NARROW_MAX_WIDTH_PX = 768
+/** Interactions ADR LAYOUT-1/2: the medium layout is below 1024 px (exclusive bound). */
+export const MEDIUM_MAX_WIDTH_PX = 1024
 
 /** The one string every `ui/src/shell/*.css` width media query must equal. */
 export const PHONE_MEDIA = `(width < ${PHONE_MAX_WIDTH_PX}px)` as const
 /** Queried by useShellLayout; never written in CSS (the shell keys on data-layout). */
 export const NARROW_MEDIA = `(width < ${NARROW_MAX_WIDTH_PX}px)` as const
+/** Queried by useShellLayout; never written in CSS (the shell keys on data-layout). */
+export const MEDIUM_MEDIA = `(width < ${MEDIUM_MAX_WIDTH_PX}px)` as const
 
-/** 1kg.6.3 adds 'medium' (LAYOUT-2). WorkspaceShell decides everything from
- * `satisfies Record<ShellLayout, …>` tables, so a new member is a compile
- * error at every place that must decide, not a silent fallthrough. */
-export type ShellLayout = 'narrow' | 'wide'
+/** LAYOUT-1..3: narrow < 768 <= medium < 1024 <= wide. WorkspaceShell decides
+ * everything from `satisfies Record<ShellLayout, …>` tables, so a new member is
+ * a compile error at every place that must decide, not a silent fallthrough. */
+export type ShellLayout = 'narrow' | 'medium' | 'wide'
 
 const hasMatchMedia = (): boolean => typeof window.matchMedia === 'function'
 
 function subscribe(onChange: () => void): () => void {
   if (!hasMatchMedia()) return () => {}
-  const query = window.matchMedia(NARROW_MEDIA)
-  query.addEventListener('change', onChange)
-  return () => query.removeEventListener('change', onChange)
+  const queries = [window.matchMedia(NARROW_MEDIA), window.matchMedia(MEDIUM_MEDIA)]
+  for (const query of queries) query.addEventListener('change', onChange)
+  return () => {
+    for (const query of queries) query.removeEventListener('change', onChange)
+  }
 }
 
 function readLayout(): ShellLayout {
   if (!hasMatchMedia()) return 'wide'
-  return window.matchMedia(NARROW_MEDIA).matches ? 'narrow' : 'wide'
+  if (window.matchMedia(NARROW_MEDIA).matches) return 'narrow'
+  return window.matchMedia(MEDIUM_MEDIA).matches ? 'medium' : 'wide'
 }
 
 const serverLayout = (): ShellLayout => 'wide'
 
 /**
- * The workspace's layout, from `matchMedia(NARROW_MEDIA)`. Correct at the
+ * The workspace's layout, from `matchMedia(NARROW_MEDIA)` and `MEDIUM_MEDIA`. Correct at the
  * first render (no flash of the sidebar on a phone), re-renders on the
  * query's `change` event, and removes its listener on unmount. 'wide' where
  * `window.matchMedia` is not a function (jsdom), so every test that does not
