@@ -701,6 +701,19 @@ Conversations predating the ownership table are the one exception the cascade
 cannot reach (their messages have no owner row, which is why the constraint is
 `NOT VALID`). That is pre-auth data, not this account's.
 
+**An account with a linked Google account** (`auth.identities`, section 14) has a
+second way in that rotating `session-secret` does not touch: signing in with Google
+mints a fresh session. If the Google account itself is compromised, cut it off
+*before* step 1, or the attacker signs straight back in after the rotation:
+
+```bash
+psql "$PROXY" -c "DELETE FROM auth.identities WHERE user_id = <id> AND provider = 'google';"
+```
+
+(Or turn the feature off for everyone: section 14, "Turn it off".) The account's
+password, if it has one, is unaffected; a Google-only account (`has_password = false`)
+is then unreachable until step 3 deletes it.
+
 ## 11. A tester forgot their password
 
 **There is no password reset.** It needs outbound email, which the pilot does
@@ -727,6 +740,11 @@ history. Tell them that before you do it.
 No secret rotation and no drain here: this is a cooperative user, not an
 adversary with a live session, so there is nothing to race. If you are *not*
 sure the account is uncompromised, treat it as §10 instead.
+
+A tester who has **linked Google** (section 14) does not need this: they can sign in
+with Google instead of a reset. A tester who signed up **with Google** has no password
+to forget, so there is nothing to recover; if they lose that Google account, the
+recovery is this section (delete, then re-invite).
 
 ## 12. The job scheduler (DEFERRED — `1kg.9.5`)
 
@@ -958,6 +976,107 @@ gcloud run services update game-guide-ai --region="$REGION"   --update-env-vars=
 
 For Compose or a local run against `fake-gcs-server`, the client honours
 `STORAGE_EMULATOR_HOST` by itself and then uses no credentials at all.
+
+## 14. Sign in with Google (owner steps)
+
+Code: `service/google_oidc.py`, `service/google_signin_api.py`; decisions:
+`docs/adr/google-sign-in.md`. **Off until you do the steps below**: until the
+variables in step 5 are set, every `/auth/google/*` route answers 404 and no button is
+drawn, so merging the code changes nothing a tester can see. Google sign-in is free.
+
+Set the shell up as in §10 (`$PROJECT`, `$REGION`, `$PROXY`, `$SVC_URL`). Placeholders
+below are in angle brackets; no real value belongs in a command you save or paste.
+
+**1. Prerequisite: the service must be reachable by a browser (§9, open ingress).**
+While the service is IAM-locked, Google's redirect back lands on Google's own 403 and
+the flow cannot finish. The flow cookie lives on the origin the tester browses, so the
+redirect URI in steps 3 and 5 must be **exactly that origin**. Cloud Run gives a
+service more than one URL; a tester who browses one and a redirect URI that names the
+other will always end at `expired` (the server log's `reason=no_cookie` says so).
+
+**2. Consent screen** (Google Cloud Console, Google Auth Platform):
+
+- *Branding*: app name `Aetheril`, a support email, a developer contact.
+- *Audience*: **External**, publishing status **Testing**. Add each tester's Google
+  address as a **test user** (at most 100; anyone else gets "access blocked").
+- *Data access*: the scopes `openid` and `.../auth/userinfo.email` only. Both are
+  non-sensitive, so no verification review is needed.
+
+**3. OAuth client.** Clients, Create client, **Web application**.
+*Authorized redirect URI*: exactly `https://<SERVICE_HOST>/auth/google/callback`.
+*Authorized JavaScript origins*: none (we run no Google script). Copy the **client id**
+(`<CLIENT_ID>.apps.googleusercontent.com`); the client secret is shown once, so copy it
+straight into step 4.
+
+**4. Secret Manager, and the accessor binding, before anything else.** A variable set
+in step 5 before this exists makes the next `gcloud run deploy` fail (the old revision
+keeps serving, but master's deploy goes red). No echo, no shell history:
+
+```bash
+read -rs GOOGLE_SECRET && printf '%s' "$GOOGLE_SECRET" \
+  | gcloud secrets create google-oauth-client-secret --data-file=- ; unset GOOGLE_SECRET
+
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+gcloud secrets add-iam-policy-binding google-oauth-client-secret \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role=roles/secretmanager.secretAccessor
+
+# Prints nothing secret; "ok" means the secret exists and you can read it:
+gcloud secrets versions access latest --secret=google-oauth-client-secret >/dev/null && echo ok
+```
+
+**5. Turn it on** with two GitHub repository **variables** (not secrets: the client id
+is in the URL the browser visits; the client secret is never a GitHub secret):
+
+```bash
+gh variable set GOOGLE_OAUTH_CLIENT_ID    --body '<CLIENT_ID>.apps.googleusercontent.com'
+gh variable set GOOGLE_OAUTH_REDIRECT_URI --body 'https://<SERVICE_HOST>/auth/google/callback'
+```
+
+The next deploy from `master` carries them (`scripts/deploy.sh` passes the client
+secret as a `--set-secrets` reference to `google-oauth-client-secret`, and the id and
+URI as `--set-env-vars`). **Do not** set them with `gcloud run services update` alone:
+`--set-env-vars` and `--set-secrets` replace the service's whole set on every deploy,
+so the next CI deploy would silently turn the feature off again (the `1kg.9.5`
+release-review finding). `deploy.sh` refuses a malformed id or URI, a secret *name* that
+looks like a client secret (`GOCSPX-...`), and a deploy environment that carries
+`GOOGLE_OAUTH_CLIENT_SECRET` at all: the repository is public, so Actions logs are
+public and `run` prints whole commands.
+
+**6. Verify.**
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' "$SVC_URL/auth/google/available"   # 200 (404 = still off)
+
+# Sign in as a listed test user through an invite link, then:
+psql "$PROXY" -c "SELECT provider, user_id, created_at FROM auth.identities;"
+psql "$PROXY" -c "SELECT action, decision, reason_code, created_at FROM auth.identity_events ORDER BY id DESC LIMIT 10;"
+
+# The client secret must be in no log. Search the revision's logs for its first six
+# characters (typed here, never saved):
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="game-guide-ai"' \
+  --limit=500 --format='value(textPayload,jsonPayload)' | grep -c '<FIRST_SIX_OF_SECRET>'   # expect 0
+```
+
+**Turn it off.** Unset both variables (`gh variable delete ...`) and redeploy: every
+Google route 404s and the buttons go. Existing links stay in `auth.identities`, inert,
+and password sign-in is unaffected.
+
+**Rotate the client secret.** Add a new secret in the OAuth client (the console allows
+two at once), then `printf '%s' ... | gcloud secrets versions add
+google-oauth-client-secret --data-file=-`, redeploy (the service reads `:latest` at
+start), and disable the old secret in the console.
+
+**Remove one tester's link** (they lost the Google account, or it is compromised; see
+also §10): `DELETE FROM auth.identities WHERE user_id = <id> AND provider = 'google';`
+There is no unlink in the app. A Google-only account (`has_password = false`) is then
+unreachable until you delete it and re-invite (§11).
+
+**Known limitation, until a follow-up lands.** A Google-only account has no password,
+so it cannot pass the re-authentication that a seat's Remove and a document's delete
+ask for (SEC-40). The UI has no such dialog yet, so nothing visible breaks today, but
+**a DM should keep a password and link Google** (sign up with the invite's password
+form, then Profile, Link Google account) until Google re-authentication ships.
 
 ## Cost
 

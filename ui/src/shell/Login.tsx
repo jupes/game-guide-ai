@@ -14,9 +14,13 @@ import { TextField } from '../ds/TextField'
 import * as api from '../api'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
+import { GoogleOutcomeNotice } from './GoogleOutcomeNotice'
+import { GoogleSignInButton } from './GoogleSignInButton'
+import { useGoogleAvailable } from './googleAvailability'
 import './AuthScreen.css'
 
 export function Login(): React.JSX.Element {
+  const googleAvailable = useGoogleAvailable()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -47,6 +51,13 @@ export function Login(): React.JSX.Element {
       <Card className="auth-screen__card">
         <h1 className="auth-screen__title">Aetheril</h1>
         <p className="auth-screen__tagline">Sign in to continue</p>
+        <GoogleOutcomeNotice />
+        {googleAvailable && (
+          <>
+            <GoogleSignInButton kind="signin" />
+            <p className="auth-screen__or">or</p>
+          </>
+        )}
         <form onSubmit={handleSubmit} className="auth-screen__form">
           <TextField
             label="Email"

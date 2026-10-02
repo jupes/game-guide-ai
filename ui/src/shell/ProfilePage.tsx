@@ -17,6 +17,8 @@ import { Switch } from '../ds/Switch'
 import { Button } from '../ds/Button'
 import { useCurrentUser } from './currentUser'
 import { useAppNav } from './AppNav'
+import { GoogleOutcomeNotice } from './GoogleOutcomeNotice'
+import { ProfileGoogleSection } from './ProfileGoogleSection'
 import './ProfilePage.css'
 
 const TONE_OPTIONS: readonly { tone: AvatarTone; label: string }[] = [
@@ -82,6 +84,9 @@ export function ProfilePage(): React.JSX.Element {
             ariaLabel="Dungeon Master role"
           />
         </div>
+
+        <GoogleOutcomeNotice scope="profile" />
+        <ProfileGoogleSection />
 
         <section className="profile-page__deferred" aria-label="Awaiting sign-in">
           <h2 className="profile-page__deferred-title">Available once you have an account</h2>

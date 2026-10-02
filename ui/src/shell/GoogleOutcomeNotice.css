@@ -1,0 +1,16 @@
+/* ── GoogleOutcomeNotice (lvs7) ───────────────────────────────────────────────
+   The same error token the sign-in form uses (27h: tokenised per theme), and the
+   plain on-surface role for the one good-news status. */
+
+.google-outcome {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.google-outcome--error {
+  color: var(--md-sys-color-error);
+}
+
+.google-outcome--ok {
+  color: var(--md-sys-color-on-surface);
+}

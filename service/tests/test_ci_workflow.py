@@ -63,6 +63,7 @@ DB_BACKED_TESTS = [
     "tests/test_timeline_edit_entries_db.py",
     "tests/test_character_link_api_db.py",
     "tests/test_account_quotas_db.py",
+    "service/tests/test_google_identity_store.py",
 ]
 
 
@@ -521,3 +522,21 @@ def test_every_action_is_on_a_node24_major():
         if major < FIRST_NODE24_MAJOR[action]:
             stale.append(f"{ref} (node24 from v{FIRST_NODE24_MAJOR[action]})")
     assert not stale, f"these actions still run on a deprecated Node.js: {stale}"
+
+
+def _deploy_step_env() -> str:
+    """The `env:` block of the deploy job's `Deploy` step, as text."""
+    deploy_job = WORKFLOW.read_text(encoding="utf-8").split("\n  deploy:\n", 1)[1]
+    step = deploy_job.split("      - name: Deploy\n", 1)[1].split("        run: |", 1)[0]
+    return step
+
+
+def test_the_deploy_step_passes_the_google_variables_and_never_a_google_secret():
+    """Sign in with Google is configured by two repository VARIABLES (lvs7). The
+    client secret is never a GitHub secret: Cloud Run reads it from Secret Manager,
+    so a `secrets.GOOGLE_*` here would put it in the runner's environment."""
+    env = _deploy_step_env()
+    assert "GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}" in env
+    assert "GOOGLE_OAUTH_REDIRECT_URI: ${{ vars.GOOGLE_OAUTH_REDIRECT_URI }}" in env
+    assert not re.search(r"secrets\.GOOGLE", env), "the Google client secret must not be a GitHub secret"
+    assert "GOOGLE_OAUTH_CLIENT_SECRET" not in re.sub(r"#.*", "", env), "no client secret in the deploy environment"

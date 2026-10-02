@@ -32,6 +32,9 @@ RUNTIME_MODULES = (
     # the service runtime path and must resolve cleanly via package imports.
     "service.graph",
     "service.tracing",
+    # Sign in with Google (lvs7).
+    "service.google_oidc",
+    "service.google_signin_api",
 )
 
 
@@ -49,3 +52,24 @@ def test_no_sys_path_insert_in_packages() -> None:
             if "sys.path.insert" in py.read_text(encoding="utf-8"):
                 offenders.append(str(py.relative_to(REPO_ROOT)).replace("\\", "/"))
     assert not offenders, f"sys.path.insert found in {len(offenders)} file(s): {offenders}"
+
+
+def _core_dependency_names() -> set[str]:
+    import re
+    import tomllib
+
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    return {re.split(r"[\[<>=!~;\s]", requirement, maxsplit=1)[0].lower() for requirement in project["dependencies"]}
+
+
+@pytest.mark.parametrize("package", ["google-auth", "httpx"])
+def test_what_the_google_sign_in_imports_is_a_core_dependency(package: str) -> None:
+    """The test environment installs the `gcs` extra (through `[test]`), which
+    brings google-auth with it, so `service.google_oidc` imports here even if the
+    PRODUCTION image would not have it. The image installs the core dependencies
+    only (`uv export --frozen --no-dev --no-emit-project`), so this reads the
+    declaration itself: without it the service would fail to import at startup
+    and the deploy would not come up (lvs7)."""
+    assert package in _core_dependency_names(), (
+        f"{package} must be in [project].dependencies: service/google_oidc.py imports it at request time"
+    )

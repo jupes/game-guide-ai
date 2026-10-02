@@ -15,6 +15,9 @@ import * as api from '../api'
 import { useAppNav } from './AppNav'
 import { useCurrentUser } from './currentUser'
 import { validateCredentials } from './credentials'
+import { GoogleOutcomeNotice } from './GoogleOutcomeNotice'
+import { GoogleSignInButton, GOOGLE_START_PATH } from './GoogleSignInButton'
+import { useGoogleAvailable } from './googleAvailability'
 import './AuthScreen.css'
 
 export interface SignupProps {
@@ -24,6 +27,7 @@ export interface SignupProps {
 }
 
 export function Signup({ invite, onUseLogin }: SignupProps): React.JSX.Element {
+  const googleAvailable = useGoogleAvailable()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -56,6 +60,20 @@ export function Signup({ invite, onUseLogin }: SignupProps): React.JSX.Element {
       <Card className="auth-screen__card">
         <h1 className="auth-screen__title">Aetheril</h1>
         <p className="auth-screen__tagline">You've been invited — create your account</p>
+        <GoogleOutcomeNotice />
+        {googleAvailable && (
+          <>
+            {/* A native form POST, no script: the invite rides in the BODY (a
+                URL would reach the request log) and is never put in the address
+                bar. The server checks it before anyone is sent to Google. */}
+            <form method="post" action={GOOGLE_START_PATH} className="auth-screen__google">
+              <input type="hidden" name="intent" value="invite" />
+              <input type="hidden" name="invite" value={invite} />
+              <GoogleSignInButton kind="signup" />
+            </form>
+            <p className="auth-screen__or">or</p>
+          </>
+        )}
         <form onSubmit={handleSubmit} className="auth-screen__form">
           <TextField
             label="Email"

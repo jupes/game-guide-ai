@@ -88,7 +88,9 @@ ANONYMOUS_MAX_BODY_BYTES: Final = config.REQUEST_BODY_MAX_BYTES_FLOOR
 
 ANONYMOUS_CEILINGS: Final = tuple(
     Ceiling("POST", re.compile(path), ANONYMOUS_MAX_BODY_BYTES)
-    for path in ("/auth/login", "/auth/signup", "/metrics/ui")
+    # `/auth/google/start` is a native form POST (an invite, or a link): three short
+    # fields, nowhere near this, and anyone may send it (lvs7).
+    for path in ("/auth/login", "/auth/signup", "/auth/google/start", "/metrics/ui")
 )
 
 
