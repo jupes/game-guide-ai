@@ -170,6 +170,13 @@ reveal_stop_limiter = _build(
     "REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT", "REVEAL_STOP_RATE_LIMIT_WINDOW_S",
 )
 
+# The entitled table read's budget (agent-forge-harness-1kg.7.2 PR-2): keyed by
+# the table principal, so a screen and an account never share a key.
+table_read_limiter = _build(
+    config.TABLE_READ_RATE_LIMIT_PER_PRINCIPAL, config.TABLE_READ_RATE_LIMIT_WINDOW_S,
+    "TABLE_READ_RATE_LIMIT_PER_PRINCIPAL", "TABLE_READ_RATE_LIMIT_WINDOW_S",
+)
+
 if config.AUTH_TRUSTED_PROXY_HOPS < 0:
     raise ValueError(
         f"AUTH_TRUSTED_PROXY_HOPS must be >= 0, got {config.AUTH_TRUSTED_PROXY_HOPS!r}"
@@ -183,6 +190,7 @@ def reset_all() -> None:
     chat_user_limiter.reset()
     workbench_write_limiter.reset()
     reveal_stop_limiter.reset()
+    table_read_limiter.reset()
 
 
 def check_workbench_write(user_id: int) -> None:
@@ -193,6 +201,11 @@ def check_workbench_write(user_id: int) -> None:
 def check_reveal_stop(user_id: int) -> None:
     """Spend one Stop from `user_id`'s narrowing budget, or raise `RateLimited`."""
     reveal_stop_limiter.check(str(user_id))
+
+
+def check_table_read(principal_key: str) -> None:
+    """Spend one entitled read from `principal_key`'s budget, or raise `RateLimited`."""
+    table_read_limiter.check(principal_key)
 
 
 # An IPv6 address in text form is at most 45 characters; anything longer is not

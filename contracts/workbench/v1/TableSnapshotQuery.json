@@ -1,0 +1,52 @@
+{
+  "schema": "TableSnapshotQuery",
+  "direction": "request",
+  "channel": "table",
+  "note": "GET /table/snapshot?campaign_id= (1kg.7.2, ID-15): which campaign's table this principal reads. The campaign is in the URL's query because it is not a secret (SEC-43); the principal is the cookie (an account session or a screen grant), never a field of this query. A query is not a payload, so it carries no schema_version; the TableSnapshot that answers it does.",
+  "valid": [
+    {
+      "name": "a campaign",
+      "value": {
+        "campaign_id": "cmp_4b1d9e7a"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a participant in the query",
+      "why": "a table principal is resolved from its cookie, never from request fields (eligibility ADR 4, threat model 8.2)",
+      "value": {
+        "campaign_id": "cmp_4b1d9e7a",
+        "participant_id": "prt_7Hq2mW9xLp4sT8uY1zA3bC"
+      }
+    },
+    {
+      "name": "a grant in the query",
+      "why": "the grant is the cookie; a URL is logged and cached, a cookie is neither",
+      "value": {
+        "campaign_id": "cmp_4b1d9e7a",
+        "grant": "Kq7vW2xL9pR4sT8uY1zA3bC5dE6fG0hJ2kM4nP6qS8"
+      }
+    },
+    {
+      "name": "a slot in the query",
+      "why": "which slots a device is entitled to is the server's answer, never a thing it asks for",
+      "value": {
+        "campaign_id": "cmp_4b1d9e7a",
+        "slot": "mine"
+      }
+    },
+    {
+      "name": "no campaign",
+      "why": "the campaign is the one thing the query names",
+      "value": {}
+    },
+    {
+      "name": "a campaign that is not an id",
+      "why": "an id is 1 to 64 URL-safe characters; a sentence is not one",
+      "value": {
+        "campaign_id": "the harbour campaign"
+      }
+    }
+  ]
+}

@@ -290,7 +290,7 @@ on both sides.
 | Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, `CharacterSheetLink` (`q156`), and `conflict`, `document_unsupported`, `document_not_archived` and `link_taken` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
-| Reveal | **open** — reopened by threat model §15.11's TA-5 row (`everyone_seated`); no build has served or parsed a reveal shape, so no bump is owed; marked done by `1kg.7.2` PR-2 (DV-3's precedent) | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealAnswer`, `RevealLive`, `RevealState`, `TableProjection`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
+| Reveal | **done** — reopened by threat model §15.11's TA-5 row (`everyone_seated`) and marked done by `1kg.7.2` PR-2, which serves and parses every reveal shape; no build had served or parsed one, so no bump was owed (DV-3's precedent) | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealAnswer`, `RevealLive`, `RevealState`, `TableProjection`, `TableSnapshotQuery`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
 | Table sessions | **open** — reopened by threat model §15.11; not bound by the bump table until marked done again (see *Versioning and forward compatibility*) | `TableSession`, `TableSessionRequest`, `TableSessionAnswer`, `ScreenMintRequest`, `ScreenMintAnswer`, `TableLeaveRequest`, and `inactive`, `cross_site`, `screen_limit` and `live_elsewhere` on the error envelope. `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired (`1kg.2.3`). See *The table-session family* below |
 | Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
@@ -1418,6 +1418,26 @@ exactly the keys at fault. An asset key is refused while no table asset-handle
 route exists, because there would be no way to show it. A `422` is read as a `409`
 by the sheet (reload, keep the draft). `all`, a repeated key and a key that is not
 field-key shaped are refused by the body, before ownership, and carry no `keys`.
+
+### The table's read (1kg.7.2 PR-2)
+
+| Route | Query | Answer |
+| --- | --- | --- |
+| `GET /table/snapshot` | `TableSnapshotQuery` — `campaign_id`, in the URL because a campaign is not a secret (SEC-43) | `TableSnapshot`: `session` (whether table audio is on, and the `role`), one `snapshot` frame, `ready`. `404 inactive` for **every** caller who is not entitled; `403 cross_site` for a cross-site fetch; `429 throttled_user` with `Retry-After` past the principal's read budget (120 a minute, keyed by account or grant id) or, for a refusal, the source's; `503 backend_unavailable`, retryable |
+
+The principal is the cookie (a live screen grant alone, else the account
+session), never a field of the query. `role` is `participant` exactly when the
+principal has its own slot (a GM-confirmed seat), else `guest`: the owner's
+account, a screen and a seat the GM has not confirmed read the table slot only
+(ID-15). The slots are `table`, and `mine` only for a participant; each `content`
+is a `TableProjection` of the **sealed version the disclosure pinned**, built on
+each read by one builder from the mask alone, or `null` for an empty slot. A
+projection that cannot be expressed, a version that is not sealed or whose type
+is not the recorded one, or frames that do not validate all give an empty slot,
+never a partial one. A seat confirmed after an *Everyone seated* Confirm reads
+nothing of it (ED-13). There are no audio frames until cue slots exist. Every
+answer is `Cache-Control: no-store` and `Cross-Origin-Resource-Policy:
+same-origin`, and carries no id.
 
 **Why both are answered with the picture.** REVEAL-22 advances the reveal epoch
 on *every* narrowing, "on an empty slot too" — a Stop with nothing live, a

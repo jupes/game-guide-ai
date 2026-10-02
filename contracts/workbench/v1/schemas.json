@@ -39,6 +39,7 @@
     "ScreenMintRequest",
     "ScreenMintAnswer",
     "TableLeaveRequest",
+    "TableSnapshotQuery",
     "RevealAudience",
     "RevealSlotRef",
     "RevealRequest",
