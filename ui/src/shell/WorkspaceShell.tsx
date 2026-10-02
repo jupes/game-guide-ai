@@ -40,10 +40,13 @@ const NAVIGATION = 'Navigation'
 const CLOSE_NAVIGATION = 'Close navigation'
 
 /** Whether LeftNav lives in a drawer behind TopBar's menu button. */
-const HAS_DRAWER = { narrow: true, wide: false } as const satisfies Record<ShellLayout, boolean>
+const HAS_DRAWER = { narrow: true, medium: false, wide: false } as const satisfies Record<
+  ShellLayout,
+  boolean
+>
 
 /** Where ModelPicker and the theme control live: exactly one place per layout. */
-const SETTINGS_HOME = { narrow: 'drawer', wide: 'header' } as const satisfies Record<
+const SETTINGS_HOME = { narrow: 'drawer', medium: 'header', wide: 'header' } as const satisfies Record<
   ShellLayout,
   'drawer' | 'header'
 >
