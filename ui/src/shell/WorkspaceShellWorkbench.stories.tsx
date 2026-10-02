@@ -23,6 +23,7 @@ import {
   expectNothingClipped,
   expectTheme,
   expectViewport,
+  expectWorkspaceFits,
   type ViewportName,
 } from '../../.storybook/viewports'
 import { DOCUMENT_FIXTURES } from '../gm/documentFixtures'
@@ -417,36 +418,39 @@ export const SkipLinksByKeyboard: Story = {
 
 // ── Where focus lands when the canvas closes (C-3, CANVAS-32), measured with real visibility ──
 
-/** 1280: a sidebar row opens the document and the sidebar steps aside; closing brings it back and focuses that row. */
-export const FocusReturnsToSidebarRow: Story = {
+/** 1280: a panel row opens the document and the sidebar steps aside; closing the canvas brings it back and focuses that row, which stayed. */
+export const FocusReturnsToLibraryRow: Story = {
   ...atViewport('wide1280'),
   decorators: [withWorkbench(null)],
   play: async ({ canvasElement }) => {
     await expectViewport('wide1280')
     const canvas = within(canvasElement)
-    const row = await canvas.findByRole('button', { name: new RegExp(TITLE) })
+    await userEvent.click(await canvas.findByRole('button', { name: 'NPCs' }))
+    const region = await canvas.findByRole('region', { name: 'Campaign Library' })
+    const row = await within(region).findByRole('button', { name: new RegExp(TITLE) })
     await userEvent.click(row)
     await canvas.findByRole('heading', { level: 2, name: TITLE })
-    // The row is connected but its sidebar is gone from the layout: the case a plain isConnected check misses.
-    await waitFor(() => expect(row.checkVisibility()).toBe(false))
     await userEvent.click(canvas.getByRole('button', { name: 'Close canvas' }))
-    await waitFor(() => expect(canvas.getByRole('button', { name: new RegExp(TITLE) })).toHaveFocus())
+    await waitFor(() => expect(within(canvas.getByRole('region', { name: 'Campaign Library' })).getByRole('button', { name: new RegExp(TITLE) })).toHaveFocus())
     await expect(canvas.getByRole('navigation', { name: 'Main navigation' })).toBeVisible()
   },
 }
 
-/** 900: a row in the drawer opens the document; closing returns focus to the rail's Open navigation, which opened the drawer. */
-export const FocusReturnsToRailFromDrawerRow: Story = {
+/** 900: a drawer row opens the panel, a panel row opens the document behind it; closing the canvas falls back to the composer, as the row that opened it is gone (CANVAS-32). */
+export const FocusFallsToComposerFromClosedPanel: Story = {
   ...atViewport('medium900'),
   decorators: [withWorkbench(null)],
   play: async ({ canvasElement }) => {
     await expectViewport('medium900')
     const canvas = within(canvasElement)
     await userEvent.click(await canvas.findByRole('button', { name: 'Open navigation' }))
-    await userEvent.click(await canvas.findByRole('button', { name: new RegExp(TITLE) }))
+    await userEvent.click(await canvas.findByRole('button', { name: 'NPCs' }))
+    const region = await canvas.findByRole('region', { name: 'Campaign Library' })
+    await userEvent.click(await within(region).findByRole('button', { name: new RegExp(TITLE) }))
     await canvas.findByRole('heading', { level: 2, name: TITLE })
+    await expect(canvas.queryByRole('region', { name: 'Campaign Library' })).toBeNull()
     await userEvent.click(canvas.getByRole('button', { name: 'Close canvas' }))
-    await waitFor(() => expect(canvas.getByRole('button', { name: 'Open navigation' })).toHaveFocus())
+    await waitFor(() => expect(canvas.getByPlaceholderText('Ask…')).toHaveFocus())
   },
 }
 
@@ -466,3 +470,94 @@ export const FocusReturnsToChatLinkOnPhone: Story = {
     await waitFor(() => expect(canvas.getByRole('button', { name: new RegExp(LINK_TITLE) })).toHaveFocus())
   },
 }
+
+// ── The Campaign Library panel (1kg.6.4, S-2) ────────────────────────────────
+
+/** 1280, no canvas: beside the 268px sidebar, 320px wide, over the chat column and no further. */
+export const Wide1280Library: Story = {
+  ...atViewport('wide1280'),
+  decorators: [withWorkbench(null)],
+  play: async ({ canvasElement }) => {
+    await expectViewport('wide1280')
+    const canvas = within(canvasElement)
+    await userEvent.click(await canvas.findByRole('button', { name: 'NPCs' }))
+    const region = await canvas.findByRole('region', { name: 'Campaign Library' })
+    await within(region).findByRole('button', { name: new RegExp(TITLE) })
+    const panel = region.getBoundingClientRect()
+    await expect(near(panel.left, 268)).toBe(true)
+    await expect(near(panel.width, 320)).toBe(true)
+    const chat = box(canvasElement, '.workbench__chat')
+    // The chat column runs on past the panel: only its left 320px are covered.
+    await expect(chat.right).toBeGreaterThan(panel.right + 100)
+    await expect(getComputedStyle(region).position).toBe('absolute')
+    await expect(region).not.toHaveAttribute('aria-modal')
+    await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
+    await expectTouchTargets(canvas, ['NPCs'], 'tab')
+  },
+}
+export const Wide1280LibraryDark = dark(Wide1280Library, 'wide1280')
+
+/** 1280, canvas open: the rail icon opens the panel at x=56, over the chat column and never over the canvas. */
+export const Wide1280CanvasLibrary: Story = {
+  ...documentOpen,
+  ...atViewport('wide1280'),
+  play: async ({ canvasElement }) => {
+    await expectViewport('wide1280')
+    const canvas = await openCanvas(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: 'Campaign Library' }))
+    const region = await canvas.findByRole('region', { name: 'Campaign Library' })
+    const panel = region.getBoundingClientRect()
+    await expect(near(panel.left, 56)).toBe(true)
+    await expect(near(panel.width, 320)).toBe(true)
+    const column = box(canvasElement, '.workbench__canvas')
+    await expect(panel.right).toBeLessThanOrEqual(column.left + 1)
+    await expect(canvas.getByRole('button', { name: 'Campaign Library' })).toHaveAttribute('aria-expanded', 'true')
+    await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
+    await expectTouchTargets(canvas, ['Campaign Library', 'Close library'])
+  },
+}
+export const Wide1280CanvasLibraryDark = dark(Wide1280CanvasLibrary, 'wide1280')
+
+/** 900: beside the rail (x=56), over whichever column shows. */
+export const Medium900Library: Story = {
+  ...atViewport('medium900'),
+  decorators: [withWorkbench(null)],
+  play: async ({ canvasElement }) => {
+    await expectViewport('medium900')
+    const canvas = within(canvasElement)
+    await userEvent.click(await canvas.findByRole('button', { name: 'Campaign Library' }))
+    const region = await canvas.findByRole('region', { name: 'Campaign Library' })
+    await within(region).findByRole('button', { name: new RegExp(TITLE) })
+    const panel = region.getBoundingClientRect()
+    await expect(near(panel.left, 56)).toBe(true)
+    await expect(near(panel.width, 320)).toBe(true)
+    await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
+  },
+}
+export const Medium900LibraryDark = dark(Medium900Library, 'medium900')
+
+/** 375: the panel fills the body (x=0, the full width) with Back, and <main> is inert behind it. */
+export const Phone375Library: Story = {
+  ...atViewport('phone375'),
+  decorators: [withWorkbench(null)],
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone375')
+    const canvas = within(canvasElement)
+    await userEvent.click(await canvas.findByRole('button', { name: 'Open navigation' }))
+    await userEvent.click(await canvas.findByRole('button', { name: 'NPCs' }))
+    const region = await canvas.findByRole('region', { name: 'Campaign Library' })
+    await within(region).findByRole('button', { name: new RegExp(TITLE) })
+    const panel = region.getBoundingClientRect()
+    await expect(panel.left).toBe(0)
+    await expect(panel.width).toBe(375)
+    await expect(canvasElement.querySelector('main')).toHaveAttribute('inert')
+    await expect(canvas.getByRole('button', { name: 'Back' })).toBeVisible()
+    await expectNoPageOverflow()
+    await expectWorkspaceFits(canvasElement)
+    await expectTouchTargets(canvas, ['Back'])
+  },
+}
+export const Phone375LibraryDark = dark(Phone375Library, 'phone375')

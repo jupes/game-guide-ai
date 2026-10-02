@@ -48,14 +48,26 @@ export const OpenNavigationOnly: Story = {
   },
 }
 
-/** The Workbench is active: the documents button joins it. */
-export const WithCampaignDocuments: Story = {
-  args: { onOpenDocuments: fn() },
+/** The Workbench is active: the Campaign Library button joins it. */
+export const WithCampaignLibrary: Story = {
+  args: { onToggleLibrary: fn(), libraryControls: 'library-panel' },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement)
-    await expectTouchTargets(canvas, ['Open navigation', 'Campaign documents'])
-    await userEvent.click(canvas.getByRole('button', { name: 'Campaign documents' }))
-    await expect(args.onOpenDocuments).toHaveBeenCalledTimes(1)
+    await expectTouchTargets(canvas, ['Open navigation', 'Campaign Library'])
+    const library = canvas.getByRole('button', { name: 'Campaign Library' })
+    await expect(library).toHaveAttribute('title', 'Campaign Library')
+    await expect(library).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(library)
+    await expect(args.onToggleLibrary).toHaveBeenCalledTimes(1)
+  },
+}
+
+/** The panel is open: the button says so. */
+export const LibraryExpanded: Story = {
+  // The decorator's drawer host stands in for the panel the button controls.
+  args: { onToggleLibrary: fn(), libraryControls: 'drawer-host', libraryExpanded: true },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole('button', { name: 'Campaign Library' })).toHaveAttribute('aria-expanded', 'true')
   },
 }
 
@@ -72,7 +84,7 @@ export const Expanded: Story = {
 
 /** A keyboard user sees a focus ring on the rail's controls. */
 export const FocusRing: Story = {
-  args: { onOpenDocuments: fn() },
+  args: { onToggleLibrary: fn() },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await userEvent.tab()
@@ -81,7 +93,7 @@ export const FocusRing: Story = {
     await expect(getComputedStyle(open).outlineStyle).toBe('solid')
     await expect(parseFloat(getComputedStyle(open).outlineWidth)).toBeGreaterThanOrEqual(3)
     await userEvent.tab()
-    await expect(canvas.getByRole('button', { name: 'Campaign documents' })).toHaveFocus()
+    await expect(canvas.getByRole('button', { name: 'Campaign Library' })).toHaveFocus()
   },
 }
 

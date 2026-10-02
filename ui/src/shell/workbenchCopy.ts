@@ -11,9 +11,6 @@
  * and announced, never a key, an id, a storage value or a log field.
  */
 
-/** The id of the documents section's heading, which the rail's Campaign documents button focuses. */
-export const DOCUMENTS_HEADING_ID = 'workbench-documents-heading'
-
 export const WORKBENCH_COPY = {
   // ── The canvas column ──
   /** Visible while a document loads; not a live region (A-29). */
@@ -55,13 +52,6 @@ export const WORKBENCH_COPY = {
   // ── The navigation rail (LAYOUT-7, I-3, C-9) ──
   railLabel: 'Navigation rail',
   openNavigation: 'Open navigation',
-  campaignDocuments: 'Campaign documents',
-
-  // ── Campaign documents in the nav column (I-2, 2.7) ──
-  documentsLoading: 'Loading documents…',
-  documentsEmpty: 'No documents yet.',
-  documentsError: "Couldn't load documents",
-  documentsRetry: 'Retry',
 
   // ── Skip links (I-17, C-14) ──
   skipLinks: 'Skip links',

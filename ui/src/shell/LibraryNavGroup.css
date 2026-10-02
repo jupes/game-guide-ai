@@ -1,0 +1,77 @@
+/* ── LibraryNavGroup ─────────────────────────────────────────────────────────
+   The "Campaign Library" group under the campaign's threads in the nav column
+   (1kg.6.4). Tokens only, so both themes follow the palette; every row holds the
+   44 px floor. No width media query (breakpoints.ts).
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.library-nav {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.library-nav__title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.library-nav__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.library-nav__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  font-size: 14px;
+  text-align: start;
+  cursor: pointer;
+}
+
+.library-nav__icon {
+  font-size: 20px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+@media (hover: hover) {
+  .library-nav__row:hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+}
+
+.library-nav__row:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: -3px;
+}
+
+/* The category whose panel is open: a fill AND a heavier label, so it does not rely on colour alone. */
+.library-nav__row[aria-expanded="true"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-weight: 600;
+}
+
+.library-nav__row[aria-expanded="true"] .library-nav__icon {
+  color: inherit;
+}

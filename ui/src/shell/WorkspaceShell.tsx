@@ -23,6 +23,16 @@
  * selected (X-9); in Sage, Spell and Rules it is hidden, not closed. Below 1024px a
  * Chat / Canvas switch (a row in the chrome) picks which single column shows.
  *
+ * The Campaign Library (1kg.6.4): a 320px non-modal panel, the last child of the body,
+ * opened from LeftNav's Campaign Library group or the rail's one icon and held in
+ * `libraryPanel` (memory only). At wide it sits over the chat column beside the sidebar
+ * (or the rail) and stays open behind an opened document; at medium it sits over
+ * whichever column shows and closes behind a document; at narrow it fills the body and
+ * `<main>` is inert. A pointer press in the chat column dismisses it, moving no focus.
+ * A row pressed inside the nav drawer hands focus to the panel's heading as the drawer
+ * closes, instead of to the control that opened the drawer. Its geometry is CSS, keyed on
+ * `data-nav` and `data-layout`.
+ *
  * Layout rules this component keeps:
  * - The drawer host is rendered at EVERY layout, so LeftNav never remounts on a
  *   layout change and a rename in progress keeps its draft (LAYOUT-6). `<main>`
@@ -47,16 +57,18 @@ import { CanvasHost } from '../gm/CanvasHost'
 import { AppHeader } from './AppHeader'
 import { useShellLayout, type ShellLayout } from './breakpoints'
 import { canvasShown, CanvasProvider, useCanvasActions, useCanvasState, useWorkbenchActive } from './canvasContext'
+import { CampaignLibraryPanel } from './CampaignLibraryPanel'
 import { ChatPane } from './ChatPane'
 import { wrapTab } from './focusTrap'
 import { LeftNav } from './LeftNav'
+import { LIBRARY_PANEL_ID, LibraryPanelProvider, useLibraryPanel } from './libraryPanel'
 import { LossGuardHost } from './LossGuardDialog'
 import { ModelCatalogProvider } from './ModelCatalogContext'
 import { NavRail } from './NavRail'
 import { NavSettings } from './NavSettings'
 import { TopBar, type TopBarNavToggle } from './TopBar'
 import { WorkbenchAnnouncer } from './WorkbenchAnnouncer'
-import { DOCUMENTS_HEADING_ID, WORKBENCH_COPY } from './workbenchCopy'
+import { WORKBENCH_COPY } from './workbenchCopy'
 import { WorkbenchViewSwitch } from './WorkbenchViewSwitch'
 import './WorkspaceShell.css'
 
@@ -85,20 +97,33 @@ export function WorkspaceShell(): React.JSX.Element {
   // agent-forge-harness-bta: the one ModelPicker (AppHeader's or the drawer's)
   // loads the /models catalog and ChatPane sends by it, so both read the one
   // copy held here.
+  const mainRef = React.useRef<HTMLElement>(null)
+  const railLibraryRef = React.useRef<HTMLButtonElement>(null)
   return (
     <ModelCatalogProvider>
       <CanvasProvider>
-        <WorkspaceShellBody />
+        {/* Focus falls back to the rail's Campaign Library button, then <main>, when the control that opened the panel is gone. */}
+        <LibraryPanelProvider fallback={{ rail: railLibraryRef, main: mainRef }}>
+          <WorkspaceShellBody mainRef={mainRef} railLibraryRef={railLibraryRef} />
+        </LibraryPanelProvider>
       </CanvasProvider>
     </ModelCatalogProvider>
   )
 }
 
-function WorkspaceShellBody(): React.JSX.Element {
+interface WorkspaceShellBodyProps {
+  mainRef: React.RefObject<HTMLElement | null>
+  railLibraryRef: React.RefObject<HTMLButtonElement | null>
+}
+
+function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps): React.JSX.Element {
   const layout = useShellLayout()
   const workbench = useWorkbenchActive()
   const { doc, view, guardDialog } = useCanvasState()
   const { setView, titleRef, chatRegionRef, setDrawerOpener } = useCanvasActions()
+  const library = useLibraryPanel()
+  const libraryOpen = library.open
+  const { closeLibrary, toggleLibrary } = library
   const shown = canvasShown(workbench, doc)
   const presentation: NavPresentation = NAV_PRESENTATION[layout][shown ? 'canvas' : 'plain']
   const hasDrawer = presentation !== 'sidebar'
@@ -117,7 +142,6 @@ function WorkspaceShellBody(): React.JSX.Element {
 
   const navId = React.useId()
   const navHostRef = React.useRef<HTMLDivElement>(null)
-  const mainRef = React.useRef<HTMLElement>(null)
   const chatColumnRef = React.useRef<HTMLDivElement>(null)
   const canvasColumnRef = React.useRef<HTMLDivElement>(null)
   const menuButtonRef = React.useRef<HTMLButtonElement>(null)
@@ -125,8 +149,8 @@ function WorkspaceShellBody(): React.JSX.Element {
   const lastFocusedRef = React.useRef<Element | null>(null)
   const focusColumnRef = React.useRef<Column | null>(null)
   const refocusRef = React.useRef<Element | null>(null)
-  /** The rail's Campaign documents button opened the drawer: land on the documents heading. */
-  const toDocumentsRef = React.useRef(false)
+  /** A Campaign Library row was pressed inside the drawer: the panel's heading takes focus as the drawer closes. */
+  const libraryFocusPendingRef = React.useRef(false)
   // The button that opens the drawer is the rail's where the rail is, TopBar's otherwise.
   const openerRef = presentation === 'rail' ? railButtonRef : menuButtonRef
 
@@ -138,10 +162,9 @@ function WorkspaceShellBody(): React.JSX.Element {
     setOpen(true)
   }, [openerRef, setDrawerOpener])
   const closeDrawer = React.useCallback(() => setOpen(false), [])
-  const openDocuments = React.useCallback(() => {
-    toDocumentsRef.current = true
-    openDrawer()
-  }, [openDrawer])
+  const handOffToLibrary = React.useCallback(() => {
+    libraryFocusPendingRef.current = true
+  }, [])
 
   // Focus into the drawer on open (its name is announced first), and back to the
   // button that opened it on an open -> closed transition while a drawer is still the
@@ -152,13 +175,12 @@ function WorkspaceShellBody(): React.JSX.Element {
     const wasOpen = wasOpenRef.current
     wasOpenRef.current = drawerOpen
     if (drawerOpen && !wasOpen) {
-      const toDocuments = toDocumentsRef.current
-      toDocumentsRef.current = false
-      // The drawer's name is announced first; the documents button then lands on its list.
-      if (toDocuments) document.getElementById(DOCUMENTS_HEADING_ID)?.focus()
-      if (!toDocuments || document.activeElement === document.body) navHostRef.current?.focus()
+      // The drawer's name is announced first.
+      navHostRef.current?.focus()
     } else if (!drawerOpen && wasOpen && hasDrawer) {
-      openerRef.current?.focus()
+      // A Campaign Library row closed the drawer: the panel it opened already took focus on its heading.
+      if (libraryFocusPendingRef.current) libraryFocusPendingRef.current = false
+      else openerRef.current?.focus()
     }
   }, [drawerOpen, hasDrawer, openerRef])
 
@@ -199,7 +221,7 @@ function WorkspaceShellBody(): React.JSX.Element {
       last !== null &&
       (!last.isConnected || (hostHidden && host.contains(last)))
     if (hiddenWithFocus || fellToBody) main.focus()
-  }, [layout, hasDrawer, drawerOpen, shown, setView])
+  }, [layout, hasDrawer, drawerOpen, shown, setView, mainRef])
 
   // After the view the crossing chose is on screen, an element the browser blurred
   // while its column was hidden gets focus back (a browser drops focus from a
@@ -286,7 +308,10 @@ function WorkspaceShellBody(): React.JSX.Element {
             expanded={drawerOpen}
             onOpen={openDrawer}
             openButtonRef={railButtonRef}
-            onOpenDocuments={workbench ? openDocuments : undefined}
+            onToggleLibrary={workbench ? toggleLibrary : undefined}
+            libraryExpanded={libraryOpen}
+            libraryControls={LIBRARY_PANEL_ID}
+            libraryButtonRef={railLibraryRef}
             inert={drawerOpen}
           />
         )}
@@ -319,6 +344,7 @@ function WorkspaceShellBody(): React.JSX.Element {
           )}
           <LeftNav
             onNavigate={hasDrawer ? closeDrawer : undefined}
+            onOpenLibrary={hasDrawer ? handOffToLibrary : undefined}
             settings={settingsInDrawer ? <NavSettings /> : undefined}
           />
         </div>
@@ -329,13 +355,18 @@ function WorkspaceShellBody(): React.JSX.Element {
           ref={mainRef}
           className="workspace-shell__main"
           tabIndex={-1}
-          inert={drawerOpen}
+          inert={drawerOpen || (layout === 'narrow' && libraryOpen)}
           data-canvas={shown || undefined}
         >
           <div className="workbench" data-canvas={shown || undefined} data-view={view}>
             {/* Concealed, never `hidden` or inert, while the canvas shows in a single column:
                 ChatPane's one status node must stay exposed (C-2). */}
-            <div ref={chatColumnRef} className="workbench__chat" data-concealed={!chatVisible || undefined}>
+            <div
+              ref={chatColumnRef}
+              className="workbench__chat"
+              data-concealed={!chatVisible || undefined}
+              onPointerDown={libraryOpen ? () => closeLibrary({ returnFocus: false }) : undefined}
+            >
               {chat}
             </div>
             {shown && (
@@ -345,6 +376,8 @@ function WorkspaceShellBody(): React.JSX.Element {
             )}
           </div>
         </main>
+
+        {libraryOpen && <CampaignLibraryPanel layout={layout} inert={drawerOpen} />}
       </div>
 
       {workbench && <WorkbenchAnnouncer />}
