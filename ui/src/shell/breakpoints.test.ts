@@ -111,6 +111,14 @@ describe('the shell stylesheets (T-BP-2, T-BP-3)', () => {
   })
 })
 
+describe('the canvas host stylesheet (C-16)', () => {
+  it('is written for the column it is in: no width media query at all', () => {
+    const css = stripComments(readFileSync(join(SRC_DIR, 'gm', 'CanvasHost.css'), 'utf8'))
+    expect(css.length).toBeGreaterThan(200)
+    expect(mediaConditions(css).filter((condition) => condition.includes('width'))).toEqual([])
+  })
+})
+
 describe('the stat block reflows inside a 320 px chat (T-BP-4, INF-15)', () => {
   it('lets the details grid track shrink below 250 px', () => {
     const css = stripComments(readFileSync(join(SRC_DIR, 'ds', 'StatBlockCard.css'), 'utf8'))

@@ -58,6 +58,17 @@
   text-overflow: ellipsis;
 }
 
+/* 1kg.6.3: the title is a programmatic focus target (tabIndex -1). A ring for a
+   keyboard user, none after a pointer. */
+.gm-canvas__title:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.gm-canvas__title:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
 .gm-canvas__meta {
   margin: 0;
   font-size: 11px;
