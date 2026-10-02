@@ -207,6 +207,49 @@ describe('focus never falls to <body> when the indicator goes away', () => {
   })
 })
 
+const statusText = (): string =>
+  [...document.querySelectorAll('[role="status"], [aria-live], [role="alert"]')].map((node) => node.textContent ?? '').join(' ')
+
+describe('every outcome is spoken in every channel, not only the GM channel (REVEAL-14, A-29)', () => {
+  const unreachable = (picture: unknown): Route => (call) =>
+    isStop(call) ? { status: 503, body: {} } : routeFor(picture)(call)
+
+  it.each(['sage', 'spell', 'rules'] as const)('%s: Stop all reaches a status node', async (mode) => {
+    const user = userEvent.setup()
+    await mountShell(1280, ONE, { mode })
+    await user.click(await screen.findByRole('button', { name: 'Stop all (1)' }))
+    await waitFor(() => expect(statusText()).toContain('Stopped showing everything'))
+  })
+
+  it.each(['sage', 'spell', 'rules'] as const)('%s: a row Stop reaches a status node', async (mode) => {
+    const user = userEvent.setup()
+    await mountShell(1280, TWO, { mode })
+    await waitFor(() => expect(live.reveals.titles.size).toBe(2))
+    await user.click(within(indicator()).getByRole('button', { name: /^Revealed/ }))
+    await user.click(within(indicator()).getByRole('button', { name: 'Stop showing Brannoch' }))
+    await waitFor(() => expect(statusText()).toContain('Stopped showing Brannoch'))
+  })
+
+  it.each(['sage', 'spell', 'rules'] as const)('%s: a Stop that cannot reach the server reaches a status node', async (mode) => {
+    const user = userEvent.setup()
+    await mountShell(1280, ONE, { mode, route: unreachable(ONE) })
+    await user.click(await screen.findByRole('button', { name: 'Stop all (1)' }))
+    await waitFor(() => expect(statusText()).toContain("Couldn't stop showing — retrying"))
+  })
+
+  it('a player has no reveal announcer', async () => {
+    widthStub = installMatchMediaWidth(1280)
+    const wrap = (children: React.ReactNode): React.JSX.Element => (
+      <ThemeProvider initialTheme="light">
+        <ConversationStoreProvider store={new MemoryConversationStore()}>{children}</ConversationStoreProvider>
+      </ThemeProvider>
+    )
+    await mountWorkbench(() => <WorkspaceShell />, { role: 'player', hash: '#campaign=cmp_A', stubGlobalFetch: true, mode: 'sage', wrap })
+    await waitFor(() => expect(live.reveals.status).toBe('idle'))
+    expect(document.querySelector('[data-reveal-announcer]')).toBeNull()
+  })
+})
+
 describe('a player never sees it', () => {
   it('renders no indicator and makes no reveal request for a player account', async () => {
     widthStub = installMatchMediaWidth(1280)

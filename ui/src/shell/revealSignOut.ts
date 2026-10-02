@@ -4,7 +4,7 @@
  * <title>`.
  *
  * Memory only. `RevealProvider` sets it from the titles it holds at the moment a request comes
- * back 401, and Login clears it on a successful sign-in. A title is GM-private text (X-7), so it
+ * back 401, and `signIn` (every path: Login, Signup) clears it on a successful sign-in. A title is GM-private text (X-7), so it
  * is shown on the GM's own sign-in page and never stored, sent or logged.
  */
 

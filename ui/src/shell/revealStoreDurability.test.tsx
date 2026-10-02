@@ -10,7 +10,7 @@ import { act, waitFor } from '@testing-library/react'
 import { notifyUnauthorized } from '../api'
 import { BRANN, liveFixture } from '../gm/revealFixtures'
 import {
-  campaignFixture, defaultWorkbenchRoute, flush, live, mountSelected, mountWorkbench, revealPicture, run,
+  campaignFixture, defaultWorkbenchRoute, flush, live, mountSelected, mountWorkbench, revealPicture, run, seatBody,
   type Call, type Reply, type Route,
 } from '../testing/workbenchHarness'
 import { revealSignOutNotice } from './revealSignOut'
@@ -301,5 +301,37 @@ describe('REVEAL-16: a 401 during a live reveal (the Login screen says what the 
     await waitFor(() => expect(live.reveals.status).toBe('none'))
     act(() => notifyUnauthorized())
     expect(revealSignOutNotice.text).toBeNull()
+  })
+})
+
+describe('REVEAL-16: the 401 notice names what is live now, not what was', () => {
+  beforeEach(() => revealSignOutNotice.clear())
+  afterEach(() => revealSignOutNotice.clear())
+
+  it('does not name a document that was stopped before the session was lost', async () => {
+    const both = revealPicture({
+      epoch: 3,
+      table: liveFixture(DOC, ['name']),
+      participants: { [BRANN.participant_id]: liveFixture(OTHER_DOC, ['name']) },
+    })
+    const onlyOther = revealPicture({ epoch: 4, participants: { [BRANN.participant_id]: liveFixture(OTHER_DOC, ['name']) } })
+    let stopped = false
+    const route: Route = (call) => {
+      if (isRevealGet(call)) return { status: 200, body: stopped ? onlyOther : both }
+      if (isStopPost(call)) {
+        stopped = true
+        return { status: 200, body: onlyOther }
+      }
+      if (call.method === 'GET' && /\/participants/.test(call.url)) return { status: 200, body: seatBody([BRANN]) }
+      return defaultWorkbenchRoute(call)
+    }
+    await mountSelected(() => <></>, { route })
+    await waitFor(() => expect(live.reveals.titles.size).toBe(2))
+    const otherTitle = live.reveals.titles.get(OTHER_DOC)
+    expect(otherTitle).toBeDefined()
+    act(() => live.reveals.stop(DOC, 'Ondrey'))
+    await waitFor(() => expect(live.reveals.announcement).toBe('Stopped showing Ondrey'))
+    act(() => notifyUnauthorized())
+    expect(revealSignOutNotice.text).toBe(`The table can still see ${otherTitle}`)
   })
 })

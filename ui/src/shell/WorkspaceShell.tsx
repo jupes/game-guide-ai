@@ -71,7 +71,7 @@ import { ModelCatalogProvider } from './ModelCatalogContext'
 import { NavRail } from './NavRail'
 import { NavSettings } from './NavSettings'
 import { RevealAnnouncer } from './RevealAnnouncer'
-import { RevealProvider, useRevealSheetOpen } from './revealContext'
+import { RevealProvider, useRevealSheetOpen, useReveals } from './revealContext'
 import { TableSessionProvider } from './tableSession'
 import { TopBar, type TopBarNavToggle } from './TopBar'
 import { WorkbenchAnnouncer } from './WorkbenchAnnouncer'
@@ -130,6 +130,7 @@ interface WorkspaceShellBodyProps {
 function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps): React.JSX.Element {
   const layout = useShellLayout()
   const workbench = useWorkbenchActive()
+  const reveals = useReveals()
   const { doc, view, guardDialog } = useCanvasState()
   const { setView, titleRef, chatRegionRef, setDrawerOpener } = useCanvasActions()
   const library = useLibraryPanel()
@@ -402,7 +403,7 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
       </div>
 
       {workbench && <WorkbenchAnnouncer />}
-      {workbench && <RevealAnnouncer />}
+      {reveals.status !== 'idle' && <RevealAnnouncer />}
       {workbench && <RevealSheetHost />}
       <LossGuardHost />
     </div>

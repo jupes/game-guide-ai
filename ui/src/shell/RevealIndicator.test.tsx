@@ -124,6 +124,20 @@ describe('Stop (X-3): always separate, never confirmed by a dialog', () => {
     expect(live.reveals.sheet).toBeNull()
   })
 
+  it('a row Stop keeps focus on the list toggle, since the pressed row goes when the Stop lands', async () => {
+    const afterStop = revealPicture({ epoch: 4, table: liveFixture(DOC, ['name', 'voice']) })
+    await mountSelected(() => <RevealIndicator />, { route: withPicture(two, { status: 200, body: afterStop }) })
+    await waitFor(() => expect(live.reveals.titles.size).toBe(2))
+    const user = userEvent.setup()
+    const toggle = within(indicator()).getByRole('button', { name: /^Revealed/ })
+    await user.click(toggle)
+    const stop = within(indicator()).getByRole('button', { name: 'Stop showing Brannoch' })
+    stop.focus()
+    await user.click(stop)
+    await waitFor(() => expect(live.reveals.announcement).toBe('Stopped showing Brannoch'))
+    expect(toggle).toHaveFocus()
+  })
+
   it("REVEAL-16: a Stop that cannot reach the server says it is retrying, and the table may still see it", async () => {
     await mountSelected(() => <RevealIndicator />, { route: withPicture(one, { status: 503, body: {} }) })
     await waitFor(() => expect(live.reveals.titles.size).toBe(1))
