@@ -45,6 +45,7 @@
     "RevealStopRequest",
     "RevealLive",
     "RevealState",
+    "RevealAnswer",
     "TableProjection",
     "GmEvent",
     "TableEvent",

@@ -1782,6 +1782,8 @@ export const RevealAudienceSchema = refusingProtoKeys(
         .max(PRESENCE_MAX_PARTICIPANTS)
         .refine((ids) => new Set(ids).size === ids.length, { message: 'a recipient list names each participant once' }),
     }),
+    // TA-5, threat model 15.11: the server expands it to the accepted, GM-confirmed seats; no list travels.
+    z.strictObject({ kind: z.literal('everyone_seated') }),
   ]),
 )
 export type RevealAudience = z.infer<typeof RevealAudienceSchema>
@@ -2079,6 +2081,14 @@ export const RevealStateSchema = z
     { path: ['slots'], message: 'a document has at most one live disclosure, and a disclosure is the table or its participant copies' },
   )
 export type RevealState = z.infer<typeof RevealStateSchema>
+
+/** The GM's reveal picture as a top-level answer: the read, a Confirm and a Stop (1kg.7.2).
+ * `state` is null only when the campaign has no live session. */
+export const RevealAnswerSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  state: RevealStateSchema.nullable(),
+})
+export type RevealAnswer = z.infer<typeof RevealAnswerSchema>
 
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
@@ -2842,6 +2852,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   RevealStopRequest: RevealStopRequestSchema,
   RevealLive: RevealLiveSchema,
   RevealState: RevealStateSchema,
+  RevealAnswer: RevealAnswerSchema,
   TableProjection: TableProjectionSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,

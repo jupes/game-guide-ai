@@ -25,6 +25,7 @@ pinned by `service/tests/test_ci_workflow.py`). From the repo root:
 from __future__ import annotations
 
 import logging
+import random
 import secrets
 import threading
 import time
@@ -58,6 +59,7 @@ from service.eligibility_store import InMemoryEligibilityStore, PostgresEligibil
 from service.history import InMemoryMessageStore
 from service.jobs import InMemoryJobQueue, PostgresJobQueue
 from service.participant_store import InMemoryParticipantStore, PostgresParticipantStore
+from service.policy import EligReason, PolicyFacts, eligible_for_audience
 from service.reconciliation import enqueue_reconciliation, reconcile
 from service.reveal_scope import (
     DocumentCopies,
@@ -111,6 +113,8 @@ from service.table_sessions import TableSessions
 from service.workbench_contracts import Author, DocumentTypeId
 
 QUICK = CampaignLockSettings(lock_timeout_s=1, transaction_timeout_s=5)
+#: How long the gate lets a caller wait for a connection (RC-9 compares it with the lock bound).
+GATE_ACQUIRE_S = 5
 #: How long a test waits for another thread before calling it a hang.
 PATIENCE = 15
 AN_NPC = {"name": "Vashti", "qualifier": "Harbourmistress", "tags": ["harbour"], "voice": "low"}
@@ -128,7 +132,7 @@ def dsn() -> Iterator[str]:
 
 
 def _database(target: str) -> Database:
-    return Database(target, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=5), QUICK)
+    return Database(target, PoolSettings(sync_max=4, async_max=0, acquire_timeout_s=GATE_ACQUIRE_S), QUICK)
 
 
 @dataclass
@@ -2976,3 +2980,137 @@ def test_an_archive_waits_for_a_confirm_and_then_clears_it(pgs: Served) -> None:
     with pytest.raises(RevealConflict):
         _confirm(s, campaign, session.id, y, epoch=composed)
 
+
+
+# ── 1kg.7.2: the GM's read, in both worlds ───────────────────────────────────
+
+
+def _edit(w: World, campaign: str, document: str, fields: dict[str, Any]) -> None:
+    with w.db.transaction() as unit:
+        w.documents.write_fields(
+            unit, campaign, document, fields=fields, author=Author.GM, base_write_revision=None
+        )
+
+
+def test_d1_the_read_reports_stale_text_by_comparing_the_masked_text(served: Served) -> None:
+    """ID-5, REVEAL-8, in both worlds (the route's A10 at the service level).
+    `stale` is the set of live documents whose masked keys differ between the
+    pinned version and the document's current data, sealed head or not; an
+    unmasked change, a revert and a missing campaign are not stale."""
+    # kills: reading the version table instead of the current data; comparing every key
+    s, w = served, served.w
+    campaign, session, _ = _stage(w, seats=0)
+    document = _document(w, campaign)
+    now = _now()
+    with pytest.raises(RevealNotFound):
+        s.reveals.view(campaign, owner_id=w.other_owner, now=now)
+    shown = _confirm(s, campaign, session.id, document, mask=("name",))
+    assert s.reveals.stale_documents(campaign, shown.picture) == frozenset()
+
+    def stale() -> frozenset[str]:
+        view = s.reveals.view(campaign, owner_id=w.owner, now=_now())
+        assert view is not None and view.picture.session_id == session.id
+        return view.stale
+
+    assert stale() == frozenset()
+    _edit(w, campaign, document, {"voice": "an unmasked change"})
+    assert stale() == frozenset(), "REVEAL-8: only the masked keys are the table's text"
+    _edit(w, campaign, document, {"name": "Someone else"})
+    assert stale() == frozenset({document})
+    assert s.reveals.stale_documents(campaign, shown.picture) == frozenset({document})
+    with w.db.transaction() as unit:
+        w.documents.seal(unit, campaign, document)
+    assert stale() == frozenset({document}), "stale whether or not the head version is sealed"
+    _edit(w, campaign, document, {"name": AN_NPC["name"]})
+    assert stale() == frozenset(), "reverting the text clears it"
+    assert s.reveals.stale_documents(_campaign(w), shown.picture) == frozenset(), "not found is not stale"
+
+    s.lifecycle.end(w.owner, campaign, session.id)
+    assert s.reveals.view(campaign, owner_id=w.owner, now=_now()) is None, "no live session, no picture"
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_s3_the_policy_decision_point_agrees_on_who_is_an_active_participant(served: Served, seed: int) -> None:
+    """ID-14, Critic C-8. The decision point is an oracle here and not a
+    production import: for a generated mix of seats the Confirm names one at a
+    time, a participant audience is accepted exactly when
+    `eligible_for_audience` does not answer `inactive_participant`. The facts
+    come from the generator's own labels (which seats it removed, which it put
+    in another campaign), never from a store read, so the test cannot agree with
+    the code by asking it."""
+    # kills: accepting a removed seat in `active_participants`
+    s, w = served, served.w
+    rng = random.Random(seed)
+    campaign, session, _ = _stage(w, seats=0)
+    document = _document(w, campaign)
+    elsewhere = _campaign(w)
+    extra = rng.choices(["open", "confirmed", "removed"], k=1)
+    states = ["open", "offered", "accepted", "confirmed", "removed", *extra]
+    rng.shuffle(states)
+    labelled = {_seat(w, campaign, state, w.players[n]): state for n, state in enumerate(states)}
+    labelled[_seat(w, campaign, "confirmed", w.players[6])] = "confirmed"
+    labelled[_seat(w, elsewhere, "confirmed", w.players[7])] = "foreign"
+    labelled["prt_" + "u" * 22] = "unknown"
+    labelled["nope"] = "unknown"
+
+    facts = PolicyFacts(
+        campaign_id=campaign,
+        documents={},
+        classes={},
+        sheet_links={},
+        active_participants=frozenset(
+            pid for pid, label in labelled.items() if label not in {"removed", "foreign", "unknown"}
+        ),
+        group_members={},
+    )
+    assert {label for label in labelled.values()} >= {"removed", "foreign", "unknown", "confirmed", "open"}
+    for participant, label in labelled.items():
+        try:
+            _confirm(s, campaign, session.id, document, ParticipantsAudience(frozenset({participant})))
+            accepted = True
+        except AudienceRefused:
+            accepted = False
+        verdict = eligible_for_audience(facts, document, "name", participant)
+        assert accepted == (verdict.reason is not EligReason.INACTIVE_PARTICIPANT), label
+
+
+# ── 1kg.7.2: RC-9, a Stop is answered while every gate slot waits ────────────
+
+
+@needs_db
+def test_rc9_a_stop_is_answered_while_four_confirms_wait_on_the_campaign_lock(pgs: Served) -> None:
+    """RC-9 (RQ-6(b), X-3). The gate holds four connections and every one is a
+    Confirm waiting for the campaign lock, which a connection outside the gate
+    holds exclusively. Each Confirm ends `RevealBusy` at the lock bound, and the
+    Stop that needed a slot gets one *by that bound* and then completes, because
+    it never asks for the campaign lock: it returns a picture inside the lock
+    bound plus a margin, and well inside the gate's own wait."""
+    # kills: a Stop that takes the shared campaign lock, so it waits behind the holder past the bound
+    s, w = pgs, pgs.w
+    assert QUICK.lock_timeout_s + 1.5 < GATE_ACQUIRE_S, "the bound is not vacuous: the gate would time out later"
+    campaign, session, _ = _stage(w, seats=0)
+    documents = [_document(w, campaign) for _ in range(5)]
+    _confirm(s, campaign, session.id, documents[0])
+    epoch = _epoch(w, session.id)
+    assert w.dsn is not None
+    held = "SELECT 1 FROM campaign.authz_state WHERE campaign_id = %s FOR UPDATE"
+    with _holding(w.dsn, held, (campaign,)):
+        confirms = [
+            _in_background(lambda d=document: _confirm(s, campaign, session.id, d, epoch=epoch))
+            for document in documents[1:]
+        ]
+        deadline = time.monotonic() + PATIENCE
+        while _waiters(w.dsn) < len(confirms) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert _waiters(w.dsn) == len(confirms), "all four gate slots wait on the campaign lock"
+        started = time.monotonic()
+        picture = _stop(s, campaign, StopAll())
+        elapsed = time.monotonic() - started
+    for thread, outcome in confirms:
+        thread.join(PATIENCE)
+        assert len(outcome) == 1 and isinstance(outcome[0], RevealBusy), outcome
+    assert picture is not None
+    assert elapsed < QUICK.lock_timeout_s + 1.5 and elapsed < GATE_ACQUIRE_S
+    assert elapsed > QUICK.lock_timeout_s * 0.5, "the Stop's slot was one a Confirm freed by its RevealBusy"
+    assert _live(w, session.id) == [] and _epoch(w, session.id) == epoch + 1
+    assert _shown(w, session.id) == {None: None}, "the table shows nothing, and the Stop's one epoch advance is all"

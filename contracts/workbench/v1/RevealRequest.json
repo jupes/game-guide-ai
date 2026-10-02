@@ -64,6 +64,23 @@
       }
     },
     {
+      "name": "reveal one field to everyone seated",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f93",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 2,
+        "version": 1,
+        "mask": [
+          "notes"
+        ],
+        "audience": {
+          "kind": "everyone_seated"
+        }
+      }
+    },
+    {
       "name": "a mask at the bound",
       "value": {
         "schema_version": 1,
@@ -265,6 +282,45 @@
         ],
         "audience": {
           "kind": "table"
+        }
+      }
+    },
+    {
+      "name": "everyone seated with a recipient list",
+      "why": "TA-5, threat model 15.11: everyone seated carries no recipient list; the server expands it from the confirmed seats it holds",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "audience": {
+          "kind": "everyone_seated",
+          "participant_ids": [
+            "pt_4c1b9e7a"
+          ]
+        }
+      }
+    },
+    {
+      "name": "an audience kind this contract does not define",
+      "why": "closed vocabulary: the only everyone is everyone_seated",
+      "value": {
+        "schema_version": 1,
+        "command_id": "cmd_2f3a4b5c6d7e8f90",
+        "document_id": "doc_9k2f7a1c",
+        "session_id": "ses_7d3e1f0a",
+        "reveal_epoch": 4,
+        "version": 3,
+        "mask": [
+          "name"
+        ],
+        "audience": {
+          "kind": "everyone"
         }
       }
     },
