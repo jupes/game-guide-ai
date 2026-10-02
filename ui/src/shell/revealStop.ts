@@ -13,8 +13,9 @@
  * at once (the GM never waits on a backoff). A job ends only on a terminal answer
  * (`ok`, `gone`, `invalid`, `unauthorized`) or an account change (`retain`), never on
  * a scope change: a GM who presses Stop and then switches campaign must not leave the
- * table showing it. Nothing here touches web storage; durability across a reload is
- * REVEAL-16's, and PR-2's.
+ * table showing it. Nothing here touches web storage: durability across a reload is
+ * REVEAL-16's opaque marker (`revealStopMarker.ts`), written and replayed by `RevealProvider`,
+ * which hands a marker's command id back to `send` so a replay is a replay.
  */
 
 import { Emitter, MAX_TIMER_MS, mintCommandId } from './tableSessionApi'
@@ -76,11 +77,23 @@ export class StopCourier extends Emitter {
     return [...this.jobs.values()].some((job) => job.campaignId === campaignId && job.failures > 0)
   }
 
+  /** Whether any campaign has a Stop the server has not acknowledged: the unload guard asks. */
+  anyPending(): boolean {
+    return this.jobs.size > 0
+  }
+
+  /** The command id of the job for this document, or `null` when none is pending (the marker records it). */
+  commandIdOf(campaignId: string, documentId: string): string | null {
+    return this.jobs.get(jobKey(campaignId, documentId))?.commandId ?? null
+  }
+
+  /** `commandId` is a marker's, replayed after a reload; a job already pending keeps the id it has. */
   send(
     campaignId: string,
     documentId: string,
     fetchImpl: typeof fetch = fetch,
     account: string | null = null,
+    commandId: string = mintCommandId(),
   ): Promise<StopOutcome> {
     this.retain(account)
     const key = jobKey(campaignId, documentId)
@@ -96,7 +109,7 @@ export class StopCourier extends Emitter {
       campaignId,
       documentId,
       key,
-      commandId: mintCommandId(),
+      commandId,
       fetchImpl,
       done,
       settle,

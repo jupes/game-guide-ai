@@ -2,9 +2,16 @@
  * RevealSheetHost (agent-forge-harness-1kg.7.3, brief 3 and 6, and the Critic's items
  * 4, 5, 6, 7, 8, 9, 10, 13 and 14) -- loads what the sheet needs and wires it to the store.
  *
- * Rendered once, at the shell root. It shows the sheet only while the reveal store's `sheet`
- * names the document the canvas has open (`useRevealSheetOpen`), and closes a sheet that has
- * been left over from a document that changed or closed.
+ * Rendered once, at the shell root. It shows the sheet only while `useRevealSheetOpen` holds: the
+ * canvas document that was open when the sheet opened is still the open one. The sheet is for the
+ * canvas document or, from the workspace indicator (REVEAL-14), for another live document, read by
+ * its own id, without swapping the canvas. A sheet left over from a document that changed or
+ * closed is closed.
+ *
+ * REVEAL-8 (PR-2): on a live document whose revealed text moved on, the GM may choose Use latest
+ * version. That seals the working text and shows every ticked field with the table's text beside the
+ * latest; Confirm then pins the version displayed. Nothing is chosen for the GM, and a re-read of the
+ * pin (a 409, a refused version) resets the choice.
  *
  * Preparing: a hidden document is SEALED, and its answer's `data` and version number are the
  * preview source and the Confirm's version (CANVAS-34). A live document is not sealed: its
@@ -25,17 +32,12 @@
 import * as React from 'react'
 import { useCanvasActions, useCanvasState } from '../shell/canvasContext'
 import { listCampaignSeats } from '../shell/campaignApi'
+import { useCampaign } from '../shell/campaignContext'
 import { useReveals, useRevealSheetOpen } from '../shell/revealContext'
 import { mintCommandId } from '../shell/tableSessionApi'
 import { useTableSession } from '../shell/tableSession'
 import type { CharacterSheetLink, Document, RevealRequest, Seat } from './contracts'
-import {
-  getCharacterSheetLink,
-  getDocumentVersion,
-  sealDocument,
-  type DocumentReadResult,
-  type VersionReadResult,
-} from './documentApi'
+import { getCharacterSheetLink, getDocument, getDocumentVersion, sealDocument } from './documentApi'
 import { documentTitle } from './documentTitle'
 import { documentTypeById, seedsOwnerDefault, type DocumentType } from './registry'
 import { REVEAL_COPY } from './revealCopy'
@@ -51,65 +53,19 @@ import {
   selectableSeats,
   type DraftAudience,
   type LiveDocument,
+  type RevealRow,
 } from './revealFields'
-import { RevealSheet, type RevealSheetPhase } from './RevealSheet'
+import { snapshotOfDocument, snapshotOfVersion, snapshotUsable, type Snapshot } from './revealSnapshot'
+import { RevealSheet, type LatestReviewRow, type RevealSheetLatest, type RevealSheetPhase } from './RevealSheet'
 import { returnFocus } from './returnFocus'
 
 const NBSP = ' '
 
 // ── Preparation ──────────────────────────────────────────────────────────────
 
-/** The one object the preview text and the Confirm's version both come from (Critic 8). */
-interface Snapshot {
-  readonly type: string
-  readonly typeVersion: number
-  readonly data: Readonly<Record<string, unknown>>
-  readonly version: number
-  readonly sealed: boolean
-  readonly archived: boolean
-}
-
 type Prepared =
   | { readonly status: 'ready'; readonly snapshot: Snapshot; readonly type: DocumentType; readonly link: CharacterSheetLink | null }
   | { readonly status: 'seal_failed' | 'refused' | 'unavailable' | 'signed_out' }
-
-type SnapshotRead =
-  | { readonly kind: 'ok'; readonly snapshot: Snapshot }
-  | { readonly kind: 'refused' | 'unavailable' | 'failed' | 'unauthorized' }
-
-function snapshotOfDocument(result: DocumentReadResult): SnapshotRead {
-  if (result.kind === 'unsupported') return { kind: 'refused' }
-  if (result.kind !== 'ok') return { kind: result.kind }
-  const { document } = result
-  return {
-    kind: 'ok',
-    snapshot: {
-      type: document.type,
-      typeVersion: document.type_version,
-      data: document.data,
-      version: document.version.number,
-      sealed: document.version.sealed,
-      archived: document.archived,
-    },
-  }
-}
-
-function snapshotOfVersion(result: VersionReadResult): SnapshotRead {
-  if (result.kind === 'unsupported') return { kind: 'refused' }
-  if (result.kind !== 'ok') return { kind: result.kind }
-  const { snapshot } = result
-  return {
-    kind: 'ok',
-    snapshot: {
-      type: snapshot.type,
-      typeVersion: snapshot.type_version,
-      data: snapshot.data,
-      version: snapshot.version.number,
-      sealed: snapshot.version.sealed,
-      archived: false,
-    },
-  }
-}
 
 interface PrepareArgs {
   readonly campaignId: string
@@ -135,15 +91,7 @@ async function prepareSheet({ campaignId, documentId, live, needsLink, fetchImpl
   const { snapshot } = read
   const type = documentTypeById(snapshot.type)
   // Critic 10: a type this bundle does not know exactly is a guess at an allowlist, so no rows and no Confirm.
-  if (
-    type === undefined ||
-    snapshot.typeVersion !== type.type_version ||
-    (live !== null && live.type !== snapshot.type) ||
-    !snapshot.sealed ||
-    snapshot.archived
-  ) {
-    return { status: 'refused' }
-  }
+  if (!snapshotUsable(snapshot, type, live)) return { status: 'refused' }
   return { status: 'ready', snapshot, type, link: link !== null && link.kind === 'ok' ? link.link : null }
 }
 
@@ -158,6 +106,7 @@ export function RevealSheetHost({ fetchImpl }: RevealSheetHostProps): React.JSX.
   const reveals = useReveals()
   const open = useRevealSheetOpen()
   const { doc } = useCanvasState()
+  const campaignId = useCampaign().scope?.campaignId ?? null
   const { closeSheet } = reveals
   // Critic 14: a sheet left over from a document that changed or closed, or a Workbench that went
   // inactive, is closed. `useRevealSheetOpen` is false for it, so the shell is never inert for it.
@@ -165,8 +114,97 @@ export function RevealSheetHost({ fetchImpl }: RevealSheetHostProps): React.JSX.
   React.useLayoutEffect(() => {
     if (stale) closeSheet()
   }, [stale, closeSheet])
-  if (!open || doc.kind !== 'open') return null
-  return <OpenSheet key={doc.document.document_id} document={doc.document} fetchImpl={fetchImpl ?? fetch} />
+  if (!open || reveals.sheet === null) return null
+  const { documentId } = reveals.sheet
+  // The canvas document's sheet works from the document the canvas already holds.
+  if (doc.kind === 'open' && doc.document.document_id === documentId) {
+    return <OpenSheet key={documentId} document={doc.document} fetchImpl={fetchImpl ?? fetch} />
+  }
+  // REVEAL-14: the workspace indicator opens another live document's sheet without swapping the canvas.
+  if (campaignId === null) return null
+  return <OtherDocumentSheet key={documentId} campaignId={campaignId} documentId={documentId} fetchImpl={fetchImpl ?? fetch} />
+}
+
+type OtherRead = { readonly status: 'loading' | 'unavailable' } | { readonly status: 'ok'; readonly document: Document }
+
+const NO_ROWS: readonly RevealRow[] = []
+const NO_KEYS: ReadonlySet<string> = new Set()
+const noop = (): void => undefined
+
+/**
+ * A sheet for a document the canvas does not show (REVEAL-14): the document is read by its own id, then the
+ * same `OpenSheet` takes over. Until then, and when it cannot be read, the sheet is a dialog with only Cancel,
+ * so the shell is never inert behind nothing.
+ */
+function OtherDocumentSheet({
+  campaignId,
+  documentId,
+  fetchImpl,
+}: {
+  readonly campaignId: string
+  readonly documentId: string
+  readonly fetchImpl: typeof fetch
+}): React.JSX.Element {
+  const reveals = useReveals()
+  const { titleRef } = useCanvasActions()
+  const [read, setRead] = React.useState<OtherRead>({ status: 'loading' })
+  const closing = React.useRef(false)
+  React.useEffect(() => {
+    let stale = false
+    void getDocument(campaignId, documentId, fetchImpl).then((result) => {
+      if (stale) return
+      if (result.kind === 'ok') setRead({ status: 'ok', document: result.document })
+      else if (result.kind !== 'unauthorized') setRead({ status: 'unavailable' })
+    })
+    return () => {
+      stale = true
+    }
+  }, [campaignId, documentId, fetchImpl])
+  if (read.status === 'ok') return <OpenSheet document={read.document} fetchImpl={fetchImpl} />
+  return (
+    <RevealSheet
+      title={reveals.titles.get(documentId) ?? REVEAL_COPY.aDocument}
+      phase={read.status === 'loading' ? 'preparing' : 'unavailable'}
+      statusLine=""
+      liveMessage=""
+      start={{ pending: false, notice: null, retry: false }}
+      rows={NO_ROWS}
+      draft={NO_KEYS}
+      audience={{ kind: 'table' }}
+      seats={{ status: 'loading', items: [] }}
+      effect={{ kind: 'none', label: REVEAL_COPY.effectNone, notices: [] }}
+      live={false}
+      partialAudience={false}
+      latest={{ status: 'none' }}
+      emptyDocument={false}
+      conflict={false}
+      error={null}
+      tryAgain={false}
+      stopWaiting={false}
+      confirming={false}
+      onStart={noop}
+      onToggleRow={noop}
+      onChooseTable={noop}
+      onChoosePlayers={noop}
+      onToggleSeat={noop}
+      onRetrySeats={noop}
+      onRetryPrepare={noop}
+      onConfirm={noop}
+      onStop={noop}
+      onUseLatest={noop}
+      onKeepPinned={noop}
+      onCancel={() => {
+        closing.current = true
+        reveals.closeSheet()
+      }}
+      // Only a real close returns focus: the swap to the loaded sheet must not.
+      restoreFocus={() => {
+        if (!closing.current) return
+        const opener = reveals.openerRef.current
+        returnFocus(opener instanceof HTMLElement ? opener : null, titleRef.current)
+      }}
+    />
+  )
 }
 
 interface SeatState {
@@ -177,6 +215,18 @@ interface SeatState {
 interface Choice {
   readonly audience: DraftAudience
   readonly draft: ReadonlySet<string>
+}
+
+/** REVEAL-8: the GM chose to review the latest text of a live document whose revealed text moved on. */
+type Latest = { readonly status: 'idle' | 'loading' | 'failed' } | { readonly status: 'ready'; readonly snapshot: Snapshot }
+
+/** The ticked fields, each with the text the table has beside the latest. Plain strings, rendered as text. */
+function reviewRows(mask: readonly string[], pinned: readonly RevealRow[], latest: readonly RevealRow[]): LatestReviewRow[] {
+  const entry = (rows: readonly RevealRow[], key: string) => rows.flatMap((row) => row.preview).find((item) => item.key === key)
+  return mask.flatMap((key) => {
+    const next = entry(latest, key)
+    return next === undefined ? [] : [{ key, label: next.label, oldText: entry(pinned, key)?.text ?? '', newText: next.text }]
+  })
 }
 
 interface OpenSheetProps {
@@ -216,8 +266,10 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
   const [error, setError] = React.useState<string | null>(null)
   const [tryAgain, setTryAgain] = React.useState(false)
   const [confirming, setConfirming] = React.useState(false)
+  const [latest, setLatest] = React.useState<Latest>({ status: 'idle' })
   const [startNotice, setStartNotice] = React.useState<{ text: string; retry: boolean } | null>(null)
   const commandRef = React.useRef<string | null>(null)
+  const requestKeyRef = React.useRef('')
   const mountedRef = React.useRef(true)
   React.useEffect(() => {
     mountedRef.current = true
@@ -277,7 +329,11 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
   if (preparedFor !== requestKey) {
     setPreparedFor(requestKey)
     setPrepared(null)
+    setLatest({ status: 'idle' })
   }
+  React.useLayoutEffect(() => {
+    requestKeyRef.current = requestKey
+  })
   const liveVersion = live === null ? null : live.version
   const liveType = live === null ? null : live.type
   React.useEffect(() => {
@@ -292,9 +348,13 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
     }
   }, [readyForPrep, generation, liveVersion, liveType, campaignId, documentId, needsLink, fetchImpl])
 
+  // The one snapshot the preview and the Confirm's version come from: the pinned one, or the latest the GM chose to review (REVEAL-8).
+  const usingLatest = latest.status === 'ready' && live !== null && live.staleText
+  const source: Snapshot | null =
+    prepared?.status === 'ready' ? (usingLatest && latest.status === 'ready' ? latest.snapshot : prepared.snapshot) : null
   const rows = React.useMemo(
-    () => (prepared?.status === 'ready' ? revealRows(prepared.type, prepared.snapshot.data) : []),
-    [prepared],
+    () => (prepared?.status === 'ready' && source !== null ? revealRows(prepared.type, source.data) : []),
+    [prepared, source],
   )
   const offered = React.useMemo(() => selectableSeats(seats.items), [seats.items])
   const seatsSettled = seats.status !== 'loading'
@@ -316,7 +376,21 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
   }, [choice, offered, seats.status])
   const mask = prepared?.status === 'ready' && choice !== null ? maskFromDraft(prepared.type, rows, choice.draft) : []
   const draft: ReadonlySet<string> = new Set(mask)
-  const effect = revealEffect({ picture, documentId, audience, mask, seats: seats.items })
+  const effect = revealEffect({
+    picture,
+    documentId,
+    audience,
+    mask,
+    seats: seats.items,
+    versionChanged: usingLatest && live !== null && source !== null && source.version !== live.version,
+  })
+  const pinnedRows = prepared?.status === 'ready' && usingLatest ? revealRows(prepared.type, prepared.snapshot.data) : []
+  const latestProp: RevealSheetLatest =
+    prepared?.status !== 'ready' || live === null || !live.staleText
+      ? { status: 'none' }
+      : usingLatest
+        ? { status: 'review', rows: reviewRows(mask, pinnedRows, rows) }
+        : { status: latest.status === 'failed' || latest.status === 'loading' ? latest.status : 'offer' }
   const summary = prepared?.status === 'ready' ? revealSummary(picture, documentId, prepared.type, seats.items) : null
   const partial =
     live !== null && live.audience.kind === 'participants' && seats.status === 'ready' && live.audience.ids.some((id) => !offered.some((seat) => seat.participant_id === id))
@@ -324,8 +398,16 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
     resetLine ?? (summary === null ? REVEAL_COPY.statusHidden : REVEAL_COPY.statusLive(summary.fields, summary.audience))
 
   // ── Choices ──
+  // F-7: a failure belongs to the choice that failed. Any edit is a different intent, so it drops the failure's line and its
+  // Try again label, and the next press mints a new command id (Try again with the SAME choice still reuses it).
+  const edited = (): void => {
+    commandRef.current = null
+    setError(null)
+    setTryAgain(false)
+  }
   const reseed = (next: DraftAudience): void => {
     if (prepared?.status !== 'ready') return
+    edited()
     setChoice({ audience: next, draft: seedDraft(prepared.type, rows, next, live, prepared.link, seats.items) })
     setConflict(false)
     if (next.kind === 'table' || next.ids.length > 0) {
@@ -337,6 +419,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
   const chooseTable = (): void => reseed({ kind: 'table' })
   const choosePlayers = (): void => {
     // Choosing Chosen players empties the draft (Critic 7); the first seat ticked seeds it.
+    edited()
     setChoice({ audience: { kind: 'participants', ids: [] }, draft: new Set() })
     setResetLine(null)
   }
@@ -344,6 +427,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
     const current = audience.kind === 'participants' ? audience.ids : []
     const ids = on ? [...current.filter((id) => id !== participantId), participantId] : current.filter((id) => id !== participantId)
     if (ids.length === 0) {
+      edited()
       setChoice({ audience: { kind: 'participants', ids: [] }, draft: new Set() })
       setResetLine(null)
     } else {
@@ -352,6 +436,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
   }
   const toggleRow = (row: { keys: readonly string[] }, on: boolean): void => {
     if (choice === null) return
+    edited()
     const next = new Set(choice.draft)
     for (const key of row.keys) {
       if (on) next.add(key)
@@ -372,6 +457,27 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
     reveals.closeSheet()
   }
 
+  // ── REVEAL-8: Use latest version ──
+  const loadLatestVersion = async (): Promise<void> => {
+    if (prepared?.status !== 'ready' || latest.status === 'loading' || confirming) return
+    const startedAt = requestKeyRef.current
+    edited()
+    setLatest({ status: 'loading' })
+    const read = snapshotOfDocument(await sealDocument(campaignId, documentId, fetchImpl))
+    // The pin moved, or the sheet went away, while this was in flight: it answers for a preparation that is gone.
+    if (!mountedRef.current || requestKeyRef.current !== startedAt) return
+    if (read.kind === 'unauthorized') {
+      setLatest({ status: 'idle' })
+      return
+    }
+    const usable = read.kind === 'ok' && snapshotUsable(read.snapshot, documentTypeById(read.snapshot.type), live)
+    setLatest(read.kind === 'ok' && usable ? { status: 'ready', snapshot: read.snapshot } : { status: 'failed' })
+  }
+  const keepPinned = (): void => {
+    edited()
+    setLatest({ status: 'idle' })
+  }
+
   // ── Confirm ──
   const rePrepare = (): void => {
     setGeneration((value) => value + 1)
@@ -386,7 +492,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
     rePrepare()
   }
   const confirm = async (): Promise<void> => {
-    if (confirming || prepared?.status !== 'ready' || picture === null || effect.kind === 'none' || effect.kind === 'stop') return
+    if (confirming || prepared?.status !== 'ready' || source === null || picture === null || effect.kind === 'none' || effect.kind === 'stop') return
     const wire: RevealRequest['audience'] =
       audience.kind === 'table' ? { kind: 'table' } : { kind: 'participants', participant_ids: [...audience.ids] }
     const kind = effect.kind
@@ -400,7 +506,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
         document_id: documentId,
         session_id: picture.session_id,
         reveal_epoch: picture.reveal_epoch,
-        version: prepared.snapshot.version,
+        version: source.version,
         mask,
         audience: wire,
       },
@@ -492,7 +598,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
       effect={effect}
       live={live !== null}
       partialAudience={partial}
-      staleNote={live?.staleText === true}
+      latest={latestProp}
       emptyDocument={prepared?.status === 'ready' && !rows.some((row) => row.selectable)}
       conflict={conflict}
       error={error}
@@ -509,6 +615,8 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
       onConfirm={() => void confirm()}
       onCancel={cancel}
       onStop={stop}
+      onUseLatest={() => void loadLatestVersion()}
+      onKeepPinned={keepPinned}
       restoreFocus={restoreFocus}
     />
   )

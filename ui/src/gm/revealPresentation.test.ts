@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import { documentTypeById, type DocumentType } from './registry'
 import { ANA, BRANN, COLE, liveFixture, pictureFixture } from './revealFixtures'
-import { revealPresentation, type RevealInputs } from './revealPresentation'
+import { revealPresentation, revealProjections, projectionSummary, type RevealInputs } from './revealPresentation'
 
 const NPC = documentTypeById('npc') as DocumentType
 const seats = [BRANN, ANA, COLE]
@@ -148,5 +148,62 @@ describe('a Stop that is not acknowledged (test 32, REVEAL-16, REVEAL-22)', () =
 
   it('another document being stopped does not withdraw this one', () => {
     expect(present({ status: 'live', state, stopping: new Set(['doc_other']) }).canOpen).toBe(true)
+  })
+})
+
+describe('revealProjections: what the workspace indicator lists (PR-2, REVEAL-14)', () => {
+  const titles = new Map([['doc_a', 'Ondrey'], ['doc_b', 'Mira']])
+
+  it('is empty for no picture and for a picture with nothing live', () => {
+    expect(revealProjections(null, titles, seats)).toEqual([])
+    expect(revealProjections(pictureFixture({}), titles, seats)).toEqual([])
+  })
+
+  it('lists each live document once, in slot order, with its title and who sees it', () => {
+    const picture = pictureFixture({
+      table: liveFixture('doc_a', ['name']),
+      participants: { [BRANN.participant_id]: liveFixture('doc_b', ['name']), [ANA.participant_id]: null },
+    })
+    expect(revealProjections(picture, titles, seats)).toEqual([
+      { documentId: 'doc_a', title: 'Ondrey', who: 'table', staleText: false, waiting: false },
+      { documentId: 'doc_b', title: 'Mira', who: 'Brann', staleText: false, waiting: false },
+    ])
+  })
+
+  it('a document live to two seats is one entry that names both, and past two it counts them', () => {
+    const copy = liveFixture('doc_a', ['name'])
+    const two = pictureFixture({ participants: { [BRANN.participant_id]: copy, [ANA.participant_id]: copy } })
+    expect(revealProjections(two, titles, seats).map((entry) => [entry.documentId, entry.who])).toEqual([['doc_a', '2 players']])
+  })
+
+  it('a title that is not known yet is a document, never an id', () => {
+    const picture = pictureFixture({ table: liveFixture('doc_zzz', ['name']) })
+    expect(revealProjections(picture, titles, seats)[0].title).toBe('a document')
+  })
+
+  it('carries a stale copy and a held one', () => {
+    const picture = pictureFixture({
+      table: liveFixture('doc_a', ['name'], { stale_text: true }),
+      participants: { [BRANN.participant_id]: liveFixture('doc_b', ['name'], { pending_delivery: true }) },
+    })
+    const [first, second] = revealProjections(picture, titles, seats)
+    expect(first.staleText).toBe(true)
+    expect(second.waiting).toBe(true)
+  })
+
+  it('an unknown seat is a player, and no seats yet is still a player', () => {
+    const picture = pictureFixture({ participants: { par_gone000000000000000001: liveFixture('doc_a', ['name']) } })
+    expect(revealProjections(picture, titles, seats)[0].who).toBe('a player')
+    expect(revealProjections(picture, titles, [])[0].who).toBe('a player')
+  })
+})
+
+describe('projectionSummary: Revealed · Ondrey (table) · +1 more', () => {
+  const entry = (documentId: string, title: string, who: string) => ({ documentId, title, who, staleText: false, waiting: false })
+
+  it('names the first and counts the rest', () => {
+    expect(projectionSummary([entry('doc_a', 'Ondrey', 'table')])).toBe('Revealed · Ondrey (table)')
+    expect(projectionSummary([entry('doc_a', 'Ondrey', 'table'), entry('doc_b', 'Mira', 'Brann')])).toBe('Revealed · Ondrey (table) · +1 more')
+    expect(projectionSummary([entry('a', 'A', 'table'), entry('b', 'B', 'x'), entry('c', 'C', 'y')])).toBe('Revealed · A (table) · +2 more')
   })
 })

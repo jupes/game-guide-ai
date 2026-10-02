@@ -97,3 +97,35 @@ describe('the GM sources are text a reviewer can read', () => {
     expect([...bytes].filter((byte) => byte < 9 || (byte > 13 && byte < 32))).toEqual([])
   })
 })
+
+describe('the workspace reveal indicator (1kg.7.3 PR-2, REVEAL-14)', () => {
+  const indicator = (): string => readFileSync(join(HERE, '..', 'shell', 'RevealIndicator.css'), 'utf-8')
+
+  it('takes every colour from a token', () => {
+    const source = indicator()
+    expect(source.match(/#[0-9a-fA-F]{3,8}\b/g)).toBeNull()
+    expect(source.match(/\b(rgba?|hsla?)\(/g)).toBeNull()
+    const offenders = [...source.matchAll(/^\s*(background|color|border-color|border)\s*:\s*([^;]+);/gm)]
+      .filter(([, , value]) => !value.includes('var(--') && !['none', 'transparent', 'inherit'].includes(value.trim()))
+      .map(([, property, value]) => `${property}: ${value.trim()}`)
+    expect(offenders).toEqual([])
+  })
+
+  it('stays one step above the dialogs\' scrims, so it is operable above any modal', () => {
+    expect(indicator()).toMatch(/\.reveal-indicator\s*\{[^}]*z-index:\s*calc\(var\(--aether-z-overlay\) \+ 1\)/)
+  })
+
+  it('keeps the touch floor on its controls and draws a focus ring', () => {
+    const source = indicator()
+    expect(source).toMatch(/\.reveal-indicator__button\s*\{[^}]*min-height:\s*var\(--aether-touch-min\)/)
+    expect(source).toMatch(/\.reveal-indicator__summary,\s*\.reveal-indicator__button\s*\{[^}]*min-height:\s*var\(--aether-touch-min\)/)
+    expect(source).toMatch(/:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--md-sys-color-secondary\)/)
+  })
+
+  it('animates nothing, and writes no media query of its own (the shell\'s layout decides)', () => {
+    const source = indicator()
+    expect(source).not.toContain('transition:')
+    expect(source).not.toContain('@media (max-width')
+    expect(source).toContain(".workspace-shell:not([data-layout='wide']) .reveal-indicator")
+  })
+})

@@ -244,7 +244,26 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   unauthorizedHandler = handler
 }
 
+const unauthorizedListeners = new Set<UnauthorizedHandler>()
+
+/**
+ * Hears a lost session beside the one handler, without replacing it (1kg.7.3 PR-2, REVEAL-16: the Login
+ * screen says what the table can still see). Listeners run first, so they see the state the sign-out
+ * is about to clear; one that throws never stops the sign-out. Returns its own remover.
+ */
+export function addUnauthorizedListener(listener: UnauthorizedHandler): () => void {
+  unauthorizedListeners.add(listener)
+  return () => void unauthorizedListeners.delete(listener)
+}
+
 export function notifyUnauthorized(): void {
+  for (const listener of [...unauthorizedListeners]) {
+    try {
+      listener()
+    } catch {
+      // A surface's notice is never worth a stuck session.
+    }
+  }
   unauthorizedHandler?.()
 }
 

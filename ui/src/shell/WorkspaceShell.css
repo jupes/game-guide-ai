@@ -25,6 +25,11 @@
   flex-shrink: 0;
 }
 
+/* The chrome is made inert part by part (the reveal indicator stays operable above a modal), so a part is no box. */
+.workspace-shell__chrome-part {
+  display: contents;
+}
+
 .workspace-shell__body {
   position: relative; /* the Campaign Library panel is positioned against the body */
   display: flex;

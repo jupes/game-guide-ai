@@ -254,3 +254,48 @@ describe('what ends a job', () => {
     expect(new Set(seen).size).toBe(seen.length)
   })
 })
+
+describe('replaying a marker (REVEAL-16, PR-2)', () => {
+  it('sends with the command id it is given, so a replay the server already applied is a replay', async () => {
+    const courier = new StopCourier()
+    const r = recorder([OK])
+    void courier.send(CAMPAIGN, DOC, r.fetchImpl, 'u1', 'cmd_replayedFromMarker001')
+    await flush()
+    expect(r.sent[0].body).toMatchObject({ command_id: 'cmd_replayedFromMarker001' })
+  })
+
+  it('names the command id of a job in flight, and none once it ended', async () => {
+    const courier = new StopCourier()
+    const r = recorder([FAIL, OK])
+    const done = courier.send(CAMPAIGN, DOC, r.fetchImpl, 'u1')
+    await flush()
+    const id = courier.commandIdOf(CAMPAIGN, DOC)
+    expect(id).toBe(r.sent[0].body.command_id)
+    expect(courier.commandIdOf(CAMPAIGN, DOC_B)).toBeNull()
+    await vi.advanceTimersByTimeAsync(1_000)
+    await done
+    expect(courier.commandIdOf(CAMPAIGN, DOC)).toBeNull()
+  })
+
+  it('a press while the job is already in flight keeps its id, even when another is offered', async () => {
+    const courier = new StopCourier()
+    const r = recorder([FAIL]) // never ends
+    void courier.send(CAMPAIGN, DOC, r.fetchImpl, 'u1')
+    await flush()
+    const first = courier.commandIdOf(CAMPAIGN, DOC)
+    void courier.send(CAMPAIGN, DOC, r.fetchImpl, 'u1', 'cmd_neverUsedBecauseJobExists')
+    await flush()
+    expect(courier.commandIdOf(CAMPAIGN, DOC)).toBe(first)
+  })
+
+  it('reports an unacknowledged Stop in any campaign, for the unload guard', async () => {
+    const courier = new StopCourier()
+    expect(courier.anyPending()).toBe(false)
+    const r = recorder([FAIL, OK])
+    void courier.send(OTHER, DOC, r.fetchImpl, 'u1')
+    await flush()
+    expect(courier.anyPending()).toBe(true)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(courier.anyPending()).toBe(false)
+  })
+})

@@ -20,14 +20,23 @@
  * Stop is unacknowledged. A Stop goes through the `StopCourier` at once and is
  * retried until the server has answered for it; it outlives a scope change.
  *
- * No web storage, no URL, no realtime channel (1kg.7.5): the picture is re-read on
- * scope entry, when the table session's id or epoch moves, when the sheet opens,
- * after a refusal, and on a bounded backoff while the read keeps failing.
+ * No URL and no realtime channel (1kg.7.5): the picture is re-read on scope entry, when the
+ * table session's id or epoch moves, when the sheet opens, after a refusal, when the GM comes
+ * back to the tab or window (focus, visibility), and on a bounded backoff while the read keeps
+ * failing. The one thing stored is REVEAL-16's opaque pending-stop marker (ids and an epoch,
+ * `revealStopMarker.ts`): written when a Stop is pressed, cleared when the server answers, and
+ * replayed once on the next load into the same session and epoch only. An unacknowledged Stop
+ * blocks unload, and a 401 while something is live leaves what the table can still see for the
+ * Login screen (`revealSignOut.ts`). The titles of the live documents are held here too, for the
+ * workspace indicator (REVEAL-14); they are GM-private text, rendered and never stored.
  */
 
 import * as React from 'react'
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { addUnauthorizedListener } from '../api'
 import type { RevealRequest, RevealState, Seat } from '../gm/contracts'
+import { getDocument } from '../gm/documentApi'
+import { documentTitle } from '../gm/documentTitle'
 import { REVEAL_COPY } from '../gm/revealCopy'
 import { confirmReveal, readReveals, type ConfirmResult } from '../gm/revealApi'
 import { liveOf, sameAudience, type DraftAudience } from '../gm/revealFields'
@@ -36,6 +45,8 @@ import { useCampaign, type CampaignScope } from './campaignContext'
 import { useCanvasState, useWorkbenchActive } from './canvasContext'
 import { CurrentUserContext } from './currentUser'
 import { STOP_ALL, StopCourier } from './revealStop'
+import { clearPendingStop, readPendingStops, replayable, writePendingStop } from './revealStopMarker'
+import { revealSignOutNotice } from './revealSignOut'
 import { Emitter } from './tableSessionApi'
 import { useTableSession } from './tableSession'
 
@@ -60,6 +71,10 @@ export interface RevealsValue {
   /** A Stop failed at least once and is retrying, or was refused outright. */
   readonly stopFailed: boolean
   readonly sheet: { readonly documentId: string } | null
+  /** The canvas document that was open when the sheet opened (`null`: none). The sheet closes when that changes. */
+  readonly sheetFrom: string | null
+  /** Titles of the live documents, by id: GM-private, for the workspace indicator and the sign-out notice. */
+  readonly titles: ReadonlyMap<string, string>
   /** What had focus when the sheet was opened, for the return of focus on close. Stable for the provider's life. */
   readonly openerRef: React.RefObject<Element | null>
   /** The seats known so far, or `null` until read. The header names a private audience with them. */
@@ -68,8 +83,8 @@ export interface RevealsValue {
   readonly announcement: string
   /** Changes with every announcement, so an identical message is announced again. */
   readonly announcementTick: number
-  /** `opener` is whatever had focus at the gesture. */
-  openSheet(documentId: string, opener?: Element | null): void
+  /** `opener` is whatever had focus at the gesture. `canvasDocumentId` is the canvas document open now (default: `documentId` itself). */
+  openSheet(documentId: string, opener?: Element | null, canvasDocumentId?: string | null): void
   closeSheet(): void
   /** The sheet read the seats; the header names them from now on. */
   noteSeats(seats: readonly Seat[]): void
@@ -92,6 +107,8 @@ interface Snap {
   readonly read: 'loading' | 'ready' | 'unknown'
   readonly state: RevealState | null
   readonly sheet: { readonly documentId: string } | null
+  readonly sheetFrom: string | null
+  readonly titles: ReadonlyMap<string, string>
   readonly seats: readonly Seat[] | null
   readonly announcement: string
   readonly announcementTick: number
@@ -101,14 +118,28 @@ interface Snap {
 
 const NONE: ReadonlySet<string> = new Set()
 
+const NO_TITLES: ReadonlyMap<string, string> = new Map()
+
 const EMPTY: Snap = {
-  token: null, read: 'loading', state: null, sheet: null, seats: null, announcement: '', announcementTick: 0, refused: NONE,
+  token: null, read: 'loading', state: null, sheet: null, sheetFrom: null, titles: NO_TITLES, seats: null, announcement: '',
+  announcementTick: 0, refused: NONE,
 }
+
+/** Two reads closer than this are one: a focus and a visibility change arrive together. */
+const FOCUS_READ_GAP_MS = 2_000
+
+const liveDocumentIds = (picture: RevealState | null): string[] => [
+  ...new Set(picture?.slots.flatMap((entry) => (entry.live === null ? [] : [entry.live.document_id])) ?? []),
+]
 
 class RevealStore extends Emitter {
   private snap: Snap = EMPTY
   /** The seats are asked for once per scope on the header's account; the sheet reads them itself when it opens. */
   private seatsAsked = false
+  /** The documents whose title has been asked for in this scope; a failed read is forgotten so the next picture asks again. */
+  private readonly titlesAsked = new Set<string>()
+  /** When the latest read was sent, for the focus dedupe. */
+  private lastReadAt = 0
   private campaignId: string | null = null
   private fetchImpl: typeof fetch = fetch
   /** Every request takes the next number when it is SENT. */
@@ -141,6 +172,8 @@ class RevealStore extends Emitter {
     this.heldSeq = 0
     this.stopPressed.clear()
     this.seatsAsked = false
+    this.titlesAsked.clear()
+    this.lastReadAt = 0
     this.campaignId = campaignId
     this.fetchImpl = fetchImpl
     this.snap = { ...EMPTY, token }
@@ -168,7 +201,26 @@ class RevealStore extends Emitter {
     this.clearRetry()
     this.patch(token, { read: 'ready', state: incoming })
     this.ensureSeats(token, incoming)
+    this.ensureTitles(token, incoming)
     return true
+  }
+
+  /** The workspace indicator names what is live by title: read each live document once (a GM-private read; the id is the only thing in the URL). */
+  private ensureTitles(token: string, picture: RevealState | null): void {
+    const campaignId = this.campaignId
+    if (campaignId === null) return
+    for (const documentId of liveDocumentIds(picture)) {
+      if (this.titlesAsked.has(documentId)) continue
+      this.titlesAsked.add(documentId)
+      void getDocument(campaignId, documentId, this.fetchImpl).then((result) => {
+        if (result.kind === 'ok') this.noteTitle(token, documentId, documentTitle(result.document))
+        else this.titlesAsked.delete(documentId)
+      })
+    }
+  }
+
+  private noteTitle(token: string, documentId: string, title: string): void {
+    this.patch(token, { titles: new Map([...this.snap.titles, [documentId, title]]) })
   }
 
   /** A document live to a participant needs the seats to be named in the header; read them once. */
@@ -187,6 +239,7 @@ class RevealStore extends Emitter {
 
   async read(token: string, campaignId: string, fetchImpl: typeof fetch): Promise<void> {
     const seq = ++this.sendSeq
+    this.lastReadAt = Date.now()
     const result = await readReveals(campaignId, fetchImpl)
     if (this.snap.token !== token) return
     if (result.kind === 'ok') {
@@ -211,6 +264,12 @@ class RevealStore extends Emitter {
     }, wait)
   }
 
+  /** The GM came back to the tab: read again, unless a read was only just sent. */
+  returned(token: string, campaignId: string, fetchImpl: typeof fetch): void {
+    if (this.snap.token !== token || Date.now() - this.lastReadAt < FOCUS_READ_GAP_MS) return
+    void this.read(token, campaignId, fetchImpl)
+  }
+
   /** The table session's id or epoch moved: read again unless the held picture already matches. */
   sync(token: string, campaignId: string, live: { sessionId: string; revealEpoch: number } | null, fetchImpl: typeof fetch): void {
     if (this.snap.token !== token) return
@@ -220,13 +279,13 @@ class RevealStore extends Emitter {
     void this.read(token, campaignId, fetchImpl)
   }
 
-  openSheet(token: string, campaignId: string, documentId: string, fetchImpl: typeof fetch): void {
-    this.patch(token, { sheet: { documentId } })
+  openSheet(token: string, campaignId: string, documentId: string, from: string | null, fetchImpl: typeof fetch): void {
+    this.patch(token, { sheet: { documentId }, sheetFrom: from })
     void this.read(token, campaignId, fetchImpl)
   }
 
   closeSheet(token: string): void {
-    if (this.snap.sheet !== null) this.patch(token, { sheet: null })
+    if (this.snap.sheet !== null) this.patch(token, { sheet: null, sheetFrom: null })
   }
 
   announce(token: string, text: string): void {
@@ -308,6 +367,8 @@ const INERT: RevealsValue = {
   stopping: NO_STOPS,
   stopFailed: false,
   sheet: null,
+  sheetFrom: null,
+  titles: NO_TITLES,
   openerRef: { current: null },
   seats: null,
   announcement: '',
@@ -380,6 +441,94 @@ function RevealProviderRoot({ scope: given, children, fetchImpl = fetch, courier
     spoke.current = failing
   }, [store, token, failing])
 
+  // Delivers a Stop and settles what follows it. `replayId` is a marker's command id, replayed after a reload (REVEAL-16).
+  const deliver = React.useCallback(
+    (documentId: string, title: string | undefined, replayId?: string): void => {
+      if (token === null || campaignId === null) return
+      store.pressed(documentId)
+      const seq = store.stopSeq(documentId)
+      const held = store.getSnapshot().state
+      const done = courier.send(campaignId, documentId, fetchImpl, userId, replayId)
+      const commandId = courier.commandIdOf(campaignId, documentId)
+      // The marker is written before the first answer, so a reload mid-flight still replays it; ids and an epoch only.
+      if (replayId === undefined && userId !== null && commandId !== null && held !== null) {
+        writePendingStop(userId, { campaignId, documentId, sessionId: held.session_id, epoch: held.reveal_epoch, commandId })
+      }
+      const named = title ?? REVEAL_COPY.thisDocument
+      void done.then((outcome) => {
+        if (outcome.kind !== 'signed_out' && userId !== null) clearPendingStop(userId, campaignId, documentId)
+        if (outcome.kind === 'stopped') {
+          store.stopped(token, campaignId, seq, outcome.state, fetchImpl)
+          store.announce(token, REVEAL_COPY.stopped(named))
+        } else if (outcome.kind === 'gone') {
+          void store.read(token, campaignId, fetchImpl)
+        } else if (outcome.kind === 'invalid') {
+          store.stopRefused(token, documentId)
+          store.announce(token, REVEAL_COPY.stopInvalid(named))
+        }
+      })
+    },
+    [token, campaignId, store, courier, fetchImpl, userId],
+  )
+
+  // REVEAL-16: a Stop left unacknowledged by the last load is replayed once, first, but only into the session and
+  // epoch it was pressed at; anything else is dropped, so it can never kill a later, deliberate reveal.
+  const replayedFor = React.useRef<string | null>(null)
+  const pictureReady = current !== null && current.read === 'ready'
+  const readPicture = current?.state ?? null
+  const readTitles = current?.titles ?? NO_TITLES
+  useEffect(() => {
+    if (token === null || campaignId === null || userId === null || !pictureReady || replayedFor.current === token) return
+    replayedFor.current = token
+    for (const stop of readPendingStops(userId)) {
+      if (stop.campaignId !== campaignId) continue
+      if (!replayable(stop, readPicture)) {
+        clearPendingStop(userId, stop.campaignId, stop.documentId)
+        continue
+      }
+      deliver(stop.documentId, stop.documentId === STOP_ALL ? REVEAL_COPY.everything : readTitles.get(stop.documentId), stop.commandId)
+    }
+  }, [token, campaignId, userId, pictureReady, readPicture, readTitles, deliver])
+
+  // An unacknowledged Stop blocks unload (REVEAL-16): the marker covers a reload the GM confirms anyway.
+  const unacknowledged = useMemo(
+    () => courier.anyPending(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the version is the dependency
+    [courier, courierVersion],
+  )
+  useEffect(() => {
+    if (!unacknowledged) return undefined
+    const guard = (event: Event): void => {
+      event.preventDefault()
+      ;(event as BeforeUnloadEvent).returnValue = ''
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [unacknowledged])
+
+  // Coming back to the tab or the window reads the picture again (the realtime channel is 1kg.7.5's).
+  useEffect(() => {
+    if (token === null || campaignId === null) return undefined
+    const back = (): void => store.returned(token, campaignId, fetchImpl)
+    const shown = (): void => {
+      if (document.visibilityState === 'visible') back()
+    }
+    window.addEventListener('focus', back)
+    document.addEventListener('visibilitychange', shown)
+    return () => {
+      window.removeEventListener('focus', back)
+      document.removeEventListener('visibilitychange', shown)
+    }
+  }, [store, token, campaignId, fetchImpl])
+
+  // A 401 while something is live: the Login screen says what the table can still see (REVEAL-16).
+  const stillLive = React.useRef<string[]>([])
+  React.useLayoutEffect(() => {
+    const ids = current === null || current.read !== 'ready' ? [] : liveDocumentIds(current.state)
+    stillLive.current = ids.map((id) => current?.titles.get(id) ?? REVEAL_COPY.aDocument)
+  })
+  useEffect(() => addUnauthorizedListener(() => revealSignOutNotice.set(stillLive.current)), [])
+
   const value = useMemo<RevealsValue>(() => {
     if (token === null || campaignId === null) return INERT
     const shown = current ?? { ...EMPTY, token }
@@ -391,36 +540,24 @@ function RevealProviderRoot({ scope: given, children, fetchImpl = fetch, courier
       stopping,
       stopFailed: failing || shown.refused.size > 0,
       sheet: shown.sheet,
+      sheetFrom: shown.sheetFrom,
+      titles: shown.titles,
       openerRef,
       seats: shown.seats,
       announcement: shown.announcement,
       announcementTick: shown.announcementTick,
-      openSheet: (documentId, opener) => {
+      openSheet: (documentId, opener, canvasDocumentId = documentId) => {
         openerRef.current = opener ?? null
-        store.openSheet(token, campaignId, documentId, fetchImpl)
+        store.openSheet(token, campaignId, documentId, canvasDocumentId, fetchImpl)
       },
       closeSheet: () => store.closeSheet(token),
       noteSeats: (seats) => store.noteSeats(token, seats),
       announce: (text) => store.announce(token, text),
       refresh: () => store.read(token, campaignId, fetchImpl),
       confirm: (request, commandId) => store.confirm(token, campaignId, request, commandId, stopping.size > 0, fetchImpl),
-      stop: (documentId, title) => {
-        store.pressed(documentId)
-        const seq = store.stopSeq(documentId)
-        void courier.send(campaignId, documentId, fetchImpl, userId).then((outcome) => {
-          if (outcome.kind === 'stopped') {
-            store.stopped(token, campaignId, seq, outcome.state, fetchImpl)
-            store.announce(token, REVEAL_COPY.stopped(title ?? REVEAL_COPY.thisDocument))
-          } else if (outcome.kind === 'gone') {
-            void store.read(token, campaignId, fetchImpl)
-          } else if (outcome.kind === 'invalid') {
-            store.stopRefused(token, documentId)
-            store.announce(token, REVEAL_COPY.stopInvalid(title ?? REVEAL_COPY.thisDocument))
-          }
-        })
-      },
+      stop: (documentId, title) => deliver(documentId, title),
     }
-  }, [token, campaignId, current, stopping, failing, store, courier, fetchImpl, userId, openerRef])
+  }, [token, campaignId, current, stopping, failing, store, fetchImpl, openerRef, deliver])
 
   return <RevealContext.Provider value={value}>{children}</RevealContext.Provider>
 }
@@ -438,15 +575,17 @@ export function revealAnnouncementText(value: Pick<RevealsValue, 'announcement' 
 }
 
 /**
- * Whether the reveal sheet is open for the document the canvas shows (Critic 14): the Workbench is
- * active, the sheet names the open canvas document, and that document is open. The shell makes
- * everything else inert only while this holds, so a sheet left over from a document that has since
- * changed or closed can never strand the shell inert.
+ * Whether the reveal sheet is open (Critic 14): the Workbench is active, and the canvas document that was
+ * open when the sheet opened (`sheetFrom`) is still the one open. The sheet may be for that document or,
+ * from the workspace indicator, for another (REVEAL-14); either way a Back, a hashchange or a closed
+ * canvas ends it. The shell makes everything else inert only while this holds, so a sheet left over from
+ * a document that has since changed or closed can never strand the shell inert.
  */
 // eslint-disable-next-line react-refresh/only-export-components -- hook co-located with its provider
 export function useRevealSheetOpen(): boolean {
-  const { sheet } = useReveals()
+  const { sheet, sheetFrom } = useReveals()
   const { doc } = useCanvasState()
   const workbench = useWorkbenchActive()
-  return workbench && sheet !== null && doc.kind === 'open' && doc.document.document_id === sheet.documentId
+  const canvasDocument = doc.kind === 'open' ? doc.document.document_id : null
+  return workbench && sheet !== null && canvasDocument === sheetFrom
 }

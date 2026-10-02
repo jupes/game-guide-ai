@@ -336,6 +336,8 @@ export interface RevealEffectInput {
   readonly audience: DraftAudience
   readonly mask: readonly string[]
   readonly seats: readonly Seat[]
+  /** The GM chose a version other than the pinned one (REVEAL-8), so an unchanged mask is still an update. */
+  readonly versionChanged?: boolean
 }
 
 function sameKeys(a: readonly string[], b: readonly string[]): boolean {
@@ -352,7 +354,7 @@ function slotsHoldingOther(picture: RevealState | null, documentId: string, audi
   })
 }
 
-export function revealEffect({ picture, documentId, audience, mask, seats }: RevealEffectInput): RevealEffect {
+export function revealEffect({ picture, documentId, audience, mask, seats, versionChanged = false }: RevealEffectInput): RevealEffect {
   const live = liveOf(picture, documentId)
   if (live !== null && mask.length === 0) return { kind: 'stop', label: REVEAL_COPY.stopShowing, notices: [] }
   const idleLabel = live === null ? REVEAL_COPY.effectNone : REVEAL_COPY.effectUpdate
@@ -373,7 +375,7 @@ export function revealEffect({ picture, documentId, audience, mask, seats }: Rev
       : { kind: 'replace', label: REVEAL_COPY.revealAndReplace, notices: [replaced] }
   }
   if (sameAudience(live.audience, audience)) {
-    if (sameKeys(live.mask, mask)) return { kind: 'none', label: REVEAL_COPY.effectUpdate, notices: [REVEAL_COPY.nothingChanged] }
+    if (sameKeys(live.mask, mask) && !versionChanged) return { kind: 'none', label: REVEAL_COPY.effectUpdate, notices: [REVEAL_COPY.nothingChanged] }
     return { kind: 'update', label: REVEAL_COPY.effectUpdate, notices: replaced === null ? [] : [replaced] }
   }
   const notices: string[] = []

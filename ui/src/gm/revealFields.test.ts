@@ -426,6 +426,18 @@ describe('revealEffect (tests 9 and the Critic 7 and 11)', () => {
     expect(effect(live, TABLE, ['name', 'qualifier'])).toMatchObject({ kind: 'update', label: 'Update', notices: [] })
   })
 
+  it('REVEAL-8: the same mask is still an Update when the GM chose a newer version (Use latest version)', () => {
+    const live = pictureFixture({ table: liveFixture('doc_a', ['name', 'voice']) })
+    const newer = revealEffect({ picture: live, documentId: 'doc_a', audience: TABLE, mask: ['name', 'voice'], seats, versionChanged: true })
+    expect(newer).toMatchObject({ kind: 'update', label: 'Update', notices: [] })
+    // Mutation: ignoring the flag would leave the button disabled with "Nothing has changed."
+    const same = revealEffect({ picture: live, documentId: 'doc_a', audience: TABLE, mask: ['name', 'voice'], seats, versionChanged: false })
+    expect(same.kind).toBe('none')
+    // It never turns a stop, a reveal or an empty choice into something else.
+    expect(revealEffect({ picture: live, documentId: 'doc_a', audience: TABLE, mask: [], seats, versionChanged: true }).kind).toBe('stop')
+    expect(revealEffect({ picture: pictureFixture(), documentId: 'doc_a', audience: TABLE, mask: ['name'], seats, versionChanged: true }).kind).toBe('reveal')
+  })
+
   it('a live document to another audience moves, naming only who loses it', () => {
     const live = pictureFixture({ table: liveFixture('doc_a', ['name']) })
     expect(effect(live, ids(BRANN), ['name'])).toMatchObject({

@@ -15,6 +15,12 @@
   flex-shrink: 0;
 }
 
+/* The shell makes these inert behind a modal; the reveal indicator beside them is not, so they are not
+   one box of their own: the row lays out exactly as it did. */
+.app-header__controls {
+  display: contents;
+}
+
 .app-header__channels {
   display: flex;
   align-items: center;
@@ -38,6 +44,11 @@
   flex-shrink: 0;
   padding-left: 12px;
   border-left: 1px solid var(--md-sys-color-outline-variant);
+}
+
+/* Below the wide layout the reveal indicator takes its own row under the channels when something is live. */
+.workspace-shell:not([data-layout='wide']) .app-header {
+  flex-wrap: wrap;
 }
 
 .app-header__theme-label {

@@ -38,6 +38,24 @@ export type RevealSheetPhase =
   | 'unavailable'
   | 'ready'
 
+/** One ticked field in the Use latest version review: the text the table has, beside the latest (REVEAL-8). */
+export interface LatestReviewRow {
+  readonly key: string
+  readonly label: string
+  readonly oldText: string
+  readonly newText: string
+}
+
+/**
+ * REVEAL-8, on a live document whose revealed text has since changed. `offer`: the table is seeing an
+ * earlier version and the GM may review the latest. `review`: every ticked field, old beside new; Confirm
+ * then pins the version displayed.
+ */
+export type RevealSheetLatest =
+  | { readonly status: 'none' }
+  | { readonly status: 'offer' | 'loading' | 'failed' }
+  | { readonly status: 'review'; readonly rows: readonly LatestReviewRow[] }
+
 export interface RevealSheetStart {
   /** A Start is in flight. */
   readonly pending: boolean
@@ -70,7 +88,7 @@ export interface RevealSheetProps {
   /** The document is live now: Stop showing is offered. */
   readonly live: boolean
   readonly partialAudience: boolean
-  readonly staleNote: boolean
+  readonly latest: RevealSheetLatest
   readonly emptyDocument: boolean
   readonly conflict: boolean
   /** An error line already worded, or `null`. */
@@ -89,6 +107,8 @@ export interface RevealSheetProps {
   onConfirm(): void
   onCancel(): void
   onStop(): void
+  onUseLatest(): void
+  onKeepPinned(): void
   /** Called once when the sheet goes away: focus returns to the opener. */
   restoreFocus(): void
 }
@@ -252,7 +272,6 @@ function Ready(props: RevealSheetProps & { idPrefix: string }): React.JSX.Elemen
   const notices = [
     ...props.effect.notices,
     ...(props.partialAudience ? [REVEAL_COPY.partialAudience] : []),
-    ...(props.staleNote ? [REVEAL_COPY.staleNote] : []),
     ...(props.stopWaiting ? [REVEAL_COPY.waitingForStop] : []),
     ...(props.conflict ? [REVEAL_COPY.conflict] : []),
   ]
@@ -305,6 +324,8 @@ function Ready(props: RevealSheetProps & { idPrefix: string }): React.JSX.Elemen
         </ul>
       </div>
 
+      <LatestVersion {...props} idPrefix={idPrefix} />
+
       {notices.map((notice) => (
         <p key={notice} className="gm-reveal__notice">
           {notice}
@@ -316,6 +337,62 @@ function Ready(props: RevealSheetProps & { idPrefix: string }): React.JSX.Elemen
         </p>
       )}
     </>
+  )
+}
+
+/** REVEAL-8: an earlier version is live; the latest is reviewed old beside new, and Confirm pins what is displayed. */
+function LatestVersion({ latest, confirming, idPrefix, onUseLatest, onKeepPinned }: RevealSheetProps & { idPrefix: string }): React.JSX.Element | null {
+  const headingId = `${idPrefix}-latest`
+  if (latest.status === 'none') return null
+  if (latest.status === 'review') {
+    return (
+      <section className="gm-reveal__latest" aria-labelledby={headingId}>
+        <h3 id={headingId} className="gm-reveal__latest-heading">
+          {REVEAL_COPY.latestHeading}
+        </h3>
+        {latest.rows.length === 0 ? (
+          <p className="gm-reveal__hint">{REVEAL_COPY.latestNoTicked}</p>
+        ) : (
+          <ul className="gm-reveal__changes" aria-labelledby={headingId}>
+            {latest.rows.map((row) => (
+              <li key={row.key} className="gm-reveal__change">
+                <span className="gm-reveal__row-label">{row.label}</span>
+                <div className="gm-reveal__versions">
+                  <div className="gm-reveal__preview">
+                    <span className="gm-reveal__preview-label">{REVEAL_COPY.latestOld}</span>
+                    <span className="gm-reveal__preview-text">{row.oldText === '' ? REVEAL_COPY.latestEmpty : row.oldText}</span>
+                  </div>
+                  <div className="gm-reveal__preview" data-latest="">
+                    <span className="gm-reveal__preview-label">{REVEAL_COPY.latestNew}</span>
+                    <span className="gm-reveal__preview-text">{row.newText === '' ? REVEAL_COPY.latestEmpty : row.newText}</span>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <button type="button" className="gm-reveal__button" disabled={confirming} onClick={onKeepPinned}>
+          {REVEAL_COPY.keepPinned}
+        </button>
+      </section>
+    )
+  }
+  return (
+    <section className="gm-reveal__latest">
+      <p className="gm-reveal__notice">{REVEAL_COPY.staleNote}</p>
+      {latest.status === 'loading' ? (
+        <p className="gm-reveal__hint">{REVEAL_COPY.loadingLatest}</p>
+      ) : (
+        <button type="button" className="gm-reveal__button" disabled={confirming} onClick={onUseLatest}>
+          {REVEAL_COPY.useLatest}
+        </button>
+      )}
+      {latest.status === 'failed' && (
+        <p className="gm-reveal__notice" data-tone="error" role="alert">
+          {REVEAL_COPY.latestFailed}
+        </p>
+      )}
+    </section>
   )
 }
 
