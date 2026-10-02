@@ -85,6 +85,62 @@ if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ] || [ -n "$GOOGLE_OAUTH_REDIRECT_URI" ]; then
   GOOGLE_NOTE="on (client secret from Secret Manager secret ${GOOGLE_OAUTH_CLIENT_SECRET_SECRET})"
 fi
 
+# ── GM tools (po56) ────────────────────────────────────────────────────────────
+# OFF unless WORKBENCH_ENABLED_TOOLS is set (a CI repository VARIABLE, like the
+# Google id above). Unset, empty or blank means NO tool runs: every tool answers
+# 409 tool_disabled. Carried HERE for the same reason as the Google values — the
+# --set-env-vars flag REPLACES the service's whole env on every deploy, so a value
+# set with `gcloud run services update` alone is wiped by the next CI push.
+#
+# A comma list of registry tool ids ("npc,loot"). Each id is checked against
+# KNOWN_TOOL_IDS BEFORE docker or gcloud runs, and an unknown one fails the
+# deploy: the service would otherwise refuse to start on it, leaving the previous
+# revision serving while the job looked green. KNOWN_TOOL_IDS cannot import the
+# registry, so a test (tests/test_deploy_contract.py) pins it to `ToolId`.
+# An id with no server executor yet (docs/deploy-gcp.md section 15) is valid and
+# inert: it answers 409 tool_disabled.
+#
+# Capabilities are deliberately NOT an input of this script: WORKBENCH_CAPABILITIES
+# (image_generation) is never forwarded, so the paid portrait and map tools stay
+# off until the entitlement gate that covers them ships (D-3, yje.4.1).
+#
+# A value is never echoed: the repository is public, so Actions logs are public.
+KNOWN_TOOL_IDS="npc monster loot names rules portrait encounter hooks recap map"
+ENABLED_TOOLS="${WORKBENCH_ENABLED_TOOLS:-}"
+TOOLS_LIST=""
+TOOLS_ENV=""
+TOOLS_NOTE="off"
+ENV_DELIM=""
+ENV_SEP=","
+IFS=',' read -r -a _requested_tools <<< "${ENABLED_TOOLS//$'
+'/ }"
+for _tool in ${_requested_tools[@]+"${_requested_tools[@]}"}; do
+  _tool="${_tool#"${_tool%%[![:space:]]*}"}"   # trim leading whitespace
+  _tool="${_tool%"${_tool##*[![:space:]]}"}"   # trim trailing whitespace
+  [ -n "$_tool" ] || continue
+  case " ${KNOWN_TOOL_IDS} " in
+    *" ${_tool} "*) ;;
+    *)
+      echo "WORKBENCH_ENABLED_TOOLS names a tool the registry does not have; use a comma list of: ${KNOWN_TOOL_IDS// /, }" >&2
+      exit 2
+      ;;
+  esac
+  case ",${TOOLS_LIST}," in
+    *",${_tool},"*) ;;
+    *) TOOLS_LIST="${TOOLS_LIST:+${TOOLS_LIST},}${_tool}" ;;
+  esac
+done
+if [ -n "$TOOLS_LIST" ]; then
+  # gcloud splits --set-env-vars on commas, so a list of ids would be read as
+  # further KEY=VALUE pairs. `^;^` makes ';' the delimiter for the whole flag;
+  # the Google values (validated above to hold neither ',' nor ';') follow suit.
+  ENV_DELIM="^;^"
+  ENV_SEP=";"
+  GOOGLE_ENV="${GOOGLE_ENV//,/;}"
+  TOOLS_ENV=";WORKBENCH_ENABLED_TOOLS=${TOOLS_LIST}"
+  TOOLS_NOTE="on (${TOOLS_LIST})"
+fi
+
 # Who may INVOKE the service (Cloud Run IAM), independent of the app's own auth:
 #   preserve (default) — pass no IAM flag, so an existing service keeps whatever
 #                        mode it is in. A service that does not exist yet is
@@ -149,6 +205,7 @@ echo "Deploy plan: service=${SERVICE} sha=${SHA}"
 echo "  image=${IMAGE}"
 echo "  access=${ACCESS_NOTE}"
 echo "  google=${GOOGLE_NOTE}"
+echo "  tools=${TOOLS_NOTE}"
 if [ "$DRY_RUN" = "1" ]; then
   echo "  (dry-run: printing commands, executing nothing)"
 fi
@@ -196,7 +253,7 @@ run gcloud run deploy "${SERVICE}" \
   ${IAM_FLAGS[@]+"${IAM_FLAGS[@]}"} \
   --add-cloudsql-instances "${CLOUDSQL_INSTANCE}" \
   --set-secrets "OPENAI_API_KEY=${OPENAI_SECRET}:latest,DATABASE_URL=${DATABASE_URL_SECRET}:latest,SESSION_SECRET=${SESSION_SECRET_SECRET}:latest${GOOGLE_SECRET_REF}" \
-  --set-env-vars "AUTH_TRUSTED_PROXY_HOPS=1,GCP_PROJECT=${PROJECT}${GOOGLE_ENV}" \
+  --set-env-vars "${ENV_DELIM}AUTH_TRUSTED_PROXY_HOPS=1${ENV_SEP}GCP_PROJECT=${PROJECT}${GOOGLE_ENV}${TOOLS_ENV}" \
   --timeout 300 \
   --max-instances 2 \
   --memory 1Gi \

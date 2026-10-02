@@ -483,3 +483,223 @@ def test_the_google_suffixes_are_conditional_and_the_old_contract_lines_are_inta
     assert "${GOOGLE_ENV}" in env_line and "GOOGLE_OAUTH" not in env_line
     assert not re.search(r"--set-env-vars[^\n]*GOOGLE_OAUTH_CLIENT_SECRET=", text)
     assert not re.search(r"--set-env-vars[^\n]*(OPENAI_API_KEY|SESSION_SECRET)=", text)
+
+
+# ── GM tools (po56) ──────────────────────────────────────────────────────────
+#
+# WORKBENCH_ENABLED_TOOLS is a repository VARIABLE the deploy job passes in. It has
+# to ride in --set-env-vars like the Google values do: the flag REPLACES the
+# service's whole env on every deploy, so a value set by hand is wiped by the next
+# push. It holds a COMMA list, and gcloud splits --set-env-vars on commas, so a
+# non-empty list switches the flag to gcloud's `^;^` custom-delimiter form.
+
+
+def _tools_dry_run(**env: str) -> subprocess.CompletedProcess[str]:
+    """`deploy.sh --dry-run` with no tool or capability variables except `env`."""
+    bash = _bash_or_skip()
+    base = {
+        k: v for k, v in os.environ.items()
+        if not k.startswith("GOOGLE_OAUTH") and not k.startswith("WORKBENCH_")
+    }
+    return subprocess.run(
+        [bash, str(DEPLOY_SH), "--dry-run"],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT, env={**base, **env},
+    )
+
+
+def _env_vars(plan: str) -> dict[str, str]:
+    """The `--set-env-vars` flag parsed the way gcloud parses it: an optional
+    `^D^` prefix names the delimiter, else it is a comma."""
+    raw = _flag(plan, "--set-env-vars")
+    delimiter = ","
+    custom = re.match(r"\^(.+?)\^", raw)
+    if custom:
+        delimiter, raw = custom.group(1), raw[custom.end():]
+    pairs: dict[str, str] = {}
+    for item in raw.split(delimiter):
+        key, sep, value = item.partition("=")
+        assert sep, f"{item!r} is not KEY=VALUE: gcloud would refuse this flag"
+        assert key not in pairs, f"{key} is set twice"
+        pairs[key] = value
+    return pairs
+
+
+def _registry_tool_ids() -> list[str]:
+    from service.workbench_contracts import ToolId
+    from service.workbench_registry import REGISTRY
+
+    ids = [tool.value for tool in ToolId]
+    assert sorted(ids) == sorted(tool.id.value for tool in REGISTRY.tools), "the enum and the registry agree"
+    return ids
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", " , ,"], ids=["unset", "empty", "blank", "only-separators"])
+def test_tools_are_off_unless_ids_are_named(value: str | None) -> None:
+    result = _tools_dry_run() if value is None else _tools_dry_run(WORKBENCH_ENABLED_TOOLS=value)
+    assert result.returncode == 0, result.stderr
+    assert "tools=off" in result.stdout
+    assert "WORKBENCH" not in result.stdout
+    env = _flag(result.stdout, "--set-env-vars")
+    assert not env.startswith("^"), "the plain comma form is kept when no list needs the custom delimiter"
+    assert _env_vars(result.stdout) == {"AUTH_TRUSTED_PROXY_HOPS": "1", "GCP_PROJECT": "game-guide-ai-cloud"}
+
+
+def test_named_tools_reach_the_service_in_set_env_vars() -> None:
+    result = _tools_dry_run(WORKBENCH_ENABLED_TOOLS="npc,loot")
+    assert result.returncode == 0, result.stderr
+    assert "tools=on (npc,loot)" in result.stdout
+    env = _env_vars(result.stdout)
+    assert env["WORKBENCH_ENABLED_TOOLS"] == "npc,loot"
+    assert env["AUTH_TRUSTED_PROXY_HOPS"] == "1", "the existing variables are kept"
+    assert env["GCP_PROJECT"] == "game-guide-ai-cloud"
+
+
+def test_a_single_tool_works_and_the_list_may_hold_every_registry_id() -> None:
+    one = _tools_dry_run(WORKBENCH_ENABLED_TOOLS="npc")
+    assert one.returncode == 0, one.stderr
+    assert _env_vars(one.stdout)["WORKBENCH_ENABLED_TOOLS"] == "npc"
+    ids = _registry_tool_ids()
+    every = _tools_dry_run(WORKBENCH_ENABLED_TOOLS=",".join(ids))
+    assert every.returncode == 0, every.stderr
+    assert _env_vars(every.stdout)["WORKBENCH_ENABLED_TOOLS"] == ",".join(ids)
+
+
+def test_the_list_is_normalised_before_it_reaches_the_service() -> None:
+    """Spaces, empty entries and a repeated id are tidied; order is kept."""
+    result = _tools_dry_run(WORKBENCH_ENABLED_TOOLS=" npc , loot,,npc ,names ")
+    assert result.returncode == 0, result.stderr
+    assert _env_vars(result.stdout)["WORKBENCH_ENABLED_TOOLS"] == "npc,loot,names"
+
+
+def test_tools_and_google_together_keep_every_value_whole() -> None:
+    """The custom delimiter must not leave a Google value split on a comma."""
+    result = _tools_dry_run(
+        WORKBENCH_ENABLED_TOOLS="npc,encounter",
+        GOOGLE_OAUTH_CLIENT_ID=GOOGLE_ID, GOOGLE_OAUTH_REDIRECT_URI=GOOGLE_REDIRECT,
+    )
+    assert result.returncode == 0, result.stderr
+    assert _env_vars(result.stdout) == {
+        "AUTH_TRUSTED_PROXY_HOPS": "1",
+        "GCP_PROJECT": "game-guide-ai-cloud",
+        "GOOGLE_OAUTH_CLIENT_ID": GOOGLE_ID,
+        "GOOGLE_OAUTH_REDIRECT_URI": GOOGLE_REDIRECT,
+        "WORKBENCH_ENABLED_TOOLS": "npc,encounter",
+    }
+    assert "GOOGLE_OAUTH_CLIENT_SECRET=google-oauth-client-secret:latest" in _flag(result.stdout, "--set-secrets")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "nope",
+        "npc,nope",
+        "NPC",
+        "image_generation",
+        "npc;loot",
+        "npc loot",
+        "npc,loot,^;^X=1",
+        "npc\nloot",
+        "../npc",
+        "npc=1",
+    ],
+)
+def test_an_unknown_tool_id_fails_the_deploy_before_anything_runs(value: str) -> None:
+    result = _tools_dry_run(WORKBENCH_ENABLED_TOOLS=value)
+    assert result.returncode == 2, (result.returncode, result.stdout, result.stderr)
+    assert "WORKBENCH_ENABLED_TOOLS" in result.stderr
+    assert result.stdout == "", "not even the plan is printed, let alone a docker or gcloud command"
+    assert value.strip() not in result.stderr, "a bad value is never echoed: Actions logs are public"
+
+
+def test_a_refused_id_lists_the_valid_ones_so_the_fix_is_obvious() -> None:
+    result = _tools_dry_run(WORKBENCH_ENABLED_TOOLS="nope")
+    for tool in _registry_tool_ids():
+        assert tool in result.stderr
+
+
+def test_a_refusal_runs_no_command_on_a_real_deploy_either(tmp_path: Path) -> None:
+    """Without --dry-run the script would call docker and gcloud. Put stubs that
+    record themselves first on PATH and show neither ran."""
+    bash = _bash_or_skip()
+    log = tmp_path / "calls.log"
+    for name in ("docker", "gcloud"):
+        stub = tmp_path / name
+        stub.write_text(f'#!/bin/sh\necho "{name} $*" >> "{log.as_posix()}"\n', encoding="utf-8")
+        stub.chmod(0o755)
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("GOOGLE_OAUTH", "WORKBENCH_"))},
+        "PATH": f"{tmp_path.as_posix()}{os.pathsep}{os.environ['PATH']}",
+        "WORKBENCH_ENABLED_TOOLS": "nope",
+    }
+    result = subprocess.run(
+        [bash, str(DEPLOY_SH), "game-guide-ai", "abc1234"],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT, env=env,
+    )
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert not log.exists(), log.read_text(encoding="utf-8") if log.exists() else ""
+
+
+def test_capabilities_are_never_forwarded_so_image_generation_stays_off() -> None:
+    """Portrait and map are paid (D-3). The script has no WORKBENCH_CAPABILITIES
+    input at all, so a stray value in the deploy environment cannot switch them on."""
+    result = _tools_dry_run(
+        WORKBENCH_ENABLED_TOOLS="npc,portrait,map", WORKBENCH_CAPABILITIES="image_generation",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "image_generation" not in result.stdout
+    assert "WORKBENCH_CAPABILITIES" not in result.stdout
+    assert "WORKBENCH_CAPABILITIES" not in re.sub(r"#.*", "", _read(DEPLOY_SH))
+
+
+def test_the_tool_id_list_in_deploy_sh_is_the_registrys() -> None:
+    """deploy.sh cannot import Python, so it carries the ids as a word list. This
+    is what keeps that list from drifting from `ToolId`: a new tool fails here
+    until deploy.sh knows it, and a retired one cannot be deployed."""
+    declared = re.search(r'^KNOWN_TOOL_IDS="([^"]*)"', _read(DEPLOY_SH), re.MULTILINE)
+    assert declared, "deploy.sh must declare KNOWN_TOOL_IDS"
+    assert sorted(declared.group(1).split()) == sorted(_registry_tool_ids())
+
+
+def test_the_tools_value_is_only_ever_a_checked_variable_in_the_flag_line() -> None:
+    text = _read(DEPLOY_SH)
+    env_line = next(
+        line for line in text.splitlines() if "--set-env-vars" in line and "AUTH_TRUSTED_PROXY_HOPS" in line
+    )
+    assert "${TOOLS_ENV}" in env_line and "WORKBENCH" not in env_line
+    assert "${GOOGLE_ENV}" in env_line, "the Google suffix is still on the same line"
+    assert 'ENABLED_TOOLS="${WORKBENCH_ENABLED_TOOLS:-}"' in text
+
+
+# The runbook lists the ids that work today, derived from the code, so a new
+# executor fails this test until the owner is told.
+
+
+def _executor_tool_ids() -> list[str]:
+    from service import card_generation, document_tools
+
+    return sorted(
+        {tool.value for tool in document_tools.LEAD_SENTENCES} | {tool.value for tool in card_generation.CARD_TOOLS}
+    )
+
+
+def _runbook_tools_section() -> str:
+    text = _read(REPO_ROOT / "docs" / "deploy-gcp.md")
+    found = re.search(r"^## 15\. GM tools.*?(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
+    assert found, "docs/deploy-gcp.md needs a '## 15. GM tools' section"
+    return found.group(0)
+
+
+def test_the_runbook_lists_exactly_the_ids_that_have_executors() -> None:
+    section = _runbook_tools_section()
+    listed = re.search(r"^Working ids: (.+)$", section, re.MULTILINE)
+    assert listed, "the section needs one 'Working ids: ...' line"
+    assert sorted(re.findall(r"`([a-z]+)`", listed.group(1))) == _executor_tool_ids()
+
+
+def test_the_runbook_names_the_variable_and_says_image_generation_stays_off() -> None:
+    section = _runbook_tools_section()
+    assert "WORKBENCH_ENABLED_TOOLS" in section
+    assert "gh variable set WORKBENCH_ENABLED_TOOLS" in section
+    assert "image_generation" in section and "off" in section
+    for inert in ("recap", "portrait", "map"):
+        assert f"`{inert}`" in section, f"{inert} has no executor today; the runbook says so"
