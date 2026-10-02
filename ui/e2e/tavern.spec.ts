@@ -44,7 +44,7 @@ test('a cold load of /tavern renders the campaign screen, its error state and Ba
 test("the GM channel's Choose a campaign opens /tavern", async ({ page, accounts }) => {
   await page.goto('/')
   await signIn(page, accounts[0])
-  await page.getByRole('button', { name: 'Enter the Tavern' }).click()
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
 
   const channels = page.getByRole('navigation', { name: 'Channels' })
   await channels.getByRole('button', { name: 'GM' }).click()

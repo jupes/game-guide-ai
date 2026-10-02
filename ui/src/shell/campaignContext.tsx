@@ -35,10 +35,12 @@ import * as React from 'react'
 import { CampaignCreateRequestSchema, CONTRACT_VERSION, type Campaign } from '../gm/contracts'
 import { AppNavContext, type AppNavState } from './AppNav'
 import {
+  concludeCampaign,
   createCampaign as postCampaign,
   getCampaign,
   getConversation,
   listCampaigns,
+  reopenCampaign,
 } from './campaignApi'
 import { CampaignThreadsContext, ThreadStore } from './campaignThreads'
 import { CurrentUserContext, type UserRole } from './currentUser'
@@ -104,6 +106,9 @@ export type CreateOutcome =
   /** A guard said no, or another switch was already waiting on its guards. */
   | { readonly kind: 'vetoed' }
 
+/** How a conclude or a reopen ended: `unavailable` is the one 403 or 404 state. */
+export type ConcludeOutcome = 'done' | 'unavailable' | 'failed'
+
 export interface CampaignContextValue {
   readonly enabled: boolean
   readonly list: CampaignList
@@ -123,6 +128,10 @@ export interface CampaignContextValue {
   /** Single-flight; guards run before the POST; on `created` the campaign
    * heads the list and is selected. */
   createCampaign(name: string, tone?: string | null): Promise<CreateOutcome>
+  /** Mark an own campaign concluded, or reopen it (30c). Concluded narrows
+   * nothing: the answer replaces the listed campaign and never touches the
+   * selection or the scope (A-31(a)). A 403 or a 404 re-reads the first page. */
+  setConcluded(campaignId: string, concluded: boolean): Promise<ConcludeOutcome>
   registerSwitchGuard(guard: SwitchGuard): () => void
   isCurrentScope(key: string): boolean
 }
@@ -602,6 +611,28 @@ class CampaignStore {
     return FAILED
   }
 
+  setConcluded = async (campaignId: string, concluded: boolean): Promise<ConcludeOutcome> => {
+    if (!this.snap.enabled) return 'failed'
+    const epoch = this.epoch
+    const result = await (concluded ? concludeCampaign : reopenCampaign)(campaignId, this.fetcher())
+    // An answer for a previous account is dropped, never applied to the new list.
+    if (epoch !== this.epoch) return 'failed'
+    if (result.kind === 'ok') {
+      const { campaign } = result
+      const { list } = this.snap
+      if (list.kind !== 'idle') {
+        const items = list.items.map((item) => (item.campaign_id === campaign.campaign_id ? campaign : item))
+        this.set({ ...this.snap, list: { ...list, items } })
+      }
+      return 'done'
+    }
+    if (result.kind === 'unavailable') {
+      this.loadCampaigns()
+      return 'unavailable'
+    }
+    return 'failed'
+  }
+
   registerSwitchGuard = (guard: SwitchGuard): (() => void) => {
     this.guards = [...this.guards, guard]
     return () => {
@@ -641,6 +672,7 @@ const INERT: CampaignContextValue = {
   clearCampaign: inertOutcome<SwitchOutcome>('unchanged'),
   retrySelection: () => {},
   createCampaign: inertOutcome<CreateOutcome>(FAILED),
+  setConcluded: inertOutcome<ConcludeOutcome>('failed'),
   registerSwitchGuard: () => () => {},
   isCurrentScope: () => false,
 }
@@ -697,6 +729,7 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
     clearCampaign: store.clearCampaign,
     retrySelection: store.retrySelection,
     createCampaign: store.createCampaign,
+    setConcluded: store.setConcluded,
     registerSwitchGuard: store.registerSwitchGuard,
     isCurrentScope: store.isCurrentScope,
   }), [snap, store])

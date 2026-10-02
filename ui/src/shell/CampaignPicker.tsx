@@ -25,23 +25,21 @@
 
 import * as React from 'react'
 import { Badge } from '../ds/Badge'
-import { Button } from '../ds/Button'
-import { TextField } from '../ds/TextField'
 import type { Campaign } from '../gm/contracts'
 import { useCampaign, type CampaignList } from './campaignContext'
+import { CreateCampaignForm } from './CreateCampaignForm'
 import { CurrentUserContext } from './currentUser'
 import '../ds/Button.css'
 import './CampaignPicker.css'
 
 // Copy (I-18): §12.2's strings verbatim; the rest are constants `cub` may replace.
+// Exported so the tavern (30c) says exactly what the picker says.
 const HEADING = 'Your campaigns'
-const LOADING = 'Loading campaigns…'
-const LOADED = 'Campaigns loaded'
-const LOAD_FAILED = "Couldn't load campaigns"
-const EMPTY = 'Create your first campaign — only a name is required'
-const CREATED = 'Campaign created'
-const CREATE_FAILED = "Couldn't create the campaign"
-const NAME_INVALID = 'Give the campaign a name of 1 to 120 characters on one line.'
+export const LOADING = 'Loading campaigns…'
+export const LOADED = 'Campaigns loaded'
+export const LOAD_FAILED = "Couldn't load campaigns"
+export const EMPTY = 'Create your first campaign — only a name is required'
+export { CREATED } from './CreateCampaignForm'
 const BADGES: Record<NonNullable<Campaign['badge']>, string> = { live: 'LIVE', ready: 'READY' }
 
 export interface PendingButtonProps {
@@ -119,14 +117,9 @@ export function CampaignPicker(props: CampaignPickerProps): React.JSX.Element {
 }
 
 function Picker({ onSelected, pageHeading }: CampaignPickerProps): React.JSX.Element {
-  const { enabled, list, selection, loadCampaigns, loadMoreCampaigns, selectCampaign, createCampaign } = useCampaign()
+  const { enabled, list, selection, loadCampaigns, loadMoreCampaigns, selectCampaign } = useCampaign()
   const heading = React.useRef<HTMLHeadingElement>(null)
-  const nameField = React.useRef<HTMLInputElement | HTMLTextAreaElement>(null)
   const ids = React.useId()
-  const errorId = `${ids}-error`
-  const [name, setName] = React.useState('')
-  const [creating, setCreating] = React.useState(false)
-  const [nameError, setNameError] = React.useState<string | null>(null)
   // What the status node follows: loads this picker started, or its last create.
   const [track, setTrack] = React.useState<'list' | 'create' | null>(list.kind === 'idle' ? 'list' : null)
   const [createNote, setCreateNote] = React.useState('')
@@ -147,31 +140,11 @@ function Picker({ onSelected, pageHeading }: CampaignPickerProps): React.JSX.Ele
     })
   }
 
-  const create = (event: React.FormEvent): void => {
-    event.preventDefault()
-    if (creating) return
-    setCreating(true)
-    // From the press on, the announcer is the create's: the list re-read a
-    // failed create starts in the background is not announced.
+  // The form says what to announce; from a create's first word on, the
+  // announcer is the create's.
+  const announceCreate = (text: string): void => {
     setTrack('create')
-    setCreateNote('')
-    void createCampaign(name).then((outcome) => {
-      setCreating(false)
-      if (outcome.kind === 'vetoed') return
-      if (outcome.kind === 'created') {
-        setName('')
-        setNameError(null)
-        setCreateNote(CREATED)
-        onSelected?.(outcome.campaign)
-        return
-      }
-      // Announced as well as described: focus already on the field (an Enter)
-      // moves nowhere, so nothing would re-read the new description.
-      const problem = outcome.kind === 'invalid' ? NAME_INVALID : CREATE_FAILED
-      setNameError(problem)
-      setCreateNote(problem)
-      nameField.current?.focus()
-    })
+    setCreateNote(text)
   }
 
   return (
@@ -230,20 +203,7 @@ function Picker({ onSelected, pageHeading }: CampaignPickerProps): React.JSX.Ele
         </div>
       )}
 
-      <form className="campaign-picker__form" onSubmit={create} noValidate>
-        <TextField
-          ref={nameField}
-          label="Campaign name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          error={nameError !== null}
-          aria-invalid={nameError !== null || undefined}
-          aria-describedby={nameError === null ? undefined : errorId}
-          fullWidth
-        />
-        <Button type="submit" disabled={creating}>Create campaign</Button>
-        {nameError !== null && <p id={errorId} className="campaign-picker__message campaign-picker__error">{nameError}</p>}
-      </form>
+      <CreateCampaignForm onAnnounce={announceCreate} onCreated={(created) => onSelected?.(created)} />
     </section>
   )
 }
