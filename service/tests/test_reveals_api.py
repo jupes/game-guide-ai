@@ -884,6 +884,8 @@ def _forbidden_imports(source: str) -> list[str]:
             tail = module.rsplit(".", 1)[-1]
             if tail in {"policy", "app"} and (node.level > 0 or module.startswith("service.")):
                 found.append(module)
+            if module in {"", "service"} and any(alias.name in {"policy", "app"} for alias in node.names):
+                found.append(f"{module or '.'}: {[alias.name for alias in node.names]}")
             if tail == "reveals" and any(alias.name.startswith("_") for alias in node.names):
                 found.append(f"{module}._private")
         elif isinstance(node, ast.Import):
@@ -899,6 +901,8 @@ def test_a17_the_routes_import_neither_the_policy_point_nor_the_app() -> None:
         "from service.policy import decide_gm\n",
         "from .app import app\n",
         "from .reveals import _detail\n",
+        "from . import policy\n",
+        "from service import app\n",
         "import service.policy\n",
     ):
         assert _forbidden_imports(source), f"the scan must flag {source!r}"

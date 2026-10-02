@@ -664,7 +664,9 @@ def test_w1_a_bad_stop_limit_fails_startup(name: str, value: str) -> None:
     # kills: building the limiter without _build, so a bad value is accepted
     assert _import_ratelimit().returncode == 0, "the control: the defaults start"
     refused = _import_ratelimit(**{name: value})
-    assert refused.returncode != 0 and name in refused.stderr
+    assert refused.returncode != 0
+    named = "invalid rate-limit configuration (REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT / REVEAL_STOP_RATE_LIMIT_WINDOW_S)"
+    assert named in refused.stderr, "`_build` names both variables; a traceback line is not that message"
 
 
 def test_w1_the_stop_budget_defaults_are_pinned_and_reset_all_refills_it(monkeypatch: pytest.MonkeyPatch) -> None:
