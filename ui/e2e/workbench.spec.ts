@@ -57,9 +57,11 @@ test('a GM opens the Workbench, a document stays open, and the layout follows th
   expect(Math.round((await sidebar.boundingBox())?.width ?? 0)).toBe(268)
   await expect(page).not.toHaveURL(/document=/)
 
-  // Opening it again from the nav column: focus lands on the heading, and the URL carries an id, never a title.
+  // Opening it again through the Campaign Library (1kg.6.4 replaced the nav column's placeholder list):
+  // focus lands on the heading, and the URL carries an id, never a title.
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'NPCs' }).click()
   await page
-    .getByRole('region', { name: 'Campaign documents' })
+    .getByRole('region', { name: 'Campaign Library' })
     .getByRole('button', { name: new RegExp(DOCUMENT_TITLE) })
     .click()
   await expect(heading).toBeVisible()

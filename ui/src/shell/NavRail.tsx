@@ -9,9 +9,10 @@
  *
  * - **Open navigation** opens the same modal drawer the narrow layout's TopBar
  *   button does; LeftNav lives in it, and never remounts.
- * - **Campaign documents**, only while the Workbench is active, opens the drawer
- *   and lands on the documents list (LIB-8's single library icon; 1kg.6.4
- *   repoints it at the Library panel).
+ * - **Campaign Library**, only while the Workbench is active, toggles the Library panel
+ *   (LIB-8's single library icon; 1kg.6.4). It names the panel it controls and says
+ *   whether it is open; its tooltip is a native `title` equal to its name (INFERRED I-9:
+ *   the design system has no Tooltip yet).
  *
  * Channels stay in AppHeader, which already carries them at every width, so the
  * rail does not repeat them (I-3).
@@ -23,7 +24,7 @@
  */
 
 import * as React from 'react'
-import { WORKBENCH_COPY } from './workbenchCopy'
+import { LIBRARY_COPY, WORKBENCH_COPY } from './workbenchCopy'
 import './NavRail.css'
 
 export interface NavRailProps {
@@ -35,8 +36,14 @@ export interface NavRailProps {
   onOpen: () => void
   /** The shell focuses this button when the drawer closes. */
   openButtonRef: React.RefObject<HTMLButtonElement | null>
-  /** Present only while the Workbench is active (X-9): opens the drawer at the documents list. */
-  onOpenDocuments?: () => void
+  /** Present only while the Workbench is active (X-9): toggles the Library panel. Given the button, which is where focus returns. */
+  onToggleLibrary?: (opener: HTMLElement) => void
+  /** Drives the Campaign Library button's aria-expanded. */
+  libraryExpanded?: boolean
+  /** The id of the Library panel (aria-controls). */
+  libraryControls?: string
+  /** The shell falls back to this button when the control that opened the panel is gone. */
+  libraryButtonRef?: React.RefObject<HTMLButtonElement | null>
   /** The shell makes the rail inert behind the drawer and the loss-guard dialog. */
   inert?: boolean
 }
@@ -46,7 +53,10 @@ export function NavRail({
   expanded,
   onOpen,
   openButtonRef,
-  onOpenDocuments,
+  onToggleLibrary,
+  libraryExpanded = false,
+  libraryControls,
+  libraryButtonRef,
   inert,
 }: NavRailProps): React.JSX.Element {
   return (
@@ -64,10 +74,19 @@ export function NavRail({
           menu
         </span>
       </button>
-      {onOpenDocuments !== undefined && (
-        <button type="button" className="nav-rail__button" aria-label={WORKBENCH_COPY.campaignDocuments} onClick={onOpenDocuments}>
+      {onToggleLibrary !== undefined && (
+        <button
+          ref={libraryButtonRef}
+          type="button"
+          className="nav-rail__button"
+          aria-label={LIBRARY_COPY.title}
+          title={LIBRARY_COPY.title}
+          aria-expanded={libraryExpanded}
+          aria-controls={libraryControls}
+          onClick={(event) => onToggleLibrary(event.currentTarget)}
+        >
           <span className="material-symbols-rounded" aria-hidden="true">
-            folder_open
+            collections_bookmark
           </span>
         </button>
       )}

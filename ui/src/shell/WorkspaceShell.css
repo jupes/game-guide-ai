@@ -26,6 +26,7 @@
 }
 
 .workspace-shell__body {
+  position: relative; /* the Campaign Library panel is positioned against the body */
   display: flex;
   flex: 1;
   min-height: 0;
@@ -209,6 +210,29 @@
 
 .workbench__chat[data-concealed] .chat-pane > :not(.chat-pane__arrival) {
   display: none;
+}
+
+/* ── The Campaign Library panel (1kg.6.4, LIB-7 to LIB-10) ─────────────────────
+   Over the chat column, never over the canvas, and never a width media query: the
+   shell's own `data-nav` says where it sits. The sidebar is 268px (wide, no canvas), the
+   rail 56px (medium, and wide with a canvas). Narrow fills the body, and the shell makes
+   <main> inert behind it. It sits at --aether-z-sticky, under the modal drawer. */
+.workspace-shell__body > .library-panel {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 56px;
+}
+
+.workspace-shell[data-nav="sidebar"] .workspace-shell__body > .library-panel {
+  inset-inline-start: 268px;
+}
+
+.workspace-shell[data-layout="narrow"] .workspace-shell__body > .library-panel {
+  inset: 0;
+  width: auto;
+  max-width: none;
+  border-inline-end: none;
+  box-shadow: none;
 }
 
 /* ── Skip links (I-17, C-14) ───────────────────────────────────────────────────

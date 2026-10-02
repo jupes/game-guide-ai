@@ -42,25 +42,40 @@ describe('NavRail', () => {
     expect(ref.current).toBe(screen.getByRole('button', { name: 'Open navigation' }))
   })
 
-  it('has no Campaign documents button unless the Workbench is active (X-9)', () => {
+  it('has no Campaign Library button unless the Workbench is active (X-9)', () => {
     const { rerender } = render(<Rail />)
+    expect(screen.queryByRole('button', { name: 'Campaign Library' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Campaign documents' })).toBeNull()
     expect(screen.getAllByRole('button')).toHaveLength(1)
-    rerender(<Rail onOpenDocuments={() => {}} />)
-    expect(screen.getByRole('button', { name: 'Campaign documents' })).toBeInTheDocument()
+    rerender(<Rail onToggleLibrary={() => {}} />)
+    expect(screen.getByRole('button', { name: 'Campaign Library' })).toBeInTheDocument()
     expect(screen.getAllByRole('button')).toHaveLength(2)
   })
 
-  it('Campaign documents calls its handler', async () => {
+  it('Campaign Library names the panel it toggles, says whether it is open, and has a tooltip equal to its name (LIB-8)', () => {
+    const { rerender } = render(<Rail onToggleLibrary={() => {}} libraryControls="library-panel" libraryExpanded={false} />)
+    const button = screen.getByRole('button', { name: 'Campaign Library' })
+    expect(button).toHaveAttribute('aria-controls', 'library-panel')
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    expect(button).toHaveAttribute('title', 'Campaign Library')
+    rerender(<Rail onToggleLibrary={() => {}} libraryControls="library-panel" libraryExpanded />)
+    expect(screen.getByRole('button', { name: 'Campaign Library' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('Campaign Library calls its handler with the button, which is where focus returns', async () => {
     const user = userEvent.setup()
-    const onOpenDocuments = vi.fn()
-    render(<Rail onOpenDocuments={onOpenDocuments} />)
-    await user.click(screen.getByRole('button', { name: 'Campaign documents' }))
-    expect(onOpenDocuments).toHaveBeenCalledTimes(1)
+    const onToggleLibrary = vi.fn()
+    const ref = React.createRef<HTMLButtonElement>()
+    render(<Rail onToggleLibrary={onToggleLibrary} libraryButtonRef={ref} />)
+    const button = screen.getByRole('button', { name: 'Campaign Library' })
+    await user.click(button)
+    expect(onToggleLibrary).toHaveBeenCalledTimes(1)
+    expect(onToggleLibrary).toHaveBeenCalledWith(button)
+    expect(ref.current).toBe(button)
   })
 
   it('hides its icon ligatures from assistive technology', () => {
-    const { container } = render(<Rail onOpenDocuments={() => {}} />)
+    const { container } = render(<Rail onToggleLibrary={() => {}} />)
     const icons = container.querySelectorAll('.material-symbols-rounded')
     expect(icons.length).toBe(2)
     for (const icon of icons) expect(icon).toHaveAttribute('aria-hidden', 'true')
