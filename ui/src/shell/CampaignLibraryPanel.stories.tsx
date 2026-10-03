@@ -87,6 +87,7 @@ function api(library: Library, create: () => Response = () => json({ detail: 'un
     if (url === `/campaigns/${CAMPAIGN_ID}`) return json(CAMPAIGN)
     if (url === `/campaigns/${CAMPAIGN_ID}/library`) return library(JSON.parse(String(init?.body ?? '{}')) as LibraryRequest)
     if (url === `/campaigns/${CAMPAIGN_ID}/documents` && init?.method === 'POST') return create()
+    if (init?.method === 'POST' && /\/documents\/doc_\w+\/(archive|unarchive|delete)$/.test(url)) return new Response(null, { status: 204 })
     return json({ detail: `unrouted: ${url}` }, 404)
   })
 }
@@ -215,8 +216,8 @@ export const EmptyBestiary = scenario({
   library: empty,
   category: 'bestiary',
   play: async (canvas) => {
-    await expect(await canvas.findByText('Nothing in the bestiary yet. Run /monster and save it.')).toBeVisible()
-    await expect(canvas.queryByRole('button', { name: /^New/ })).toBeNull()
+    await expect(await canvas.findByText('Nothing in the bestiary yet. Run /monster and save it, or press New.')).toBeVisible()
+    await expectTouchTargets(canvas, ['New Stat Block'])
   },
 })
 export const EmptyBestiaryPhone = asPhone(EmptyBestiary)
@@ -268,10 +269,10 @@ export const ErrorDark = asDark(Error)
 export const Ready = scenario({
   library: ready,
   play: async (canvas) => {
-    await rowsAre(canvas, /Sister Ondrey Vashe/, /Brannoch the Drowned/)
+    await rowsAre(canvas, /^Sister Ondrey Vashe/, /^Brannoch the Drowned/)
     await expect(canvas.getByRole('list', { name: 'NPCs' })).toBeVisible()
     await expect(canvas.getAllByRole('listitem')).toHaveLength(2)
-    await expectTouchTargets(canvas, [/Sister Ondrey Vashe/, /Brannoch the Drowned/, 'New NPC Dossier'])
+    await expectTouchTargets(canvas, [/^Sister Ondrey Vashe/, /^Brannoch the Drowned/, 'New NPC Dossier'])
   },
 })
 export const ReadyPhone = asPhone(Ready)
@@ -341,7 +342,7 @@ export const LoadMoreFailed = scenario({
   library: ({ category, cursor }) =>
     cursor === undefined ? page(category, manyRows(25), 'c25') : json({}, 503),
   play: async (canvas) => {
-    await expect(await canvas.findByRole('button', { name: /Npc 1$/ })).toBeVisible()
+    await expect(await canvas.findByRole('button', { name: /^Npc 1$/ })).toBeVisible()
     await userEvent.click(await canvas.findByRole('button', { name: 'Load more' }))
     await expect(await within(canvas.getByRole('tabpanel')).findByText("Couldn't load more")).toBeVisible()
     await expectTouchTargets(canvas, ['Retry'])
@@ -349,6 +350,76 @@ export const LoadMoreFailed = scenario({
 })
 export const LoadMoreFailedPhone = asPhone(LoadMoreFailed)
 export const LoadMoreFailedDark = asDark(LoadMoreFailed)
+
+// ── The lifecycle (PR-2) ─────────────────────────────────────────────────────
+
+export const RowOverflowOpen = scenario({
+  library: ready,
+  play: async (canvas) => {
+    await userEvent.click(await canvas.findByRole('button', { name: 'More actions for Sister Ondrey Vashe' }))
+    await expect(await canvas.findByRole('button', { name: 'Archive Sister Ondrey Vashe' })).toBeVisible()
+    await expectTouchTargets(canvas, ['More actions for Sister Ondrey Vashe', 'Archive Sister Ondrey Vashe'])
+  },
+})
+export const RowOverflowOpenPhone = asPhone(RowOverflowOpen)
+export const RowOverflowOpenDark = asDark(RowOverflowOpen)
+
+export const UndoToast = scenario({
+  library: ready,
+  play: async (canvas) => {
+    await userEvent.click(await canvas.findByRole('button', { name: 'More actions for Sister Ondrey Vashe' }))
+    await userEvent.click(await canvas.findByRole('button', { name: 'Archive Sister Ondrey Vashe' }))
+    const toast = await canvas.findByRole('group', { name: 'Undo archive' })
+    await expect(toast).toBeVisible()
+    await expect(within(toast).getByText('Archived Sister Ondrey Vashe')).toBeVisible()
+    await expectTouchTargets(within(toast), ['Undo'])
+  },
+})
+export const UndoToastPhone = asPhone(UndoToast)
+export const UndoToastDark = asDark(UndoToast)
+
+export const DeleteDialog = scenario({
+  library: ready,
+  play: async (canvas) => {
+    await userEvent.click(await canvas.findByRole('button', { name: 'Archived' }))
+    await userEvent.click(await canvas.findByRole('button', { name: 'More actions for Velka' }))
+    await userEvent.click(await canvas.findByRole('button', { name: 'Delete Velka' }))
+    const dialog = await canvas.findByRole('dialog', { name: 'Delete Velka?' })
+    await expect(dialog).toBeVisible()
+    await expect(within(dialog).getByText("This permanently deletes Velka and its whole history. This can't be undone.")).toBeVisible()
+    await expect(within(dialog).getByLabelText('Your password')).toHaveFocus()
+    await expectTouchTargets(within(dialog), ['Cancel', 'Delete'])
+  },
+})
+export const DeleteDialogPhone = asPhone(DeleteDialog)
+export const DeleteDialogDark = asDark(DeleteDialog)
+
+export const StatBlockDialog = scenario({
+  library: ready,
+  category: 'bestiary',
+  play: async (canvas) => {
+    await userEvent.click(await canvas.findByRole('button', { name: 'New Stat Block' }))
+    const dialog = await canvas.findByRole('dialog', { name: 'New stat block' })
+    await expect(dialog).toBeVisible()
+    await expect(within(dialog).getByLabelText('Name')).toHaveFocus()
+    await expectTouchTargets(within(dialog), ['Cancel', 'Create'])
+  },
+})
+export const StatBlockDialogPhone = asPhone(StatBlockDialog)
+export const StatBlockDialogDark = asDark(StatBlockDialog)
+
+export const StatBlockDialogInvalid = scenario({
+  library: ready,
+  category: 'bestiary',
+  play: async (canvas) => {
+    await userEvent.click(await canvas.findByRole('button', { name: 'New Stat Block' }))
+    const dialog = await canvas.findByRole('dialog', { name: 'New stat block' })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    await expect(await within(dialog).findByText('Give the stat block a name.')).toBeVisible()
+    await expect(within(dialog).getByLabelText('Name')).toHaveAttribute('aria-invalid', 'true')
+  },
+})
+export const StatBlockDialogInvalidDark = asDark(StatBlockDialogInvalid)
 
 // ── The keyboard ─────────────────────────────────────────────────────────────
 

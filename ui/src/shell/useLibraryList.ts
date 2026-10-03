@@ -18,6 +18,11 @@
  * - The page echoes the campaign and category; one that does not match what was asked is
  *   an error (LIB-25).
  *
+ * - **A second tab** (LIB-24): when this tab becomes visible again the first page is asked for
+ *   once more, quietly. Nothing shows loading and no key changes, so no row is replaced by a
+ *   skeleton and no focus is lost; the new first page replaces the old one, rows loaded past it
+ *   stay, and a failed refresh leaves everything as it was.
+ *
  * Nothing here logs or stores. Rows hold GM-private titles: they live in React memory.
  */
 
@@ -208,6 +213,32 @@ export function useLibraryList(query: LibraryListQuery, fetchImpl?: typeof fetch
         }
       })
     })
+  }, [fetchImpl])
+
+  React.useEffect(() => {
+    function onVisible(): void {
+      if (document.visibilityState !== 'visible') return
+      const current = readRef.current
+      const first = bodyRef.current
+      const key = latestKey.current
+      if (current === null || first === null || key === null || current.status !== 'ready' || current.more === 'loading') return
+      void queryLibrary(first, fetchImpl).then((result) => {
+        if (latestKey.current !== key) return
+        if (result.kind !== 'ok' || result.page.campaign_id !== first.campaign_id || result.page.category !== first.category) return
+        const page = result.page
+        setLoaded((now) => {
+          if (now === null || now.key !== key || now.status !== 'ready' || now.more === 'loading') return now
+          const beyond = now.items.length > LIBRARY_PAGE_SIZE
+          return {
+            ...now,
+            items: beyond ? appendUnique(page.items, now.items.slice(LIBRARY_PAGE_SIZE)) : page.items,
+            nextCursor: beyond ? now.nextCursor : page.next_cursor,
+          }
+        })
+      })
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
   }, [fetchImpl])
 
   const removeItem = React.useCallback((documentId: string): void => {

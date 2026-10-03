@@ -260,6 +260,43 @@ export function unarchiveRoute(
   }
 }
 
+/** `POST /campaigns/{cid}/documents/{did}/archive` answers 204 (or `answer`'s reply). */
+export function archiveRoute(
+  options: { fallback?: Route; answer?: (documentId: string, call: Call) => Reply | 'defer' | undefined } = {},
+): Route {
+  const fallback = options.fallback ?? defaultWorkbenchRoute
+  return (call) => {
+    const match = /^\/campaigns\/(cmp_\w+)\/documents\/(doc_\w+)\/archive$/.exec(call.url)
+    if (match === null || call.method !== 'POST') return fallback(call)
+    return options.answer?.(match[2], call) ?? { status: 204 }
+  }
+}
+
+/** The password this harness accepts for a delete. */
+export const DELETE_PASSWORD = 'correct horse'
+
+/**
+ * `POST /campaigns/{cid}/documents/{did}/delete`: 204 for `DELETE_PASSWORD`, else `403 reauth_failed`
+ * (SEC-40). `answer` replaces the reply (a 409, a 429, `'defer'`) for a test of a failure.
+ */
+export function deleteRoute(
+  options: { fallback?: Route; answer?: (documentId: string, call: Call) => Reply | 'defer' | undefined } = {},
+): Route {
+  const fallback = options.fallback ?? defaultWorkbenchRoute
+  return (call) => {
+    const match = /^\/campaigns\/(cmp_\w+)\/documents\/(doc_\w+)\/delete$/.exec(call.url)
+    if (match === null || call.method !== 'POST') return fallback(call)
+    const override = options.answer?.(match[2], call)
+    if (override !== undefined) return override
+    const body = JSON.parse(call.body ?? '{}') as { password?: string }
+    return body.password === DELETE_PASSWORD
+      ? { status: 204 }
+      : { status: 403, body: { detail: { code: 'reauth_failed', message: 'no', retryable: false } } }
+  }
+}
+
+/** Routes in order: the first that does not hand the call on (by calling its `fallback`) answers. Build them
+ * innermost-first, e.g. `archiveRoute({ fallback: deleteRoute({ fallback: libraryRoute(rows) }) })`. */
 export function stubServer(route: Route = defaultWorkbenchRoute) {
   const calls: Call[] = []
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
@@ -288,6 +325,8 @@ export function stubServer(route: Route = defaultWorkbenchRoute) {
       calls.filter((call) => /\/library$/.test(call.url)).map((call) => JSON.parse(call.body ?? '{}') as Record<string, unknown>),
     createCalls: () => calls.filter((call) => call.method === 'POST' && /\/documents$/.test(call.url)),
     unarchiveCalls: () => calls.filter((call) => call.method === 'POST' && /\/unarchive$/.test(call.url)),
+    archiveCalls: () => calls.filter((call) => call.method === 'POST' && /\/archive$/.test(call.url)),
+    deleteCalls: () => calls.filter((call) => call.method === 'POST' && /\/delete$/.test(call.url)),
   }
 }
 export type StubServer = ReturnType<typeof stubServer>

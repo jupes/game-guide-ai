@@ -48,7 +48,7 @@ test('a GM browses, searches, restores and creates in the Campaign Library', asy
   await expect(panel).toBeVisible()
   await expect(panel.getByRole('heading', { name: 'Campaign Library', level: 2 })).toBeFocused()
   await expect(panel.getByRole('tab', { name: 'NPCs' })).toHaveAttribute('aria-selected', 'true')
-  await expect(panel.getByRole('button', { name: new RegExp(DOCUMENT_TITLE) })).toBeVisible()
+  await expect(panel.getByRole('button', { name: new RegExp(`^${DOCUMENT_TITLE}`) })).toBeVisible()
   expect(libraryBodies()).toHaveLength(1)
   expect(libraryBodies()[0]).toMatchObject({ category: 'npcs', archived: false, search: '' })
   const wide = await panel.boundingBox()
@@ -62,7 +62,7 @@ test('a GM browses, searches, restores and creates in the Campaign Library', asy
   expect(libraryBodies().at(-1)).toMatchObject({ search: 'zz' })
   expect(requests.filter((line) => line.includes('zz')), 'a search is a request body, never a URL').toEqual([])
   await panel.getByRole('button', { name: 'Clear' }).click()
-  await expect(panel.getByRole('button', { name: new RegExp(DOCUMENT_TITLE) })).toBeVisible()
+  await expect(panel.getByRole('button', { name: new RegExp(`^${DOCUMENT_TITLE}`) })).toBeVisible()
 
   // 4. Archived lists Velka with Restore; Restore makes one call, the row goes, and the status says so.
   await panel.getByRole('button', { name: 'Archived', exact: true }).click()

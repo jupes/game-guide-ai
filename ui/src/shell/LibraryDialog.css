@@ -1,0 +1,135 @@
+/* ── LibraryDialog ───────────────────────────────────────────────────────────
+   The Campaign Library's modal (1kg.6.4). A centred dialog on every layout (a dialog
+   this small needs no bottom sheet). Tokens only, so both themes follow the palette;
+   every control holds the 44 px floor.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.library-dialog__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--aether-z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--aether-space-4);
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 55%, transparent);
+}
+
+.library-dialog {
+  box-sizing: border-box;
+  width: min(440px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: var(--aether-space-5);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-sheet);
+  background: var(--md-sys-color-surface-container-low);
+  box-shadow: var(--md-sys-elevation-level3);
+  font-family: var(--aether-font-ui);
+  color: var(--md-sys-color-on-surface);
+}
+
+.library-dialog:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.library-dialog__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+}
+
+.library-dialog__heading {
+  margin: 0;
+  font-family: var(--aether-font-display);
+  font-size: var(--md-sys-typescale-headline-small-size);
+  font-weight: var(--md-sys-typescale-headline-small-weight);
+  overflow-wrap: anywhere;
+}
+
+.library-dialog__body {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.library-dialog__error {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  color: var(--md-sys-color-error);
+}
+
+.library-dialog__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-3);
+}
+
+.library-dialog__field-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--md-sys-color-error);
+}
+
+.library-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--aether-space-2);
+}
+
+.library-dialog__button {
+  min-height: var(--aether-touch-min);
+  padding: 0 16px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-button);
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.library-dialog__button:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.library-dialog__button[aria-disabled="true"] {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.library-dialog__button--primary {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+/* The one destructive action: error-coloured text on an outline, never filled, so it reads as the
+   choice to think about rather than the one to press (the loss guard's treatment). */
+.library-dialog__button--destructive {
+  border-color: var(--md-sys-color-error);
+  color: var(--md-sys-color-error);
+}
+
+@media (hover: hover) {
+  .library-dialog__button:not([aria-disabled="true"]):hover {
+    background: var(--md-sys-color-surface-container-high);
+  }
+
+  .library-dialog__button--primary:not([aria-disabled="true"]):hover {
+    background: var(--md-sys-color-primary);
+    filter: brightness(1.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .library-dialog * {
+    transition: none;
+  }
+}

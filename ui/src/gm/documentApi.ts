@@ -19,9 +19,10 @@
  *   cannot read because it is newer (a newer schema or an unknown type, X-8) is
  *   `unsupported`, which is not an outage and is never retried.
  *
- * Nothing logs. Two calls write for the Library (1kg.6.4): create (LIB-12) and unarchive (LIB-16's
- * Undo and the Archived filter's Restore); neither puts a title in a URL, and the caller owns the retry
- * (a create's `command_id` makes that safe). The seal (1kg.7.3) also writes, and changes no text.
+ * Nothing logs. Four calls write for the Library (1kg.6.4): create (LIB-12), archive and unarchive
+ * (LIB-16's row action, Undo and Restore) and delete (LIB-18, behind the password, SEC-40); none puts a
+ * title or the password in a URL, and the caller owns the retry (a create's `command_id` makes that safe).
+ * The seal (1kg.7.3) also writes, and changes no text.
  */
 
 import { notifyUnauthorized } from '../api'
@@ -33,6 +34,7 @@ import {
   DOC_TYPE_VERSION,
   DOCUMENT_TYPE_IDS,
   DocumentCreateRequestSchema,
+  DocumentDeleteRequestSchema,
   DocumentHistoryPageSchema,
   DocumentVersionSnapshotSchema,
   ErrorBodySchema,
@@ -113,6 +115,14 @@ export type LifecycleResult =
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'failed' }
   | { readonly kind: 'unauthorized' }
+
+/** `delete` answers: the lifecycle kinds, plus the two refusals a password and a state can make. */
+export type DeleteResult =
+  | LifecycleResult
+  /** 403 `reauth_failed`: the password did not match. Retryable by typing it again (SEC-40). */
+  | { readonly kind: 'reauth_failed' }
+  /** 409 `document_not_archived`: it was restored (or never archived), so nothing was deleted. */
+  | { readonly kind: 'not_archived' }
 
 async function send(fetchImpl: typeof fetch, path: string, init?: RequestInit): Promise<Response | null> {
   try {
@@ -305,6 +315,8 @@ export interface CreateRequestInput {
   readonly commandId: string
   readonly type: DocumentTypeId
   readonly name: string
+  /** Other fields a type needs to be valid at birth: a stat block's `ac` and `hp` (LIB-12). */
+  readonly fields?: Readonly<Record<string, number>>
 }
 
 /** `POST /campaigns/{cid}/documents` (LIB-12): a document of `type` with only its name, `201` with the
@@ -322,7 +334,7 @@ export async function createDocument(
     campaign_id: campaignId,
     type: input.type,
     type_version: DOC_TYPE_VERSION[input.type],
-    data: { name: input.name },
+    data: { name: input.name, ...input.fields },
   })
   if (!request.success) return { kind: 'invalid' }
   const res = await send(fetchImpl, `/campaigns/${encodeURIComponent(campaignId)}/documents`, {
@@ -369,5 +381,56 @@ export async function unarchiveDocument(
   }
   if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
   if (res.status === TOO_MANY_REQUESTS) return { kind: 'throttled' }
+  return res.ok ? { kind: 'ok' } : { kind: 'failed' }
+}
+
+/** `POST /campaigns/{cid}/documents/{did}/archive` (LIB-16, LIB-17): `204`, no body in either direction. A live
+ * document is stopped and archived in one transaction by the server, so the caller sends nothing extra. */
+export async function archiveDocument(
+  campaignId: string,
+  documentId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LifecycleResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
+  const res = await send(fetchImpl, `${documentPath(campaignId, documentId)}/archive`, { method: 'POST' })
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (res.status === TOO_MANY_REQUESTS) return { kind: 'throttled' }
+  return res.ok ? { kind: 'ok' } : { kind: 'failed' }
+}
+
+/**
+ * `POST /campaigns/{cid}/documents/{did}/delete` (LIB-18, SEC-40): the whole document and its history, behind
+ * the password, in the JSON body (there is no `DELETE` method). The password is never logged, echoed, stored
+ * or put in a URL; it leaves this function only in that body. Only an archived document can be deleted.
+ */
+export async function deleteDocument(
+  campaignId: string,
+  documentId: string,
+  password: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DeleteResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
+  const request = DocumentDeleteRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, password })
+  // A password the contract refuses cannot be the right one, and no request is made for it.
+  if (!request.success) return { kind: 'reauth_failed' }
+  const res = await send(fetchImpl, `${documentPath(campaignId, documentId)}/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ schema_version: CONTRACT_VERSION, password }),
+  })
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN) return (await errorCode(res)) === 'reauth_failed' ? { kind: 'reauth_failed' } : { kind: 'unavailable' }
+  if (res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (res.status === TOO_MANY_REQUESTS) return { kind: 'throttled' }
+  if (res.status === CONFLICT) return (await errorCode(res)) === 'document_not_archived' ? { kind: 'not_archived' } : { kind: 'failed' }
   return res.ok ? { kind: 'ok' } : { kind: 'failed' }
 }

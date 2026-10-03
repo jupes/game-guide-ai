@@ -16,6 +16,11 @@
  * - One status node, mounted EMPTY for the panel's life, takes the rationed
  *   announcements (STATE-7, A-29): a search that settles, Load more, the first page's
  *   error, and Restore and create outcomes. Loading is visible text, never announced.
+ * - PR-2, lifecycle (LIB-16 to LIB-18, LIB-24): each row has an overflow with **Archive** (Active) or
+ *   **Delete** (Archived). Archive is immediate with an 8 s Undo toast, and asks first only while the
+ *   table is seeing the document (LIB-17). Delete names the document and asks for the password
+ *   (`LibraryDialogs`). A stat block is made through its own dialog (LIB-12). Returning to the tab
+ *   refetches the first page (`useLibraryList`).
  * - Each tab is its own component instance (`key`), so a switch resets the search, sort,
  *   filter and type (I-6) and drops every request and in-flight answer of the old tab.
  */
@@ -23,13 +28,16 @@
 import * as React from 'react'
 import { documentTypeRead } from '../gm/canvasStatus'
 import { SEARCH_MAX_CHARS, type DocumentTypeId } from '../gm/contracts'
-import { createDocument, unarchiveDocument } from '../gm/documentApi'
+import { archiveDocument, createDocument, unarchiveDocument } from '../gm/documentApi'
 import { REGISTRY } from '../gm/registry'
+import { liveOf } from '../gm/revealFields'
 import type { ShellLayout } from './breakpoints'
 import { useCampaign } from './campaignContext'
 import { PendingButton, useRetrying } from './CampaignPicker'
 import { useCanvasActions, useCanvasState, type CanvasDoc } from './canvasContext'
+import { DeleteDocumentDialog, LiveArchiveDialog, StatBlockDialog, type DeleteOutcome, type StatBlockValues } from './LibraryDialogs'
 import { LIBRARY_HEADING_ID, LIBRARY_PANEL_ID, LIBRARY_TABS, useLibraryPanel, type LibraryCategoryId } from './libraryPanel'
+import { useReveals } from './revealContext'
 import { mintCommandId } from './tableSessionApi'
 import { useLibraryList, type LibraryListState } from './useLibraryList'
 import { LIBRARY_COPY, WORKBENCH_COPY } from './workbenchCopy'
@@ -40,6 +48,8 @@ import './CampaignLibraryPanel.css'
 
 const NBSP = ' '
 const SKELETON_ROWS = 3
+/** LIB-16: how long the Undo stays. The Archived filter's Restore is the way back after it. */
+export const UNDO_MS = 8000
 const NO_ITEMS: readonly never[] = []
 
 function currentDocumentId(doc: CanvasDoc): string | null {
@@ -62,7 +72,10 @@ export interface CampaignLibraryPanelProps {
 /** The panel renders only while open (the shell decides); it focuses its heading when it mounts. */
 export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: CampaignLibraryPanelProps): React.JSX.Element {
   const { category, setCategory, closeLibrary } = useLibraryPanel()
-  const { guardDialog } = useCanvasState()
+  const { guardDialog, doc } = useCanvasState()
+  const { bumpDocumentsVersion, refreshDocument } = useCanvasActions()
+  const { scope } = useCampaign()
+  const campaignId = scope?.campaignId ?? null
   const headingRef = React.useRef<HTMLHeadingElement>(null)
   const tabRefs = React.useRef(new Map<LibraryCategoryId, HTMLButtonElement>())
   const [announcement, setAnnouncement] = React.useState({ text: '', tick: 0 })
@@ -73,6 +86,37 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
   React.useEffect(() => {
     headingRef.current?.focus()
   }, [])
+
+  // ── The Undo toast (LIB-16): panel-level, so a tab switch does not take it away ──
+  const [undo, setUndo] = React.useState<{ readonly id: string; readonly title: string } | null>(null)
+  const [undoing, setUndoing] = React.useState(false)
+  const [holding, setHolding] = React.useState(false)
+  const offerUndo = (offer: { readonly id: string; readonly title: string }): void => {
+    setHolding(false)
+    setUndo(offer)
+  }
+  // The 8 s run while it is not hovered or focused, and start over when the pointer or focus leaves.
+  React.useEffect(() => {
+    if (undo === null || holding || undoing) return
+    const timer = setTimeout(() => setUndo(null), UNDO_MS)
+    return () => clearTimeout(timer)
+  }, [undo, holding, undoing])
+  const onUndo = async (): Promise<void> => {
+    if (undo === null || campaignId === null || undoing) return
+    const offer = undo
+    setUndoing(true)
+    const result = await unarchiveDocument(campaignId, offer.id, fetchImpl)
+    setUndoing(false)
+    setUndo(null)
+    headingRef.current?.focus()
+    if (result.kind === 'ok') {
+      bumpDocumentsVersion()
+      announce(LIBRARY_COPY.restored(offer.title))
+      if (currentDocumentId(doc) === offer.id) void refreshDocument(offer.id)
+    } else if (result.kind !== 'unauthorized') {
+      announce(LIBRARY_COPY.undoFailed(offer.title))
+    }
+  }
 
   // Escape closes the panel from anywhere in the document, after every inner surface that handled it
   // (the New disclosure, the loss-guard dialog) has called preventDefault. While the nav drawer or the
@@ -164,8 +208,33 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
       </div>
 
       <div role="tabpanel" id={TABPANEL_ID} aria-labelledby={tabId(category)} className="library-panel__body">
-        <LibraryTabBody key={category} category={category} layout={layout} announce={announce} headingRef={headingRef} fetchImpl={fetchImpl} />
+        <LibraryTabBody
+          key={category}
+          category={category}
+          layout={layout}
+          announce={announce}
+          offerUndo={offerUndo}
+          headingRef={headingRef}
+          fetchImpl={fetchImpl}
+        />
       </div>
+
+      {undo !== null && (
+        <div
+          role="group"
+          aria-label={LIBRARY_COPY.undoRegion}
+          className="library-panel__toast"
+          onMouseEnter={() => setHolding(true)}
+          onMouseLeave={() => setHolding(false)}
+          onFocus={() => setHolding(true)}
+          onBlur={() => setHolding(false)}
+        >
+          <span className="library-panel__toast-text">{LIBRARY_COPY.archivedDone(undo.title)}</span>
+          <ActionButton busy={undoing} onPress={() => void onUndo()}>
+            {LIBRARY_COPY.undo}
+          </ActionButton>
+        </div>
+      )}
 
       {/* Mounted empty, and kept: a live region that appears with its text is not reliably announced (A-29). */}
       <p role="status" className="library-panel__sr-only">
@@ -225,10 +294,19 @@ function ActionButton({
 
 // ── One tab ──────────────────────────────────────────────────────────────────
 
-type RestoreNote =
+/** A row action (Restore, Archive) that is running, was refused, or found the document gone. */
+type RowOp =
   | { readonly kind: 'busy'; readonly id: string }
-  | { readonly kind: 'throttled' | 'failed'; readonly id: string; readonly title: string }
+  | { readonly kind: 'throttled' | 'failed'; readonly id: string; readonly title: string; readonly action: 'restore' | 'archive' }
   | { readonly kind: 'gone' }
+
+type Dialog =
+  | { readonly kind: 'live-archive'; readonly id: string; readonly title: string }
+  | { readonly kind: 'delete'; readonly id: string; readonly title: string }
+  | { readonly kind: 'statblock' }
+
+/** The stat block is the one type that cannot be born from a name alone (LIB-12). */
+const STAT_BLOCK: DocumentTypeId = 'statblock'
 
 type CreateError = 'full' | 'throttled' | 'failed' | 'refused'
 
@@ -236,6 +314,8 @@ interface LibraryTabBodyProps {
   category: LibraryCategoryId
   layout: ShellLayout
   announce: (text: string) => void
+  /** Offers the 8 s Undo of an archive (LIB-16). */
+  offerUndo: (offer: { readonly id: string; readonly title: string }) => void
   /** Where focus lands if the control that had it leaves the DOM. */
   headingRef: React.RefObject<HTMLElement | null>
   fetchImpl?: typeof fetch
@@ -243,10 +323,11 @@ interface LibraryTabBodyProps {
 
 const SEARCH_FIELD = 'search'
 
-function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: LibraryTabBodyProps): React.JSX.Element {
+function LibraryTabBody({ category, layout, announce, offerUndo, headingRef, fetchImpl }: LibraryTabBodyProps): React.JSX.Element {
   const { scope } = useCampaign()
   const { doc } = useCanvasState()
-  const { openDocument, bumpDocumentsVersion } = useCanvasActions()
+  const { openDocument, bumpDocumentsVersion, refreshDocument } = useCanvasActions()
+  const reveals = useReveals()
   const { closeLibrary } = useLibraryPanel()
   const campaignId = scope?.campaignId ?? null
   const words = LIBRARY_COPY.category[category]
@@ -265,6 +346,9 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
   const searchErrorId = React.useId()
   const menuId = React.useId()
   const newRef = React.useRef<HTMLButtonElement>(null)
+  const moreRefs = React.useRef(new Map<string, HTMLButtonElement>())
+  const [menuFor, setMenuFor] = React.useState<string | null>(null)
+  const [dialog, setDialog] = React.useState<Dialog | null>(null)
 
   React.useLayoutEffect(() => {
     // The registry's own cap, so a field that cannot take more never reaches `invalid` for length.
@@ -303,59 +387,131 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
     if (layout !== 'wide') closeLibrary({ returnFocus: false })
   }
 
-  // ── Restore ──
-  const [restore, setRestore] = React.useState<RestoreNote | null>(null)
-  const restoringId = restore?.kind === 'busy' ? restore.id : null
+  const current = currentDocumentId(doc)
+
+  /** A row left the list (restored, archived, deleted or gone): focus goes to the next row, else the previous, else the search field. */
+  const leaveRow = (id: string): void => {
+    const index = items.findIndex((item) => item.document_id === id)
+    focusAfter.current = items[index + 1]?.document_id ?? items[index - 1]?.document_id ?? SEARCH_FIELD
+    list.removeItem(id)
+  }
+
+  // ── Restore, and Archive: one action at a time per tab ──
+  const [rowOp, setRowOp] = React.useState<RowOp | null>(null)
+  const busyId = rowOp?.kind === 'busy' ? rowOp.id : null
 
   const onRestore = async (id: string, title: string): Promise<void> => {
-    if (campaignId === null || restoringId !== null) return
-    setRestore({ kind: 'busy', id })
+    if (campaignId === null || busyId !== null) return
+    setRowOp({ kind: 'busy', id })
     const result = await unarchiveDocument(campaignId, id, fetchImpl)
     if (result.kind === 'ok' || result.kind === 'unavailable') {
-      const index = items.findIndex((item) => item.document_id === id)
-      focusAfter.current = items[index + 1]?.document_id ?? items[index - 1]?.document_id ?? SEARCH_FIELD
-      list.removeItem(id)
+      leaveRow(id)
+      if (current === id) void refreshDocument(id)
       if (result.kind === 'ok') {
-        setRestore(null)
+        setRowOp(null)
         announce(LIBRARY_COPY.restored(title))
       } else {
-        setRestore({ kind: 'gone' })
+        setRowOp({ kind: 'gone' })
         announce(LIBRARY_COPY.gone)
       }
     } else if (result.kind === 'throttled') {
-      setRestore({ kind: 'throttled', id, title })
+      setRowOp({ kind: 'throttled', id, title, action: 'restore' })
       announce(LIBRARY_COPY.throttled)
     } else if (result.kind === 'failed') {
-      setRestore({ kind: 'failed', id, title })
+      setRowOp({ kind: 'failed', id, title, action: 'restore' })
       announce(LIBRARY_COPY.restoreFailed(title))
     } else {
-      setRestore(null)
+      setRowOp(null)
     }
+  }
+
+  // Archive (LIB-16): immediate, with an Undo; a document the table is seeing asks first (LIB-17). The server
+  // stops the reveal and archives in one transaction, so the client sends nothing more than the archive.
+  const onArchive = async (id: string, title: string): Promise<void> => {
+    if (campaignId === null || busyId !== null) return
+    const wasLive = liveOf(reveals.state, id) !== null
+    setRowOp({ kind: 'busy', id })
+    const result = await archiveDocument(campaignId, id, fetchImpl)
+    if (result.kind === 'ok' || result.kind === 'unavailable') {
+      leaveRow(id)
+      if (result.kind === 'ok') {
+        setRowOp(null)
+        announce(LIBRARY_COPY.archivedDone(title))
+        offerUndo({ id, title })
+        if (current === id) void refreshDocument(id)
+        if (wasLive) void reveals.refresh()
+      } else {
+        setRowOp({ kind: 'gone' })
+        announce(LIBRARY_COPY.gone)
+      }
+    } else if (result.kind === 'throttled') {
+      setRowOp({ kind: 'throttled', id, title, action: 'archive' })
+      announce(LIBRARY_COPY.throttled)
+    } else if (result.kind === 'failed') {
+      setRowOp({ kind: 'failed', id, title, action: 'archive' })
+      announce(LIBRARY_COPY.archiveFailed(title))
+    } else {
+      setRowOp(null)
+    }
+  }
+
+  /** Closes the row's overflow with focus back on its trigger, so a dialog (or nothing) leaves focus somewhere real. */
+  const closeMenu = (id: string): void => {
+    setMenuFor(null)
+    moreRefs.current.get(id)?.focus()
+  }
+
+  const requestArchive = (id: string, title: string): void => {
+    closeMenu(id)
+    if (liveOf(reveals.state, id) !== null) setDialog({ kind: 'live-archive', id, title })
+    else void onArchive(id, title)
+  }
+
+  const requestDelete = (id: string, title: string): void => {
+    closeMenu(id)
+    setDialog({ kind: 'delete', id, title })
+  }
+
+  // Delete (LIB-18, SEC-40): the dialog made the request; this is what the list and the canvas do with its answer.
+  const onDeleted = (id: string, title: string, outcome: DeleteOutcome): void => {
+    setDialog(null)
+    if (outcome === 'unauthorized') return
+    if (outcome === 'not_archived') {
+      announce(LIBRARY_COPY.notArchived(title))
+      bumpDocumentsVersion()
+      return
+    }
+    leaveRow(id)
+    if (current === id) void refreshDocument(id)
+    announce(outcome === 'deleted' ? LIBRARY_COPY.deleted(title) : LIBRARY_COPY.gone)
   }
 
   // ── New ──
   const creatable = React.useMemo(
-    () => REGISTRY.document_types.filter((t) => t.library_category === category && t.id !== 'statblock'),
+    () => REGISTRY.document_types.filter((t) => t.library_category === category),
     [category],
   )
   const [menuOpen, setMenuOpen] = React.useState(false)
   const [creating, setCreating] = React.useState<DocumentTypeId | null>(null)
   const [createError, setCreateError] = React.useState<{ readonly error: CreateError; readonly type: DocumentTypeId } | null>(null)
   /** One id per intent, kept until it succeeds, so a retry opens the document already made (STATE-3). */
-  const intent = React.useRef<{ readonly type: DocumentTypeId; readonly commandId: string } | null>(null)
+  const intent = React.useRef<{ readonly signature: string; readonly commandId: string } | null>(null)
 
-  const onCreate = async (typeId: DocumentTypeId): Promise<void> => {
+  const onCreate = async (typeId: DocumentTypeId, given?: StatBlockValues): Promise<void> => {
     if (campaignId === null || creating !== null) return
-    if (intent.current?.type !== typeId) intent.current = { type: typeId, commandId: mintCommandId() }
+    const name = given?.name ?? WORKBENCH_COPY.untitled(documentTypeRead(typeId).label)
+    // The same name and fields keep the id, so a retry opens the document already made; any change is a new intent.
+    const signature = JSON.stringify([typeId, name, given?.fields ?? null])
+    if (intent.current?.signature !== signature) intent.current = { signature, commandId: mintCommandId() }
     const { commandId } = intent.current
-    const name = WORKBENCH_COPY.untitled(documentTypeRead(typeId).label)
     setCreating(typeId)
     setCreateError(null)
-    const result = await createDocument(campaignId, { commandId, type: typeId, name }, fetchImpl)
+    const result = await createDocument(campaignId, { commandId, type: typeId, name, fields: given?.fields }, fetchImpl)
     setCreating(null)
     if (result.kind === 'ok') {
       intent.current = null
       setMenuOpen(false)
+      setDialog(null)
       bumpDocumentsVersion()
       void openDocument({ documentId: result.document.document_id, title: name }, { gesture: true })
       announce(LIBRARY_COPY.created(name))
@@ -389,7 +545,6 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
   // ── Retry shown through its own read, so it is never unmounted under focus ──
   const [retryShown, pressRetry] = useRetrying(state.status === 'error', state.status === 'loading')
 
-  const current = currentDocumentId(doc)
   const documentTypes = category === 'documents' ? REGISTRY.document_types.filter((t) => t.library_category === 'documents') : []
   const invalid = state.status === 'invalid'
 
@@ -505,9 +660,21 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
           <ul className="library-panel__rows" aria-label={words.tab}>
             {state.items.map((item, index) => {
               const isLast = index === state.items.length - 1
-              const note = restore !== null && restore.kind !== 'busy' && restore.kind !== 'gone' && restore.id === item.document_id ? restore : null
+              const note = rowOp !== null && rowOp.kind !== 'busy' && rowOp.kind !== 'gone' && rowOp.id === item.document_id ? rowOp : null
               return (
-                <li key={item.document_id} className="library-panel__item">
+                <li
+                  key={item.document_id}
+                  className="library-panel__item"
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape' && menuFor === item.document_id) {
+                      event.preventDefault()
+                      closeMenu(item.document_id)
+                    }
+                  }}
+                  onBlur={(event) => {
+                    if (menuFor === item.document_id && !event.currentTarget.contains(event.relatedTarget)) setMenuFor(null)
+                  }}
+                >
                   <div className="library-panel__item-row">
                     <button
                       type="button"
@@ -530,18 +697,60 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
                     {item.archived && (
                       <ActionButton
                         ariaLabel={LIBRARY_COPY.restoreNamed(item.title)}
-                        busy={restoringId !== null}
+                        busy={busyId !== null}
                         onPress={() => void onRestore(item.document_id, item.title)}
                       >
                         {LIBRARY_COPY.restore}
                       </ActionButton>
                     )}
+                    <button
+                      type="button"
+                      ref={(node) => {
+                        if (node === null) moreRefs.current.delete(item.document_id)
+                        else moreRefs.current.set(item.document_id, node)
+                      }}
+                      className="library-row__more"
+                      aria-label={LIBRARY_COPY.moreActions(item.title)}
+                      aria-expanded={menuFor === item.document_id}
+                      aria-controls={`${menuId}-${item.document_id}`}
+                      aria-disabled={busyId !== null || undefined}
+                      onClick={() => {
+                        if (busyId === null) setMenuFor((open) => (open === item.document_id ? null : item.document_id))
+                      }}
+                    >
+                      <span className="material-symbols-rounded" aria-hidden="true">
+                        more_vert
+                      </span>
+                    </button>
+                  </div>
+                  <div
+                    id={`${menuId}-${item.document_id}`}
+                    className="library-panel__menu library-panel__menu--row"
+                    hidden={menuFor !== item.document_id}
+                  >
+                    {item.archived ? (
+                      <ActionButton ariaLabel={LIBRARY_COPY.deleteNamed(item.title)} onPress={() => requestDelete(item.document_id, item.title)}>
+                        {LIBRARY_COPY.delete}
+                      </ActionButton>
+                    ) : (
+                      <ActionButton ariaLabel={LIBRARY_COPY.archiveNamed(item.title)} onPress={() => requestArchive(item.document_id, item.title)}>
+                        {LIBRARY_COPY.archive}
+                      </ActionButton>
+                    )}
                   </div>
                   {note !== null && (
                     <p className="library-panel__note library-panel__note--row">
-                      {note.kind === 'throttled' ? LIBRARY_COPY.throttled : LIBRARY_COPY.restoreFailed(note.title)}
+                      {note.kind === 'throttled'
+                        ? LIBRARY_COPY.throttled
+                        : note.action === 'archive'
+                          ? LIBRARY_COPY.archiveFailed(note.title)
+                          : LIBRARY_COPY.restoreFailed(note.title)}
                       {note.kind === 'failed' && (
-                        <PendingButton busy={false} landing={headingRef} onPress={() => void onRestore(note.id, note.title)}>
+                        <PendingButton
+                          busy={false}
+                          landing={headingRef}
+                          onPress={() => void (note.action === 'archive' ? onArchive(note.id, note.title) : onRestore(note.id, note.title))}
+                        >
                           {LIBRARY_COPY.retry}
                         </PendingButton>
                       )}
@@ -553,7 +762,7 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
           </ul>
         )}
 
-        {restore?.kind === 'gone' && <p className="library-panel__note">{LIBRARY_COPY.gone}</p>}
+        {rowOp?.kind === 'gone' && <p className="library-panel__note">{LIBRARY_COPY.gone}</p>}
 
         {state.status === 'ready' && state.more === 'failed' && (
           <div className="library-panel__problem">
@@ -587,7 +796,13 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
               icon="add"
               ariaLabel={creating === null ? LIBRARY_COPY.newNamed(creatable[0].label) : undefined}
               busy={creating !== null}
-              onPress={() => void onCreate(creatable[0].id)}
+              buttonRef={newRef}
+              onPress={() => {
+                if (creatable[0].id === STAT_BLOCK) {
+                  setCreateError(null)
+                  setDialog({ kind: 'statblock' })
+                } else void onCreate(creatable[0].id)
+              }}
             >
               {creating === null ? LIBRARY_COPY.new : LIBRARY_COPY.creating}
             </ActionButton>
@@ -612,7 +827,7 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
               </div>
             </>
           )}
-          {createError !== null && (
+          {createError !== null && createError.type !== STAT_BLOCK && (
             <div className="library-panel__problem">
               <p className="library-panel__note">{createMessage[createError.error]}</p>
               {(createError.error === 'throttled' || createError.error === 'failed') && (
@@ -623,6 +838,37 @@ function LibraryTabBody({ category, layout, announce, headingRef, fetchImpl }: L
             </div>
           )}
         </div>
+      )}
+      {dialog?.kind === 'live-archive' && (
+        <LiveArchiveDialog
+          title={dialog.title}
+          onCancel={() => setDialog(null)}
+          onConfirm={() => {
+            setDialog(null)
+            void onArchive(dialog.id, dialog.title)
+          }}
+        />
+      )}
+      {dialog?.kind === 'delete' && campaignId !== null && (
+        <DeleteDocumentDialog
+          campaignId={campaignId}
+          documentId={dialog.id}
+          title={dialog.title}
+          fetchImpl={fetchImpl}
+          onCancel={() => setDialog(null)}
+          onDone={(outcome) => onDeleted(dialog.id, dialog.title, outcome)}
+        />
+      )}
+      {dialog?.kind === 'statblock' && (
+        <StatBlockDialog
+          busy={creating !== null}
+          error={createError !== null && createError.type === STAT_BLOCK ? createMessage[createError.error] : null}
+          onCancel={() => {
+            setCreateError(null)
+            setDialog(null)
+          }}
+          onSubmit={(values) => void onCreate(STAT_BLOCK, values)}
+        />
       )}
     </>
   )

@@ -40,6 +40,11 @@ export const WORKBENCH_COPY = {
   /** A document that cannot load never makes the guard discard anything (§5.3). */
   openFailedNothingChanged: (title: string | null): string =>
     `Couldn't open ${title ?? 'the document'}. Nothing changed.`,
+  /** §12.2: the way out of a canvas state that is not a document, and the only link to the library there. */
+  backToLibrary: 'Back to library',
+  /** LIB-16: an archived document stays open, read-only, under this banner. */
+  archivedBanner: 'This document is archived. It is hidden from the library lists.',
+  archivedRegion: 'Archived',
   /** Used when a late failure lands while focus is elsewhere and the panel is not read out. */
   untitled: (typeLabel: string): string => `Untitled ${typeLabel}`,
   thisDocument: 'this document',
@@ -97,7 +102,7 @@ export const LIBRARY_COPY = {
   // ── Empty states (section 12.2) ──
   empty: {
     npcs: 'No NPCs yet. Run /npc or press New.',
-    bestiary: 'Nothing in the bestiary yet. Run /monster and save it.',
+    bestiary: 'Nothing in the bestiary yet. Run /monster and save it, or press New.',
     documents: 'No documents yet. Press New to write one.',
     'session-log': 'No session notes yet. Run /recap at the end of a session.',
   },
@@ -123,8 +128,46 @@ export const LIBRARY_COPY = {
   storageFull: "This account's document storage is full. Archive and delete documents to make room.",
   throttled: 'Too many changes at once. Wait a moment and try again.',
 
+  // ── The stat block dialog (LIB-12): nothing is stored until it is valid ──
+  statBlockHeading: 'New stat block',
+  statBlockBody: 'A stat block needs a name, an armor class and hit points.',
+  statName: 'Name',
+  statAc: 'Armor class',
+  statHp: 'Hit points',
+  statNameRequired: 'Give the stat block a name.',
+  statNumberInvalid: (label: string, max: number): string => `${label} is a whole number from 0 to ${max.toLocaleString('en-US')}.`,
+  statCreate: 'Create',
+  cancel: 'Cancel',
+
+  // ── Row actions: Archive (LIB-16, LIB-17) and Delete (LIB-18, SEC-40) ──
+  moreActions: (title: string): string => `More actions for ${title}`,
+  archive: 'Archive',
+  archiveNamed: (title: string): string => `Archive ${title}`,
+  archiving: 'Archiving…',
+  archivedDone: (title: string): string => `Archived ${title}`,
+  archiveFailed: (title: string): string => `Couldn't archive ${title}. Nothing changed.`,
+  /** LIB-17, quoted. */
+  liveArchiveHeading: (title: string): string => `Archive ${title}?`,
+  liveArchiveBody: 'The table is seeing this. Archiving stops showing it.',
+  undo: 'Undo',
+  undoRegion: 'Undo archive',
+  undoFailed: (title: string): string => `Couldn't undo archiving ${title}. Restore it from Archived.`,
+  delete: 'Delete',
+  deleteNamed: (title: string): string => `Delete ${title}`,
+  deleting: 'Deleting…',
+  deleteHeading: (title: string): string => `Delete ${title}?`,
+  /** LIB-18, quoted. */
+  deleteBody: (title: string): string => `This permanently deletes ${title} and its whole history. This can't be undone.`,
+  password: 'Your password',
+  passwordNeeded: 'Enter your password to delete.',
+  passwordWrong: "That password didn't match. Nothing was deleted.",
+  deleteFailed: (title: string): string => `Couldn't delete ${title}. Nothing was deleted.`,
+  deleted: (title: string): string => `Deleted ${title}`,
+  notArchived: (title: string): string => `${title} isn't archived any more. Nothing was deleted.`,
+
   // ── Restore ──
   restore: 'Restore',
+  restoring: 'Restoring…',
   restoreNamed: (title: string): string => `Restore ${title}`,
   restored: (title: string): string => `Restored ${title}`,
   restoreFailed: (title: string): string => `Couldn't restore ${title}. Nothing changed.`,

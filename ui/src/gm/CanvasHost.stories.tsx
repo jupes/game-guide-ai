@@ -55,6 +55,7 @@ function api(history: Route = () => json(versions(3))): Route {
         case 'doc_missing': return json({ code: 'not_found' }, 404)
         case 'doc_newer': return json(documentFor('doc_newer', { schema_version: 2 }))
         case 'doc_down': return json({}, 503)
+        case 'doc_archived': return json(documentFor('doc_archived', { archived: true }))
         case 'doc_slow': return pending()
         default: return json(documentFor(doc[1]))
       }
@@ -137,7 +138,7 @@ export const Unavailable = state('doc_missing', api(), async (canvas) => {
   const heading = await canvas.findByRole('heading', { level: 2, name: "This document isn't available" })
   await expect(heading).toBeVisible()
   await expect(canvas.getByText('It may have been deleted, or you may not have access to it.')).toBeVisible()
-  await expectTouchTargets(canvas, ['Close'])
+  await expectTouchTargets(canvas, ['Close', 'Back to library'])
 })
 export const UnavailableDark = dark(Unavailable)
 
@@ -151,9 +152,32 @@ export const Unsupported = state('doc_newer', api(), async (canvas) => {
 export const Failed = state('doc_down', api(), async (canvas) => {
   await expect(await canvas.findByRole('heading', { level: 2, name: "Couldn't open the document" })).toBeVisible()
   await expect(canvas.getByText("Aetheril can't reach its library right now. Nothing was lost.")).toBeVisible()
-  await expectTouchTargets(canvas, ['Retry', 'Close'])
+  await expectTouchTargets(canvas, ['Retry', 'Close', 'Back to library'])
 })
 export const FailedDark = dark(Failed)
+
+/** LIB-16: an archived document stays open, read-only, under an Archived banner with Restore. */
+export const Archived = state('doc_archived', api(), async (canvas) => {
+  await expect(await canvas.findByRole('heading', { level: 2, name: TITLE })).toBeVisible()
+  const banner = canvas.getByRole('group', { name: 'Archived' })
+  await expect(banner).toBeVisible()
+  await expect(within(banner).getByText('This document is archived. It is hidden from the library lists.')).toBeVisible()
+  await expectTouchTargets(within(banner), ['Restore'])
+})
+export const ArchivedDark = dark(Archived)
+
+export const ArchivedPhone: Story = {
+  ...atViewport('phone375'),
+  decorators: [withCanvas('doc_archived')],
+  beforeEach: stubFetch(api()),
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone375')
+    const canvas = within(canvasElement)
+    await expect(await canvas.findByRole('group', { name: 'Archived' })).toBeVisible()
+    await expectNoPageOverflow()
+    await expectTouchTargets(canvas, ['Restore'])
+  },
+}
 
 /** Below 560px of column width the header goes compact, whatever the viewport. */
 export const Compact480 = state(
