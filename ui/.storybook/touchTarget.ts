@@ -31,7 +31,7 @@ type Canvas = ReturnType<typeof within>
 
 /** The roles a touch target is looked up by. A switch and a select are
  * controls too, and 0rn's drawer holds one of each (agent-forge-harness-0rn). */
-export type TouchTargetRole = 'button' | 'switch' | 'combobox'
+export type TouchTargetRole = 'button' | 'switch' | 'combobox' | 'tab'
 
 /** Assert one rendered control, found by its role and accessible name, clears
  * the 44x44 touch-target floor. The role defaults to `button`. */

@@ -27,6 +27,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as React from 'react'
+import { revealSignOutNotice } from './revealSignOut'
 import { deriveInitials, type AvatarTone } from '../ds/Avatar'
 import {
   getMe,
@@ -292,6 +293,8 @@ export function CurrentUserProvider(
   }, [identityChannelFactory, transition])
 
   const signIn = useCallback((next: AuthUser) => {
+    // Whoever signs in, by any path, never reads the previous account's reveal notice (REVEAL-16).
+    revealSignOutNotice.clear()
     transition(next, 'authenticated')
     live.current.broadcast?.post()
   }, [transition])

@@ -108,3 +108,17 @@ describe('Switch — aria-label', () => {
     expect(screen.getByRole('switch')).toHaveAttribute('aria-label', 'Enable notifications')
   })
 })
+
+describe('Switch — aria-describedby (1kg.7.3)', () => {
+  it('renders the description it is given, and nothing when it is given none', () => {
+    const { rerender } = render(
+      <>
+        <Switch ariaLabel="Wants" ariaDescribedBy="warning-1" />
+        <span id="warning-1">Would spoil the lie</span>
+      </>,
+    )
+    expect(screen.getByRole('switch', { name: 'Wants' })).toHaveAccessibleDescription('Would spoil the lie')
+    rerender(<Switch ariaLabel="Wants" />)
+    expect(screen.getByRole('switch', { name: 'Wants' })).not.toHaveAttribute('aria-describedby')
+  })
+})

@@ -23,10 +23,14 @@ Run from the repo root:
 from __future__ import annotations
 
 import importlib
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import cast
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -37,7 +41,7 @@ from httpx import Response
 
 import config
 from service import campaigns_api, documents_api, ratelimit
-from service.app import app, get_auth_store, get_timeline_database, require_session
+from service.app import app, get_auth_store, get_reveals, get_timeline_database, require_session
 from service.audit_log import InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
 from service.campaign_store import InMemoryCampaignStore
@@ -48,13 +52,16 @@ from service.hashing import hash_password
 from service.history import InMemoryMessageStore
 from service.participant_store import InMemoryParticipantStore
 from service.ratelimit import RateLimited, SlidingWindowLimiter
+from service.reveals import Reveals
 from service.seat_offer_store import InMemorySeatOfferStore
 from service.session import SessionData, encode_session
 from service.table_session_store import InMemoryTableSessionStore, no_slots
 from service.workbench_api import (
+    NARROWING_THROTTLED_MESSAGE,
     WRITE_THROTTLED_MESSAGE,
     WorkbenchRoute,
     api_route_dependants,
+    is_narrowing_throttle,
     is_reads_only,
     is_write_throttle,
 )
@@ -420,6 +427,7 @@ def test_mint_throttle_spends_only_for_an_account_principal(monkeypatch: pytest.
         auth_store=lambda: cast(AuthStore, None),
         clear_session_cookie=lambda response: None,
         lifecycle=lambda: None,
+        table_reads=lambda: None,
     )
     mint_route = next(route for route in router.routes if isinstance(route, APIRoute) and route.path == "/table/screen")
     mint_throttle = next(d.call for d in mint_route.dependant.dependencies if is_write_throttle(d.call))
@@ -525,3 +533,154 @@ def test_reset_all_refills_the_real_workbench_write_limiter(monkeypatch: pytest.
     ratelimit.reset_all()
     for _ in range(limit):
         ratelimit.check_workbench_write(user_id)
+
+
+# ── The reveal Stop's own budget (agent-forge-harness-1kg.7.2, ID-8) ─────────
+
+REVEAL_STOP_ROUTE = ("POST", "/campaigns/{campaign_id}/reveals/stop")
+_A_CAMPAIGN = "cmp_" + "a" * 22
+
+
+class _NothingLive:
+    """A reveal service with no live session: a Stop is nothing, never refused."""
+
+    def stop(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+@pytest.fixture
+def stopping(world: _World) -> Iterator[None]:
+    app.dependency_overrides[get_reveals] = lambda: cast(Reveals, _NothingLive())
+    yield
+    app.dependency_overrides.pop(get_reveals, None)
+
+
+def _a_stop(client: TestClient) -> Response:
+    body = {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "scope": "all"}
+    return client.post(f"/campaigns/{_A_CAMPAIGN}/reveals/stop", json=body)
+
+
+def _a_confirm(client: TestClient) -> Response:
+    body = {
+        "schema_version": 1,
+        "command_id": "cmd_aaaaaaaaaaaaaaaa",
+        "document_id": "doc_" + "a" * 22,
+        "session_id": "ses_" + "a" * 22,
+        "reveal_epoch": 0,
+        "version": 1,
+        "mask": ["name"],
+        "audience": {"kind": "table"},
+    }
+    return client.post(f"/campaigns/{_A_CAMPAIGN}/reveals", json=body)
+
+
+def _depends_on_narrowing(dependant: Dependant) -> bool:
+    return any(is_narrowing_throttle(d.call) or _depends_on_narrowing(d) for d in dependant.dependencies)
+
+
+def test_w1_a_stop_is_answered_when_the_shared_write_budget_is_spent(client: TestClient, stopping: None) -> None:
+    # kills: building the Stop router with the default throttle
+    for i in range(BUDGET):
+        assert _create(client, f"Campaign {i}").status_code == 201
+    assert _create(client, "One Too Many").status_code == 429
+    assert _a_confirm(client).status_code == 429, "a Confirm spends the shared budget"
+    stopped = _a_stop(client)
+    assert stopped.status_code == 200 and stopped.json() == {"schema_version": 1, "state": None}
+
+
+def test_w1_the_narrowing_budget_is_its_own_and_answers_the_throttle_shape(
+    client: TestClient, stopping: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # kills: spending the shared budget for a Stop; a 429 without Retry-After
+    monkeypatch.setattr(ratelimit, "reveal_stop_limiter", SlidingWindowLimiter(2, 3600))
+    assert [_a_stop(client).status_code for _ in range(2)] == [200, 200]
+    refused = _a_stop(client)
+    assert refused.status_code == 429
+    detail = refused.json()["detail"]
+    assert detail["code"] == ErrorCode.THROTTLED_USER.value and detail["retryable"] is True
+    assert detail["message"] == NARROWING_THROTTLED_MESSAGE and detail["retry_after_s"] == 3600
+    assert refused.headers["retry-after"] == "3600"
+    for i in range(BUDGET):
+        assert _create(client, f"Campaign {i}").status_code == 201, "the shared budget was never spent by a Stop"
+
+
+def test_w1_a_cross_origin_stop_spends_nothing(
+    client: TestClient, stopping: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ratelimit, "reveal_stop_limiter", SlidingWindowLimiter(1, 3600))
+    body = {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "scope": "all"}
+    foreign = client.post(
+        f"/campaigns/{_A_CAMPAIGN}/reveals/stop", json=body, headers={"origin": "https://evil.example"}
+    )
+    assert foreign.status_code == 403
+    assert _a_stop(client).status_code == 200, "the 403 came before the budget"
+
+
+def test_w1_exactly_the_stop_route_carries_the_narrowing_marker() -> None:
+    """The second pin (Critic C-5): no later write can move onto the narrowing
+    budget unnoticed. Confirm and every other route stay off it."""
+    # kills: dropping the marker; putting Confirm on the narrowing router
+    on_it = {
+        (method, path)
+        for path, route, dependant in api_route_dependants(app)
+        if isinstance(route, WorkbenchRoute) and _depends_on_narrowing(dependant)
+        for method in (route.methods or set())
+    }
+    assert on_it == {REVEAL_STOP_ROUTE}
+    every = {path for path, route, _ in api_route_dependants(app) if isinstance(route, WorkbenchRoute)}
+    assert "/campaigns/{campaign_id}/reveals" in every and "/campaigns/{campaign_id}/reveals/stop" in every
+
+
+def test_w1_the_narrowing_throttle_still_counts_as_a_write_throttle() -> None:
+    # kills: dropping _WRITE_THROTTLE from narrowing_throttle (the pin would call the Stop unthrottled)
+    rows = api_route_dependants(app)
+    assert REVEAL_STOP_ROUTE not in set(_unthrottled_mutations(rows))
+
+
+_REPO = Path(__file__).resolve().parents[2]
+
+
+def _import_ratelimit(**env: str) -> subprocess.CompletedProcess[str]:
+    clean = {k: v for k, v in os.environ.items() if not k.startswith("REVEAL_STOP_")}
+    return subprocess.run(
+        [sys.executable, "-c", "import service.ratelimit"],
+        cwd=_REPO,
+        env={**clean, **env},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT", "0"),
+        ("REVEAL_STOP_RATE_LIMIT_WINDOW_S", "0.0"),
+        ("REVEAL_STOP_RATE_LIMIT_WINDOW_S", "nan"),
+    ],
+)
+def test_w1_a_bad_stop_limit_fails_startup(name: str, value: str) -> None:
+    # kills: building the limiter without _build, so a bad value is accepted
+    assert _import_ratelimit().returncode == 0, "the control: the defaults start"
+    refused = _import_ratelimit(**{name: value})
+    assert refused.returncode != 0
+    named = "invalid rate-limit configuration (REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT / REVEAL_STOP_RATE_LIMIT_WINDOW_S)"
+    assert named in refused.stderr, "`_build` names both variables; a traceback line is not that message"
+
+
+def test_w1_the_stop_budget_defaults_are_pinned_and_reset_all_refills_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT", raising=False)
+    monkeypatch.delenv("REVEAL_STOP_RATE_LIMIT_WINDOW_S", raising=False)
+    cfg = importlib.reload(config)
+    assert (cfg.REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT, cfg.REVEAL_STOP_RATE_LIMIT_WINDOW_S) == (100, 600.0)
+    hourly = cfg.REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT * 3600 / cfg.REVEAL_STOP_RATE_LIMIT_WINDOW_S
+    assert hourly <= cfg.WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT, "no higher than the shared write budget's ceiling"
+
+    monkeypatch.setattr(ratelimit, "reveal_stop_limiter", SlidingWindowLimiter(1, 3600))
+    ratelimit.check_reveal_stop(9_004_232)
+    with pytest.raises(RateLimited):
+        ratelimit.check_reveal_stop(9_004_232)
+    ratelimit.reset_all()
+    ratelimit.check_reveal_stop(9_004_232)

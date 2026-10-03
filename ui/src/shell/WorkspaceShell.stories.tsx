@@ -504,19 +504,26 @@ export const Narrow767: Story = {
   },
 }
 
-/** At 768px the sidebar is back, at its 268px, and the picker is in the header. */
-export const Wide768: Story = {
-  ...atViewport('wide768'),
+/**
+ * At 768px the workspace is MEDIUM (LAYOUT-2, agent-forge-harness-1kg.6.3): the 56px
+ * rail, its Open navigation button, and no sidebar; the picker is in the header.
+ * This replaces `Wide768`, which asserted a 268px sidebar at 768px and was written
+ * for the two-layout world.
+ */
+export const Medium768: Story = {
+  ...atViewport('medium768'),
   play: async ({ canvasElement }) => {
-    await expectViewport('wide768')
+    await expectViewport('medium768')
     const canvas = within(canvasElement)
     await canvas.findByText(/magic missile/)
-    await expect(canvas.queryByRole('button', { name: 'Open navigation' })).toBeNull()
-    const nav = canvas.getByRole('navigation', { name: 'Main navigation' }).getBoundingClientRect()
-    await expect(nav.left).toBe(0)
-    await expect(nav.width).toBe(268)
+    const rail = canvas.getByRole('navigation', { name: 'Navigation rail' }).getBoundingClientRect()
+    await expect(rail.left).toBe(0)
+    await expect(rail.width).toBe(56)
+    await expect(canvas.getByRole('button', { name: 'Open navigation' })).toBeVisible()
+    await expect(canvasElement.querySelector('.left-nav')).not.toBeVisible()
     const channels = canvas.getByRole('navigation', { name: 'Channels' })
     await expect(within(channels).getByRole('combobox', { name: 'Model' })).toBeVisible()
+    await expectWorkspaceFits(canvasElement)
   },
 }
 

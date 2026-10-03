@@ -236,7 +236,19 @@ export interface TableSessionProviderProps {
   readonly courier?: EndCourier
 }
 
-export function TableSessionProvider({
+/**
+ * The one provider for a table. A provider that is given no scope of its own and is
+ * nested inside another passes its children through (the `CanvasProvider` precedent):
+ * two stores would be two tables, so the shell inside a harness that already holds one
+ * reuses it.
+ */
+export function TableSessionProvider(props: TableSessionProviderProps): React.JSX.Element {
+  const parent = useContext(TableSessionContext)
+  if (parent !== null && props.scope === undefined) return <>{props.children}</>
+  return <TableSessionProviderRoot {...props} />
+}
+
+function TableSessionProviderRoot({
   scope: given,
   children,
   fetchImpl = fetch,

@@ -685,8 +685,63 @@ writes one `reveal.stopped` per disclosure it took copies from (or one naming
 its document), and commits before it reads the picture. Neither advances
 `authz_revision`, enqueues a job or notifies. Deadlock victims are retried
 three times, then busy; the races are proved against PostgreSQL in
-`tests/test_reveal_db.py`. No HTTP route exists yet: `1kg.7.2` builds the
-routes, the projection and the headers on this service.
+`tests/test_reveal_db.py`. The GM's routes are `service/reveals_api.py`
+(below); the table's sanitized projection is `1kg.7.2` PR-2's.
+
+### Reveal routes (1kg.7.2)
+
+Three Workbench GM routes on this service, importing neither `service.app` nor
+`service.policy` (T-P18 pins the decision point to `service/principals.py`):
+
+- `GET /campaigns/{campaign_id}/reveals` answers `RevealAnswer`: the picture with
+  `stale_text` (masked text now differs from the pinned version; read after the
+  commit, never inside it, and it may lag the picture by one commit) and
+  `pending_delivery` (`held`: the seat is not yet confirmed; the connection half
+  is `1kg.7.5`'s), or `state: null` with no live session. Free: it writes
+  nothing, and its cost is two document reads per distinct live document.
+- `POST /campaigns/{campaign_id}/reveals` is Confirm, idempotent by `command_id`.
+- `POST /campaigns/{campaign_id}/reveals/stop` is Stop, never refused for state.
+
+**The order of checks** (SEC-3): origin 403, the one 401, role 403, the throttle
+429, the body 422, id shapes (the one 404, before any database work; a
+participant id is *not* shape-checked, so a stranger cannot tell a malformed one
+from an unknown one), no service 503, then the service in its own order: 404,
+courtesy 409, busy 503, the 422s, the 409 under the row. A refusal is a fixed
+sentence; a mask refusal names its keys and nothing else. An asset key is refused
+while `reveals.TABLE_ASSETS_SERVED` is False, because no `/table/assets/{handle}`
+route exists to show it.
+
+**The narrowing budget.** A Stop spends its own limiter, 100 per 600 s per
+account (`REVEAL_STOP_RATE_LIMIT_*`), so autosaves that spent the shared 600
+writes an hour never refuse it. Its hourly ceiling is 600, the shared budget's
+own, so the storage-abuse ceiling does not rise: an account can make at most 600
+shared plus 600 narrowing writes an hour per instance. Only the Stop route carries
+`narrowing_throttle`, and a second pin in `test_workbench_write_throttle.py` holds
+that set exact. End and Rotate keep the shared budget.
+
+**A failure after a commit never double-acts.** Confirm and Stop answer from a
+read taken after they commit; if it fails the answer is a retryable 503, a retried
+Confirm replays by `command_id`, and a retried Stop is idempotent at the cost of
+one more epoch and one more `reveal.stopped` row.
+
+### The table read (1kg.7.2 PR-2)
+
+`GET /table/snapshot?campaign_id=` is the bearer-free read: players see only the
+sanitized projection of the slots they are entitled to. `table_api` runs Fetch
+Metadata, origin, the principal, the id shape (else the one `inactive`), the
+entitled-read budget keyed by the principal (`TABLE_READ_RATE_LIMIT_*`, 120 a
+minute: an account id or a grant id, never the source), then `TableReads`; a
+`None` is `inactive`, and only then is a refusal counted against the source
+budget (SEC-47(2)). Stored text reaches the route through `service/table_reads.py`
+alone (T-23), in one read-only transaction: the store's view finds the live
+session and the entitlement (the table slot, and the own slot only for a
+GM-confirmed seat; this module consults no eligibility rule, ED-25), then
+**only** `documents.snapshot(campaign, document, version)` reads text, and only
+a sealed version of the recorded type. `service/table_projection.py` is the one
+builder (SEC-14): it copies the masked keys and nothing else, at read time
+rather than at Confirm (ID-16: a sealed version is immutable, and `check_mask`
+and the contract share `_PROJECTION_VALUE`, a property test holds the two
+together). Frames that fail `TableSnapshot` are emitted with every slot empty.
 
 | Invariant | Held by |
 |---|---|

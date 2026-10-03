@@ -340,6 +340,9 @@ export interface DocumentFieldProps {
   changed?: boolean
   /** REVEAL-13: the table can see this field right now. A prop, never derived. */
   revealed?: boolean
+  /** What the marker says, in the owner's words (1kg.7.3): `Brann can see this`, or a copy still waiting.
+   * Omitted, it says the table can. Rendered as text, never interpreted. */
+  revealedNote?: string
   /** The document's name, for an asset's alt text when the reference has none. */
   documentName: string
   /** MS-7: the campaign an asset is served under. */
@@ -363,6 +366,7 @@ export function DocumentField({
   assistantEditing = false,
   changed = false,
   revealed = false,
+  revealedNote,
   documentName,
   campaignId,
   onDraft,
@@ -967,7 +971,7 @@ export function DocumentField({
             <span className="material-symbols-rounded" aria-hidden="true">
               visibility
             </span>
-            The table can see this
+            {revealedNote ?? 'The table can see this'}
           </span>
         )}
         {assistantEditing && (

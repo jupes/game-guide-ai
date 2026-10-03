@@ -2398,6 +2398,16 @@ class TableLeaveRequest(_Contract):
     schema_version: SchemaVersion
 
 
+class TableSnapshotQuery(_Contract):
+    """``GET /table/snapshot?campaign_id=`` (1kg.7.2, ID-15): which campaign's
+    table this principal reads. The campaign is in the URL's query because it is
+    not a secret (SEC-43); the **principal** is the cookie, and nothing here can
+    name a participant, a slot or a grant. A query is not a payload, so it
+    carries no ``schema_version``: the answer does (``TableSnapshot``)."""
+
+    campaign_id: OpaqueId
+
+
 class Capabilities(_Contract):
     """What the deployment has switched on (RAIL-10, AE-58): the answer to the
     lookup a GM client makes once per load. Every switch is off until the owner
@@ -2558,10 +2568,19 @@ class ParticipantsAudience(_Contract):
     participant_ids: ParticipantIds
 
 
+class EveryoneSeatedAudience(_Contract):
+    """TA-5, threat model 15.11: every accepted, GM-confirmed, not-removed seat,
+    expanded by the server at Confirm and never from a list the client sends."""
+
+    kind: Literal["everyone_seated"]
+
+
 #: Decision ED-14, owner decision O-2: nothing here ties an audience to a
 #: document type — a participant audience is legal for **any** type, and the
 #: registry's ``audience`` flag now says only whose default reveal a type seeds.
-RevealAudience = Annotated[TableAudience | ParticipantsAudience, Field(discriminator="kind")]
+RevealAudience = Annotated[
+    TableAudience | ParticipantsAudience | EveryoneSeatedAudience, Field(discriminator="kind")
+]
 
 
 class TableSlotRef(_Contract):
@@ -2917,6 +2936,14 @@ class RevealState(_Contract):
         if on_the_table & privately:
             raise ValueError("a disclosure is the table slot, or participant slots, never both")
         return self
+
+
+class RevealAnswer(_Contract):
+    """The GM's reveal picture as a top-level answer: the read, a Confirm and a
+    Stop (1kg.7.2). `state` is null only when the campaign has no live session."""
+
+    schema_version: SchemaVersion
+    state: RevealState | None
 
 
 # ── Realtime events ──────────────────────────────────────────────────────────
@@ -4006,6 +4033,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "ScreenMintRequest": TypeAdapter(ScreenMintRequest),
     "ScreenMintAnswer": TypeAdapter(ScreenMintAnswer),
     "TableLeaveRequest": TypeAdapter(TableLeaveRequest),
+    "TableSnapshotQuery": TypeAdapter(TableSnapshotQuery),
     "Capabilities": TypeAdapter(Capabilities),
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
     "RevealSlotRef": TypeAdapter(RevealSlotRef, config=_HIDE_INPUT),
@@ -4013,6 +4041,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "RevealStopRequest": TypeAdapter(RevealStopRequest, config=_HIDE_INPUT),
     "RevealLive": TypeAdapter(RevealLive),
     "RevealState": TypeAdapter(RevealState),
+    "RevealAnswer": TypeAdapter(RevealAnswer),
     "TableProjection": TypeAdapter(TableProjection),
     "GmEvent": TypeAdapter(GmEvent, config=_HIDE_INPUT),
     "TableEvent": TypeAdapter(TableEvent, config=_HIDE_INPUT),

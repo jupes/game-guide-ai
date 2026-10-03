@@ -88,7 +88,7 @@ trailing slash so it blocks `/t/anything` and not `/tavern`).
 | `yje.2.3` (password reset) | `/reset#token=<token>` | |
 | `yje.3.2` (hosted Checkout + Customer Portal) | `/billing/return`, `/billing/cancel` | A Checkout session id is not a single-use credential (retrieving it needs the secret key); whether it may ride in the query string is `yje.3.2`'s own decision with its security review, not this record's. |
 | `yje.2.6` (free signup entry surface) | `/signup` | Carries no credential; needs no fragment key. |
-| `74j` (shell reaches campaigns) | `/tavern` | No credential and no fragment key of its own; campaign state rides on `/workspace` (`1kg.2.5`). `30c` replaces the screen's body. |
+| `74j` (shell reaches campaigns) | `/tavern` | No credential and no fragment key of its own; campaign state rides on `/workspace` (`1kg.2.5`). `30c` replaced the screen's body (PR-1) and opened it to every signed-in account (PR-2): Landing's *Enter the Tavern* opens it, a player sees its seats, and a signed-out cold load returns to it after sign-in (path only, A-33 ID-26). |
 
 **Two behaviour changes, recorded so nobody has to rediscover them:**
 

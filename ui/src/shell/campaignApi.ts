@@ -30,8 +30,13 @@ import {
   ConversationPatchRequestSchema,
   parseConversation,
   parseConversationPage,
+  PlayerSeatPageSchema,
+  PlayerSeatSchema,
+  SeatPageSchema,
   type Campaign,
+  type Seat,
   type Conversation,
+  type PlayerSeat,
 } from '../gm/contracts'
 import { isOpaqueId } from './workspaceFragment'
 
@@ -45,6 +50,12 @@ export type CampaignPageResult =
    * they are left out, never allowed to empty the page. Only `nextCursor ===
    * null` is the end of the list: a short page is not. */
   | { readonly kind: 'ok'; readonly items: readonly Campaign[]; readonly nextCursor: string | null; readonly dropped: number }
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+export type SeatPageResult =
+  /** `dropped` as for `CampaignPageResult`: seats this client could not read are left out. */
+  | { readonly kind: 'ok'; readonly items: readonly PlayerSeat[]; readonly nextCursor: string | null; readonly dropped: number }
   | { readonly kind: 'failed' }
   | { readonly kind: 'unauthorized' }
 
@@ -130,6 +141,42 @@ export async function listCampaigns(
   }
 }
 
+/** The seat page's envelope, read the same way. */
+const SeatEnvelopeSchema = PlayerSeatPageSchema.extend({
+  items: z.array(z.unknown()).max(CAMPAIGN_PAGE_MAX_ITEMS),
+})
+
+/** `GET /seats[?cursor=…]` (30c PR-2): the caller's own accepted seats, newest
+ * acceptance first, for any signed-in account. Only the server's opaque cursor
+ * ever rides the query, and nothing about anyone else at a table comes back
+ * (SEC-43). A list read, so a 403 or a 404 is an outage here, as for campaigns. */
+export async function listSeats(
+  cursor: string | null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<SeatPageResult> {
+  const query = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+  const res = await send(fetchImpl, `/seats${query}`)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (!res.ok) return { kind: 'failed' }
+  const envelope = SeatEnvelopeSchema.safeParse(await bodyOf(res))
+  if (!envelope.success) return { kind: 'failed' }
+  const items: PlayerSeat[] = []
+  for (const raw of envelope.data.items) {
+    const item = PlayerSeatSchema.safeParse(raw)
+    if (item.success) items.push(item.data)
+  }
+  return {
+    kind: 'ok',
+    items,
+    nextCursor: envelope.data.next_cursor,
+    dropped: envelope.data.items.length - items.length,
+  }
+}
+
 /** `GET /campaigns/{id}`: the server's say on a campaign id from an untrusted
  * source (a fragment, a stale list). An archived campaign is `unavailable`. */
 export async function getCampaign(
@@ -174,6 +221,37 @@ export async function createCampaign(
   if (!res.ok) return { kind: 'failed' }
   const campaign = CampaignSchema.safeParse(await bodyOf(res))
   return campaign.success ? { kind: 'created', campaign: campaign.data } : { kind: 'failed' }
+}
+
+/** `POST /campaigns/{id}/conclude` or `/reopen`: bodiless, so no Content-Type
+ * is sent (there is nothing to describe), and the server's answer is the
+ * campaign as it now stands. A 403 or a 404 is one state (SEC-3). */
+async function setConcluded(
+  campaignId: string,
+  verb: 'conclude' | 'reopen',
+  fetchImpl: typeof fetch,
+): Promise<CampaignReadResult> {
+  if (!isOpaqueId(campaignId)) return { kind: 'unavailable' }
+  const res = await send(fetchImpl, `/campaigns/${encodeURIComponent(campaignId)}/${verb}`, { method: 'POST' })
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (!res.ok) return { kind: 'failed' }
+  const campaign = CampaignSchema.safeParse(await bodyOf(res))
+  return campaign.success ? { kind: 'ok', campaign: campaign.data } : { kind: 'failed' }
+}
+
+/** Mark the caller's own campaign concluded. Idempotent on the server. */
+export function concludeCampaign(campaignId: string, fetchImpl: typeof fetch = fetch): Promise<CampaignReadResult> {
+  return setConcluded(campaignId, 'conclude', fetchImpl)
+}
+
+/** Reopen a concluded campaign. Idempotent on the server. */
+export function reopenCampaign(campaignId: string, fetchImpl: typeof fetch = fetch): Promise<CampaignReadResult> {
+  return setConcluded(campaignId, 'reopen', fetchImpl)
 }
 
 /** `GET /conversations/{id}`, for the restore check only (I-6): it never
@@ -288,4 +366,28 @@ export async function renameThread(
   if (!res.ok) return { kind: 'failed' }
   const conversation = parseConversation(await bodyOf(res))
   return conversation.kind === 'ok' ? { kind: 'renamed', conversation: conversation.value } : { kind: 'failed' }
+}
+
+export type SeatListResult =
+  | { readonly kind: 'ok'; readonly items: readonly Seat[] }
+  /** Any refusal or outage reads alike here: the sheet offers Retry, and Whole table stays usable. */
+  | { readonly kind: 'failed' }
+  | { readonly kind: 'unauthorized' }
+
+/**
+ * `GET /campaigns/{id}/participants?limit=50` (1kg.7.3): the seats a GM can name in a
+ * reveal. One page only: a campaign holds at most 40 seats (SEC-50(3)) and a page
+ * holds up to 50, so a second page cannot exist. Removed seats are left out by the server.
+ */
+export async function listCampaignSeats(campaignId: string, fetchImpl: typeof fetch = fetch): Promise<SeatListResult> {
+  if (!isOpaqueId(campaignId)) return { kind: 'failed' }
+  const res = await send(fetchImpl, `/campaigns/${encodeURIComponent(campaignId)}/participants?limit=${CAMPAIGN_PAGE_MAX_ITEMS}`)
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (!res.ok) return { kind: 'failed' }
+  const page = SeatPageSchema.safeParse(await bodyOf(res))
+  return page.success ? { kind: 'ok', items: page.data.items } : { kind: 'failed' }
 }

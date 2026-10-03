@@ -15,7 +15,7 @@ test('a signed-in conversation survives a reload, and signing out leaves nothing
   await page.goto('/')
   await signIn(page, first)
 
-  await page.getByRole('button', { name: 'Enter the Tavern' }).click()
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
   const channels = page.getByRole('navigation', { name: 'Channels' })
   await channels.getByRole('button', { name: 'Rules' }).click()
   await page.getByRole('button', { name: 'New conversation' }).click()

@@ -199,7 +199,9 @@ describe('opening and closing (T-WS-2, 3, 7, 8)', () => {
     expect(drawer).toBe(document.getElementById(button.getAttribute('aria-controls') ?? ''))
     expect(drawer).toHaveAttribute('aria-modal', 'true')
     expect(document.activeElement).toBe(drawer)
-    expect(container.querySelector('.workspace-shell__chrome')).toHaveAttribute('inert')
+    // REVEAL-14: the chrome is inert part by part, so the reveal indicator can stay operable above the drawer.
+    for (const part of container.querySelectorAll('.workspace-shell__chrome-part, .app-header__controls')) expect(part).toHaveAttribute('inert')
+    expect(container.querySelector('.reveal-indicator')?.closest('[inert]') ?? null).toBeNull()
     expect(main()).toHaveAttribute('inert')
   })
 

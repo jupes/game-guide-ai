@@ -156,10 +156,21 @@ PROTECTED_ROUTES: list[Route] = [
      {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "action": "start"}),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/table-session/screens/tcr_aaaaaaaaaaaaaaaaaaaaaa", None),
+    # 1kg.7.2 PR-1: the GM's reveal picture, Confirm and Stop.
+    ("GET", "/campaigns/{campaign_id}/reveals", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/reveals", None),
+    ("POST", "/campaigns/{campaign_id}/reveals", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/reveals",
+     {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "document_id": "doc_aaaaaaaaaaaaaaaaaaaaaa",
+      "session_id": "ses_aaaaaaaaaaaaaaaaaaaaaa", "reveal_epoch": 0, "version": 1, "mask": ["name"],
+      "audience": {"kind": "table"}}),
+    ("POST", "/campaigns/{campaign_id}/reveals/stop", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/reveals/stop",
+     {"schema_version": 1, "command_id": "cmd_aaaaaaaaaaaaaaaa", "scope": "all"}),
     # The screen mint calls `require_session` directly from its table principal
     # (a live screen grant decides without it, SEC-44), so the dependency walk
     # below cannot see it as guarded; it is listed so both halves run on it.
     ("POST", "/table/screen", "/table/screen", {"schema_version": 1, "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa"}),
+    # 1kg.7.2 PR-2: the table's snapshot read. It calls `require_session` through
+    # the table principal too, so it is listed for the same reason.
+    ("GET", "/table/snapshot", "/table/snapshot?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
     # 1kg.4.1 slice B: the GM's tool invocations.
     ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
      {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",

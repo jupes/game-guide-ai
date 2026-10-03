@@ -17,7 +17,8 @@ import { CampaignSchema, type Campaign } from '../gm/contracts'
 import { AppNavProvider, useAppNav, type AppNavState, type ChatMode } from './AppNav'
 import { CurrentUserProvider, useCurrentUser, type CurrentUserContextValue } from './currentUser'
 import {
-  CampaignProvider, canUseCampaigns, useCampaign, type CampaignContextValue, type SwitchGuard,
+  CampaignProvider, canUseCampaigns, useCampaign, useCampaignDocument, type CampaignContextValue,
+  type CampaignDocumentValue, type SeatReadOutcome, type SwitchGuard,
 } from './campaignContext'
 import type { IdentityChannelLike } from './identityBroadcast'
 import type { CampaignRestore } from './workspaceFragment'
@@ -94,17 +95,19 @@ function channels() {
   return { factory, opened, posts, receive }
 }
 
-const live = {} as { c: CampaignContextValue; nav: AppNavState; user: CurrentUserContextValue }
+const live = {} as { c: CampaignContextValue; d: CampaignDocumentValue; nav: AppNavState; user: CurrentUserContextValue }
 /** One entry per committed render: what the Probe's consumers were handed. */
 const rendered: Array<{ account: string; mode: ChatMode; id: string | null; selection: string; names: string }> = []
 function Probe(): React.JSX.Element {
   const c = useCampaign()
+  const d = useCampaignDocument()
   const nav = useAppNav()
   const user = useCurrentUser()
   const names = c.list.kind === 'idle' ? '' : c.list.items.map((i) => i.name).join(',')
   React.useLayoutEffect(() => {
     rendered.push({ account: user.user.id, mode: nav.mode, id: nav.conversationId, selection: c.selection.kind, names })
     live.c = c
+    live.d = d
     live.nav = nav
     live.user = user
   })
@@ -779,5 +782,364 @@ describe('a fragment changed outside the app', () => {
     edit('#campaign=cmp_A')
     expect(window.location.hash).toBe('')
     expect(server.calls).toHaveLength(0)
+  })
+})
+
+// ── 30c PR-1: conclude and reopen (P-1 to P-5) ───────────────────────────────
+
+describe('setConcluded (30c, P-1 to P-5)', () => {
+  const CONCLUDED_AT = '2026-09-20T10:00:00Z'
+  const concludedA = { ...A, concluded_at: CONCLUDED_AT }
+  const concludeRoute: Route = (call) => {
+    if (call.method === 'POST' && call.url === '/campaigns/cmp_A/conclude') return { status: 200, body: concludedA }
+    if (call.method === 'POST' && call.url === '/campaigns/cmp_A/reopen') return { status: 200, body: A }
+    return defaultRoute(call)
+  }
+
+  it('P-1 replaces the listed campaign in place, and leaves the selection and the scope key alone', async () => {
+    const { server } = await mount({ route: concludeRoute })
+    await loaded()
+    await run(() => live.c.selectCampaign(B))
+    const scope = live.c.scope
+    const selection = live.c.selection
+    expect(scope).not.toBeNull()
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('done')
+    expect(server.lines().filter((line) => line.startsWith('POST'))).toEqual(['POST /campaigns/cmp_A/conclude'])
+    expect(live.c.list).toMatchObject({ kind: 'ready', items: [concludedA, B] })
+    expect(live.c.scope).toBe(scope)
+    expect(live.c.selection).toBe(selection)
+    // Reopen puts the answer back: the same call, the other way.
+    expect(await run(() => live.c.setConcluded('cmp_A', false))).toBe('done')
+    expect(server.lines()).toContain('POST /campaigns/cmp_A/reopen')
+    expect(live.c.list).toMatchObject({ items: [A, B] })
+  })
+
+  it('P-1 concluding the SELECTED campaign still changes neither the selection nor the scope key', async () => {
+    await mount({ route: concludeRoute })
+    await loaded()
+    await run(() => live.c.selectCampaign(A))
+    const scope = live.c.scope
+    const selection = live.c.selection
+    await run(() => live.c.setConcluded('cmp_A', true))
+    expect(live.c.scope).toBe(scope)
+    expect(live.c.selection).toBe(selection)
+    expect(live.c.list).toMatchObject({ items: [concludedA, B] })
+  })
+
+  it('P-2 an answer that arrives after an account switch is dropped, and the new list is untouched', async () => {
+    const { server, signal } = await mount({
+      route: (call) => (call.method === 'POST' && call.url.endsWith('/conclude') ? 'defer' : concludeRoute(call)),
+    })
+    await loaded()
+    let outcome: string | null = null
+    act(() => { void live.c.setConcluded('cmp_A', true).then((o) => { outcome = o }) })
+    const post = server.calls.find((c) => c.method === 'POST')
+    expect(post).toBeDefined()
+    await switchAccount(signal, BOB)
+    await loaded()
+    expect(live.c.list).toMatchObject({ items: [A, B] })
+    act(() => post?.reply({ status: 200, body: concludedA }))
+    await flush()
+    expect(outcome).toBe('failed')
+    expect(live.c.list).toMatchObject({ kind: 'ready', items: [A, B] })
+  })
+
+  it('P-3 a 404 re-reads the first page exactly once and answers unavailable', async () => {
+    const { server } = await mount({
+      route: (call) => (call.method === 'POST' ? { status: 404, body: {} } : defaultRoute(call)),
+    })
+    await loaded()
+    const before = server.calls.length
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('unavailable')
+    await flush()
+    expect(server.lines().slice(before)).toEqual(['POST /campaigns/cmp_A/conclude', 'GET /campaigns'])
+  })
+
+  it('a 503 and a network failure answer failed and re-read nothing', async () => {
+    let reply: Reply = { status: 503 }
+    const { server } = await mount({ route: (call) => (call.method === 'POST' ? reply : defaultRoute(call)) })
+    await loaded()
+    const before = server.calls.length
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('failed')
+    reply = 'network'
+    expect(await run(() => live.c.setConcluded('cmp_A', false))).toBe('failed')
+    expect(server.lines().slice(before)).toEqual(['POST /campaigns/cmp_A/conclude', 'POST /campaigns/cmp_A/reopen'])
+    expect(live.c.list).toMatchObject({ items: [A, B] })
+  })
+
+  it('P-4 the inert default resolves failed and makes no request', async () => {
+    const outside = stubServer()
+    vi.stubGlobal('fetch', outside.fetchImpl)
+    const held: { value?: CampaignContextValue } = {}
+    function Bare(): null {
+      const value = useCampaign()
+      React.useLayoutEffect(() => {
+        held.value = value
+      })
+      return null
+    }
+    render(<Bare />)
+    expect(await (held.value as CampaignContextValue).setConcluded('cmp_A', true)).toBe('failed')
+    expect(outside.calls).toHaveLength(0)
+  })
+
+  it('P-5 a disabled account makes no request, and an enabled one (positive control) does', async () => {
+    const player = await mount({ role: 'player' })
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('failed')
+    expect(player.server.calls).toHaveLength(0)
+    player.view.unmount()
+    const dm = await mount({ route: concludeRoute })
+    expect(await run(() => live.c.setConcluded('cmp_A', true))).toBe('done')
+    expect(dm.server.lines()).toEqual(['POST /campaigns/cmp_A/conclude'])
+  })
+})
+
+describe('readSeats (30c PR-2, Q-1 to Q-6)', () => {
+  const SEAT = {
+    schema_version: 1, campaign_id: 'cmp_S1', campaign_name: 'The Hollow Crown', alias: 'Brannoc',
+    accepted_at: '2026-09-20T18:00:00Z', confirmed: true, tone: null, game_system: 'dnd5e', avatar_icon: 'sailing',
+    avatar_tone: 'ember', concluded: false, last_played_at: null, live: false,
+  }
+  const seatsPage = (items: unknown[], next: string | null = null) => ({ schema_version: 1, items, next_cursor: next })
+  const seatRoute: Route = (call) => (call.method === 'GET' && call.url.startsWith('/seats')
+    ? { status: 200, body: seatsPage([SEAT], call.url === '/seats' ? 'more' : null) }
+    : defaultRoute(call))
+
+  it('Q-1 a signed-in player (who cannot use campaigns) reads a page of its own seats, and a cursor rides the query', async () => {
+    const { server } = await mount({ role: 'player', route: seatRoute })
+    expect(live.c.enabled).toBe(false)
+    const first = await run(() => live.c.readSeats(null))
+    expect(first).toMatchObject({ kind: 'ok', nextCursor: 'more' })
+    expect(first.kind === 'ok' && first.items.map((s) => s.campaign_id)).toEqual(['cmp_S1'])
+    expect(await run(() => live.c.readSeats('more'))).toMatchObject({ kind: 'ok', nextCursor: null })
+    expect(server.lines()).toEqual(['GET /seats', 'GET /seats?cursor=more'])
+  })
+
+  it('Q-2 a dm reads its seats too, and nothing is kept in the campaign list', async () => {
+    const { server } = await mount({ route: seatRoute })
+    expect(await run(() => live.c.readSeats(null))).toMatchObject({ kind: 'ok' })
+    expect(server.lines()).toEqual(['GET /seats'])
+    expect(live.c.list).toEqual({ kind: 'idle' })
+  })
+
+  it('Q-3 a signed-out session makes no request and answers failed; a signed-in one (positive control) does', async () => {
+    const out = await mount({ me: { kind: 'error', status: 401, message: 'not signed in' }, route: seatRoute })
+    expect(live.user.authStatus).toBe('unauthenticated')
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
+    expect(out.server.calls).toHaveLength(0)
+    out.view.unmount()
+    const inn = await mount({ role: 'player', route: seatRoute })
+    expect(await run(() => live.c.readSeats(null))).toMatchObject({ kind: 'ok' })
+    expect(inn.server.lines()).toEqual(['GET /seats'])
+  })
+
+  it('Q-4 an answer that arrives after an account switch is dropped as failed, never shown to the new account', async () => {
+    const { server, signal } = await mount({
+      role: 'player',
+      route: (call) => (call.url.startsWith('/seats') ? 'defer' : defaultRoute(call)),
+    })
+    let outcome: SeatReadOutcome | null = null
+    act(() => { void live.c.readSeats(null).then((o) => { outcome = o }) })
+    const read = server.calls.find((c) => c.url === '/seats')
+    expect(read).toBeDefined()
+    await switchAccount(signal, BOB, 'player')
+    act(() => read?.reply({ status: 200, body: seatsPage([SEAT]) }))
+    await flush()
+    expect(outcome).toEqual({ kind: 'failed' })
+  })
+
+  it('Q-5 the inert default answers failed and makes no request', async () => {
+    const outside = stubServer(seatRoute)
+    vi.stubGlobal('fetch', outside.fetchImpl)
+    const held: { value?: CampaignContextValue } = {}
+    function Bare(): null {
+      const value = useCampaign()
+      React.useLayoutEffect(() => {
+        held.value = value
+      })
+      return null
+    }
+    render(<Bare />)
+    expect(await (held.value as CampaignContextValue).readSeats(null)).toEqual({ kind: 'failed' })
+    expect(outside.calls).toHaveLength(0)
+  })
+
+  it('Q-6 a 503, a network failure and an unreadable page are failed', async () => {
+    let reply: Reply = { status: 503 }
+    await mount({ role: 'player', route: (call) => (call.url.startsWith('/seats') ? reply : defaultRoute(call)) })
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
+    reply = 'network'
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
+    reply = { status: 200, body: { schema_version: 1, items: 'nope', next_cursor: null } }
+    expect(await run(() => live.c.readSeats(null))).toEqual({ kind: 'failed' })
+  })
+})
+
+// ── The document key (agent-forge-harness-1kg.6.3, CANVAS-30) ─────────────────
+
+describe('the document key (T-3)', () => {
+  const RESTORE = { campaignId: 'cmp_A', conversationId: null, documentId: 'doc_1' } as const
+  const HASH = '#campaign=cmp_A&document=doc_1'
+  function edit(hash: string): void {
+    window.history.replaceState(null, '', `/workspace${hash}`)
+    act(() => { window.dispatchEvent(new HashChangeEvent('hashchange')) })
+  }
+
+  it('a cold restore keeps the document key through restoring -> selected, and the deep link stays in the URL', async () => {
+    const { server } = await mount({
+      hash: HASH, restore: RESTORE,
+      route: (call) => (call.url === '/campaigns/cmp_A' ? 'defer' : defaultRoute(call)),
+    })
+    await flush()
+    expect(live.c.selection).toEqual({ kind: 'restoring', campaignId: 'cmp_A' })
+    expect(live.d.documentKey).toBe('doc_1')
+    expect(window.location.hash).toBe(HASH)
+    act(() => server.calls[0].reply({ status: 200, body: A }))
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    expect(live.d.documentKey).toBe('doc_1')
+    expect(window.location.hash).toBe(HASH)
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A'])
+  })
+
+  it('a switch or a clear drops the document key from the state and the URL', async () => {
+    await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await run(() => live.c.selectCampaign(B))
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('#campaign=cmp_B')
+    act(() => live.d.setDocumentKey('doc_2'))
+    expect(window.location.hash).toBe('#campaign=cmp_B&document=doc_2')
+    await run(() => live.c.clearCampaign())
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('')
+  })
+
+  it('an unavailable campaign drops the document key with it', async () => {
+    await mount({
+      hash: HASH, restore: RESTORE,
+      route: (call) => (call.url === '/campaigns/cmp_A' ? { status: 404 } : defaultRoute(call)),
+    })
+    await waitFor(() => expect(live.c.selection).toStrictEqual({ kind: 'unavailable' }))
+    expect(live.d.documentKey).toBeNull()
+    await waitFor(() => expect(window.location.hash).toBe(''))
+  })
+
+  it('leaving GM removes the key from the URL but not from the state; returning writes it back (CANVAS-9)', async () => {
+    await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    act(() => live.nav.setMode('sage'))
+    await waitFor(() => expect(window.location.hash).toBe(''))
+    expect(live.d.documentKey).toBe('doc_1')
+    act(() => live.nav.setMode('gm'))
+    await waitFor(() => expect(window.location.hash).toBe(HASH))
+    expect(live.d.documentKey).toBe('doc_1')
+  })
+
+  it('a same-campaign hash naming another document notifies the listener first; the URL keeps the current id until setDocumentKey', async () => {
+    const { server } = await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    const heard: Array<{ id: string; hash: string }> = []
+    let off = (): void => {}
+    act(() => { off = live.d.onDocumentLink((id) => heard.push({ id, hash: window.location.hash })) })
+    edit('#campaign=cmp_A&document=doc_2')
+    // The listener runs before the fragment is rewritten (it saw the edit), and the rewrite then restores doc_1.
+    expect(heard).toEqual([{ id: 'doc_2', hash: '#campaign=cmp_A&document=doc_2' }])
+    expect(window.location.hash).toBe(HASH)
+    expect(live.d.documentKey).toBe('doc_1')
+    act(() => live.d.setDocumentKey('doc_2'))
+    expect(window.location.hash).toBe('#campaign=cmp_A&document=doc_2')
+    // The same id again is not a link; an unsubscribed listener hears nothing.
+    edit('#campaign=cmp_A&document=doc_2')
+    expect(heard).toHaveLength(1)
+    off()
+    edit('#campaign=cmp_A&document=doc_3')
+    expect(heard).toHaveLength(1)
+    expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+    expect(server.lines()).toEqual(['GET /campaigns/cmp_A'])
+  })
+
+  it('a hash that only drops the document key is rewritten, not treated as a close (I-11)', async () => {
+    await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    const heard: string[] = []
+    act(() => { live.d.onDocumentLink((id) => heard.push(id)) })
+    edit('#campaign=cmp_A')
+    expect(window.location.hash).toBe(HASH)
+    expect(live.d.documentKey).toBe('doc_1')
+    expect(heard).toEqual([])
+  })
+
+  it('a link to another campaign that names a document restores both, by GET only', async () => {
+    const { server } = await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    edit('#campaign=cmp_B&document=doc_9')
+    await waitFor(() => expect(live.c.selection).toEqual({ kind: 'selected', campaign: B }))
+    expect(live.d.documentKey).toBe('doc_9')
+    expect(window.location.hash).toBe('#campaign=cmp_B&document=doc_9')
+    expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+
+  it('setDocumentKey ignores a malformed id, and any id unless a campaign is selected', async () => {
+    await mount({
+      hash: HASH, restore: RESTORE,
+      route: (call) => (call.url === '/campaigns/cmp_A' ? 'defer' : defaultRoute(call)),
+    })
+    await flush()
+    act(() => live.d.setDocumentKey('doc_other'))
+    expect(live.d.documentKey).toBe('doc_1')
+    act(() => live.d.setDocumentKey(null))
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('#campaign=cmp_A')
+  })
+
+  it('setDocumentKey refuses an id that is not opaque and writes nothing', async () => {
+    await mount({ hash: '#campaign=cmp_A', restore: { campaignId: 'cmp_A', conversationId: null } })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    act(() => live.d.setDocumentKey('Ondrey the Wise'))
+    act(() => live.d.setDocumentKey('doc/../x'))
+    expect(live.d.documentKey).toBeNull()
+    expect(window.location.hash).toBe('#campaign=cmp_A')
+  })
+
+  it('a stray document key is stripped when no campaign is chosen, and for a player at settle with no request', async () => {
+    await mount({ hash: '#campaign=cmp_A', restore: { campaignId: 'cmp_A', conversationId: null } })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await run(() => live.c.clearCampaign())
+    edit('#document=doc_1')
+    expect(window.location.hash).toBe('')
+  })
+
+  it('a player gets the document key stripped at settle and makes no request (C-12d)', async () => {
+    const { server } = await mount({
+      role: 'player', hash: HASH, restore: RESTORE,
+    })
+    expect(window.location.hash).toBe('')
+    expect(live.d.documentKey).toBeNull()
+    edit(HASH)
+    expect(window.location.hash).toBe('')
+    expect(server.calls).toHaveLength(0)
+  })
+
+  it('an identity change replaces the document key with the new account\'s (none)', async () => {
+    const { signal } = await mount({ hash: HASH, restore: RESTORE })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await switchAccount(signal, BOB)
+    expect(live.d.documentKey).toBeNull()
+  })
+
+  it('outside a provider the document hook is inert', () => {
+    const held: { value?: CampaignDocumentValue } = {}
+    function Bare(): null {
+      const value = useCampaignDocument()
+      React.useLayoutEffect(() => {
+        held.value = value
+      })
+      return null
+    }
+    render(<Bare />)
+    const bare = held.value as CampaignDocumentValue
+    expect(bare.documentKey).toBeNull()
+    expect(() => bare.setDocumentKey('doc_1')).not.toThrow()
+    expect(bare.onDocumentLink(() => {})).toBeTypeOf('function')
   })
 })

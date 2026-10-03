@@ -189,6 +189,12 @@ describe('the reveal badge and markers are props (REVEAL-13)', () => {
     expect(screen.getByText('The table can see this')).toBeInTheDocument()
   })
 
+  it('1kg.7.3: passes the note the owner gave to each marked field', () => {
+    show({ revealBadge: 'REVEALED', revealedFields: ['voice', 'wants'], revealedNote: 'Brann can see this' })
+    expect(screen.getAllByText('Brann can see this')).toHaveLength(2)
+    expect(screen.queryByText('The table can see this')).not.toBeInTheDocument()
+  })
+
   it('says GM ONLY when nothing was passed, which is the safe reading', () => {
     show()
     expect(screen.getByText('GM ONLY')).toBeInTheDocument()
@@ -523,5 +529,61 @@ describe('an empty document', () => {
       const label = documentFieldReads('npc').find((field) => field.key === key)?.label ?? ''
       expect(screen.getAllByText(label).length, key).toBeGreaterThan(0)
     }
+  })
+})
+
+// ── readOnly (agent-forge-harness-1kg.6.3, I-1, C-22) ────────────────────────
+
+describe('a read-only document has no way to edit, and its selection raises no bar (T-14, C-22)', () => {
+  const editControls = (): HTMLElement[] =>
+    screen.queryAllByRole('button').filter((button) => /^(Edit|Remove) /.test(button.getAttribute('aria-label') ?? ''))
+
+  it('positive control: by default the same document offers Edit and Edit with assistant', () => {
+    show({ onArmFieldEdit: vi.fn() })
+    expect(screen.getByRole('button', { name: 'Edit Wants' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit Wants with assistant' })).toBeInTheDocument()
+  })
+
+  it.each(DOCUMENT_TYPE_IDS)('%s offers no edit control of any kind', (id) => {
+    show({ typeId: id, readOnly: true, onArmFieldEdit: vi.fn() })
+    expect(editControls()).toEqual([])
+    expect(screen.queryByRole('textbox')).toBeNull()
+  })
+
+  it('still shows every field, and an empty one reads as not set rather than inviting an edit', () => {
+    show({ readOnly: true, empty: true })
+    expect(screen.getByText('Wants')).toBeInTheDocument()
+    expect(screen.queryByText(/press Edit to add it/)).toBeNull()
+    expect(screen.getAllByText('Not set').length).toBeGreaterThan(0)
+  })
+
+  it('a pointer selection inside a prose field raises no SelectionBar, which would be billable (X-1)', () => {
+    show({ readOnly: true })
+    selectWithin(proseOf('Wants'), 4, 10)
+    expect(bar()).toBeNull()
+  })
+
+  it('a keyboard selection raises none either, and the field is not a tab stop', async () => {
+    const user = userEvent.setup()
+    show({ readOnly: true })
+    const wants = proseOf('Wants')
+    expect(wants).not.toHaveAttribute('tabindex', '0')
+    wants.focus()
+    await user.keyboard('{Control>}a{/Control}')
+    await user.keyboard('{Shift>}{ArrowRight}{ArrowRight}{/Shift}')
+    expect(bar()).toBeNull()
+  })
+
+  it('never reports a selection action', () => {
+    const onSelectionAction = vi.fn()
+    show({ readOnly: true, onSelectionAction })
+    selectWithin(proseOf('Wants'), 4, 10)
+    expect(onSelectionAction).not.toHaveBeenCalled()
+  })
+
+  it('default behaviour is unchanged: not read-only, the bar still rises', () => {
+    show({ readOnly: false })
+    selectWithin(proseOf('Wants'), 4, 10)
+    expect(bar()).not.toBeNull()
   })
 })

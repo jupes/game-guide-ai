@@ -51,6 +51,7 @@ DB_BACKED_TESTS = [
     "tests/test_asset_db.py",
     "tests/test_session_dividers_db.py",
     "tests/test_reveal_db.py",
+    "tests/test_table_snapshot_db.py",
     "tests/test_eligibility_db.py",
     "tests/test_assets_api_db.py",
     "tests/test_asset_serving_db.py",
@@ -540,3 +541,13 @@ def test_the_deploy_step_passes_the_google_variables_and_never_a_google_secret()
     assert "GOOGLE_OAUTH_REDIRECT_URI: ${{ vars.GOOGLE_OAUTH_REDIRECT_URI }}" in env
     assert not re.search(r"secrets\.GOOGLE", env), "the Google client secret must not be a GitHub secret"
     assert "GOOGLE_OAUTH_CLIENT_SECRET" not in re.sub(r"#.*", "", env), "no client secret in the deploy environment"
+
+
+def test_the_deploy_step_passes_the_tools_variable_and_never_the_capabilities():
+    """GM tools are switched on by one repository VARIABLE (po56), passed here
+    because scripts/deploy.sh REPLACES the service's whole env on every deploy.
+    Capabilities (image_generation: portrait and map are paid) are not an input."""
+    env = _deploy_step_env()
+    assert "WORKBENCH_ENABLED_TOOLS: ${{ vars.WORKBENCH_ENABLED_TOOLS }}" in env
+    assert not re.search(r"secrets\.WORKBENCH", env), "a tool list is not a secret"
+    assert "WORKBENCH_CAPABILITIES" not in re.sub(r"#.*", "", env)

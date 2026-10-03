@@ -5,8 +5,11 @@
  * 12, 14 and 15).
  *
  * Nothing about a campaign is kept anywhere but memory (SEC-49): no web
- * storage, and in the URL only the two opaque fragment keys `campaign` and
- * `conversation`, written by `workspaceFragment.ts` with `replaceState`.
+ * storage, and in the URL only the three opaque fragment keys `campaign`,
+ * `conversation` and `document` (the Workbench canvas, 1kg.6.3), written by
+ * `workspaceFragment.ts` with `replaceState`. The document key rides a second
+ * context (`useCampaignDocument`) so opening or closing a document never
+ * re-renders a consumer of `useCampaign` (C-13).
  *
  * - Account-keyed. The state belongs to (user id, `canUseCampaigns(role)`):
  *   when either changes -- sign-in, sign-out, a centralized 401, an account
@@ -32,18 +35,22 @@
  */
 
 import * as React from 'react'
-import { CampaignCreateRequestSchema, CONTRACT_VERSION, type Campaign } from '../gm/contracts'
+import { CampaignCreateRequestSchema, CONTRACT_VERSION, type Campaign, type PlayerSeat } from '../gm/contracts'
 import { AppNavContext, type AppNavState } from './AppNav'
 import {
+  concludeCampaign,
   createCampaign as postCampaign,
   getCampaign,
   getConversation,
   listCampaigns,
+  listSeats,
+  reopenCampaign,
 } from './campaignApi'
 import { CampaignThreadsContext, ThreadStore } from './campaignThreads'
 import { CurrentUserContext, type UserRole } from './currentUser'
 import { pathForScreen } from './routes'
 import {
+  isOpaqueId,
   NO_WORKSPACE_KEYS,
   readWorkspaceKeys,
   replaceWorkspaceKeys,
@@ -104,6 +111,27 @@ export type CreateOutcome =
   /** A guard said no, or another switch was already waiting on its guards. */
   | { readonly kind: 'vetoed' }
 
+/** How a conclude or a reopen ended: `unavailable` is the one 403 or 404 state. */
+export type ConcludeOutcome = 'done' | 'unavailable' | 'failed'
+
+/** One page of the caller's own seats (30c PR-2). `failed` covers a refusal, an
+ * outage, an unreadable page and an answer for a previous account, which is dropped. */
+export type SeatReadOutcome =
+  | { readonly kind: 'ok'; readonly items: readonly PlayerSeat[]; readonly nextCursor: string | null }
+  | { readonly kind: 'failed' }
+
+/** The Workbench canvas's document key (1kg.6.3, CANVAS-30): one writer, one grammar. */
+export interface CampaignDocumentValue {
+  /** The opaque id of the document the canvas is opening or showing; null when none. */
+  readonly documentKey: string | null
+  /** Records the canvas's current document and writes it to the fragment. A no-op
+   * unless `id` is null, or is opaque while a campaign is `selected`. */
+  setDocumentKey(id: string | null): void
+  /** Called for a same-campaign fragment edit that names another document, BEFORE the
+   * fragment is rewritten to the current one; the canvas decides whether to accept it. */
+  onDocumentLink(listener: (documentId: string) => void): () => void
+}
+
 export interface CampaignContextValue {
   readonly enabled: boolean
   readonly list: CampaignList
@@ -123,6 +151,14 @@ export interface CampaignContextValue {
   /** Single-flight; guards run before the POST; on `created` the campaign
    * heads the list and is selected. */
   createCampaign(name: string, tone?: string | null): Promise<CreateOutcome>
+  /** Mark an own campaign concluded, or reopen it (30c). Concluded narrows
+   * nothing: the answer replaces the listed campaign and never touches the
+   * selection or the scope (A-31(a)). A 403 or a 404 re-reads the first page. */
+  setConcluded(campaignId: string, concluded: boolean): Promise<ConcludeOutcome>
+  /** One page of `GET /seats` for any signed-in account, whatever its role (a
+   * player's tavern, a GM's seat at another table). Nothing is kept here: the
+   * caller holds the pages. A signed-out or inert context makes no request. */
+  readSeats(cursor: string | null): Promise<SeatReadOutcome>
   registerSwitchGuard(guard: SwitchGuard): () => void
   isCurrentScope(key: string): boolean
 }
@@ -137,6 +173,9 @@ interface Snapshot {
   readonly scope: CampaignScope | null
   /** A `conversation` id whose I-6 check has not finished: its key stays meanwhile. */
   readonly pendingThread: string | null
+  /** The canvas's document (1kg.6.3). Non-null only for an account that can use campaigns;
+   * kept through `restoring(X) -> selected(X)`, dropped by every other selection change. */
+  readonly documentKey: string | null
   /** Threads known to belong to `scope`: restored, listed or created. */
   readonly threads: readonly string[]
   /** Every campaign thread id seen on this page, whatever its scope or account. */
@@ -151,6 +190,9 @@ const UNAVAILABLE: CampaignSelection = { kind: 'unavailable' }
 const VETOED: CreateOutcome = { kind: 'vetoed' }
 const FAILED: CreateOutcome = { kind: 'failed' }
 const INVALID: CreateOutcome = { kind: 'invalid' }
+const SEATS_FAILED: SeatReadOutcome = { kind: 'failed' }
+/** The account key's prefix for no session: signed out, or the check not yet answered. */
+const SIGNED_OUT = 'none:'
 const WORKSPACE_PATH = pathForScreen('workspace')
 const NO_NAV: Nav = {
   screen: 'landing', mode: 'sage', conversationId: null,
@@ -167,7 +209,12 @@ function campaignIdOf(selection: CampaignSelection): string | null {
  * included (names decoded as `workspaceFragment.ts` decodes them). */
 function hasOwnPairs(hash: string): boolean {
   const params = new URLSearchParams(hash.startsWith('#') ? hash.slice(1) : hash)
-  return params.has('campaign') || params.has('conversation')
+  return params.has('campaign') || params.has('conversation') || params.has('document')
+}
+
+type SelectionPatch = Pick<Snapshot, 'selection' | 'scope' | 'pendingThread' | 'threads'> & {
+  /** Set only by a link that names its document; otherwise `select` decides. */
+  readonly documentKey?: string | null | undefined
 }
 
 function withThread(list: readonly string[], id: string): readonly string[] {
@@ -179,6 +226,7 @@ class CampaignStore {
   private readonly listeners = new Set<() => void>()
   private readonly controllers = new Set<AbortController>()
   private guards: SwitchGuard[] = []
+  private documentListeners = new Set<(documentId: string) => void>()
   private nav: Nav = NO_NAV
   private restore: CampaignRestore | null
   private readonly fetchImpl: typeof fetch | undefined
@@ -254,6 +302,7 @@ class CampaignStore {
       selection: restore === null ? NONE : { kind: 'restoring', campaignId: restore.campaignId },
       scope: null,
       pendingThread: restore === null ? null : restore.conversationId,
+      documentKey: restore?.documentId ?? null,
       threads: [],
       campaignThreads,
     }
@@ -265,10 +314,14 @@ class CampaignStore {
   }
 
   /** Change the selection. Every change drops the answers of the one before,
-   * and a campaign conversation leaves with it (I-13). */
-  private select(patch: Pick<Snapshot, 'selection' | 'scope' | 'pendingThread' | 'threads'>): number {
+   * and a campaign conversation leaves with it (I-13). The document key stays only
+   * while the campaign does (`restoring(X) -> selected(X)`), unless the patch names one. */
+  private select(patch: SelectionPatch): number {
     this.selectionSeq += 1
-    this.set({ ...this.snap, ...patch })
+    const { documentKey: named, ...rest } = patch
+    const sameCampaign = campaignIdOf(patch.selection) === campaignIdOf(this.snap.selection)
+    const documentKey = named !== undefined ? named : sameCampaign ? this.snap.documentKey : null
+    this.set({ ...this.snap, ...rest, documentKey })
     this.dropCampaignConversation()
     return this.selectionSeq
   }
@@ -318,7 +371,7 @@ class CampaignStore {
     this.restore = null
     if (restore === null) return
     if (enabled) {
-      void this.resolveById(restore.campaignId, restore.conversationId)
+      void this.resolveById(restore.campaignId, restore.conversationId, restore.documentId ?? null)
       return
     }
     // Abandoned (critic 6): signed out, or an account that cannot use
@@ -346,7 +399,25 @@ class CampaignStore {
     if (!this.snap.enabled || screen !== 'workspace' || mode !== 'gm') return NO_WORKSPACE_KEYS
     const campaignId = campaignIdOf(this.snap.selection)
     if (campaignId === null) return NO_WORKSPACE_KEYS
-    return { campaignId, conversationId: this.snap.pendingThread ?? this.activeThread() }
+    return {
+      campaignId,
+      conversationId: this.snap.pendingThread ?? this.activeThread(),
+      documentId: this.snap.documentKey,
+    }
+  }
+
+  /** The canvas says which document it shows (or none). The store is the one writer. */
+  setDocumentKey = (id: string | null): void => {
+    if (id !== null && (!isOpaqueId(id) || this.snap.selection.kind !== 'selected')) return
+    if (id !== this.snap.documentKey) this.set({ ...this.snap, documentKey: id })
+    this.writeFragment()
+  }
+
+  onDocumentLink = (listener: (documentId: string) => void): (() => void) => {
+    this.documentListeners = new Set([...this.documentListeners, listener])
+    return () => {
+      this.documentListeners = new Set([...this.documentListeners].filter((l) => l !== listener))
+    }
   }
 
   /** Make the address bar say what the state says. Nothing is written before
@@ -370,8 +441,13 @@ class CampaignStore {
     const keys = readWorkspaceKeys(hash)
     const { selection, pendingThread } = this.snap
     if (keys.campaignId !== null && keys.campaignId !== campaignIdOf(selection)) {
-      void this.switchFromLink(keys.campaignId, keys.conversationId)
+      void this.switchFromLink(keys.campaignId, keys.conversationId, keys.documentId)
       return
+    }
+    // CANVAS-30: the canvas hears the link BEFORE the fragment is rewritten, and decides
+    // (guard, fetch) whether to accept it; the URL shows the CURRENT document until it does.
+    if (keys.documentId !== null && keys.documentId !== this.snap.documentKey && selection.kind === 'selected') {
+      for (const listener of [...this.documentListeners]) listener(keys.documentId)
     }
     const thread = keys.conversationId
     if (thread !== null && selection.kind === 'selected' && thread !== pendingThread && thread !== this.activeThread()) {
@@ -382,7 +458,7 @@ class CampaignStore {
     this.writeFragment()
   }
 
-  private async switchFromLink(campaignId: string, thread: string | null): Promise<void> {
+  private async switchFromLink(campaignId: string, thread: string | null, documentId: string | null): Promise<void> {
     if (this.creating !== null) {
       this.writeFragment()
       return
@@ -390,7 +466,7 @@ class CampaignStore {
     const outcome = await this.guarded({ campaignId }, () => {
       // A campaign link is a GM-channel link, as a cold load's is.
       this.nav.setMode('gm')
-      return this.resolveById(campaignId, thread)
+      return this.resolveById(campaignId, thread, documentId)
     })
     if (outcome === 'vetoed') this.writeFragment()
   }
@@ -431,9 +507,12 @@ class CampaignStore {
     })
   }
 
-  /** The server's say on an id from an untrusted source (section 7.4). */
-  private async resolveById(campaignId: string, thread: string | null): Promise<SwitchOutcome> {
-    const seq = this.select({ selection: { kind: 'restoring', campaignId }, scope: null, pendingThread: thread, threads: [] })
+  /** The server's say on an id from an untrusted source (section 7.4). `documentKey`
+   * is the link's document; `undefined` leaves the key to `select` (a Retry keeps it). */
+  private async resolveById(campaignId: string, thread: string | null, documentKey?: string | null): Promise<SwitchOutcome> {
+    const seq = this.select({
+      selection: { kind: 'restoring', campaignId }, scope: null, pendingThread: thread, threads: [], documentKey,
+    })
     const result = await getCampaign(campaignId, this.fetcher())
     if (seq !== this.selectionSeq) return 'vetoed'
     if (result.kind === 'ok') {
@@ -602,6 +681,39 @@ class CampaignStore {
     return FAILED
   }
 
+  setConcluded = async (campaignId: string, concluded: boolean): Promise<ConcludeOutcome> => {
+    if (!this.snap.enabled) return 'failed'
+    const epoch = this.epoch
+    const result = await (concluded ? concludeCampaign : reopenCampaign)(campaignId, this.fetcher())
+    // An answer for a previous account is dropped, never applied to the new list.
+    if (epoch !== this.epoch) return 'failed'
+    if (result.kind === 'ok') {
+      const { campaign } = result
+      const { list } = this.snap
+      if (list.kind !== 'idle') {
+        const items = list.items.map((item) => (item.campaign_id === campaign.campaign_id ? campaign : item))
+        this.set({ ...this.snap, list: { ...list, items } })
+      }
+      return 'done'
+    }
+    if (result.kind === 'unavailable') {
+      this.loadCampaigns()
+      return 'unavailable'
+    }
+    return 'failed'
+  }
+
+  readSeats = async (cursor: string | null): Promise<SeatReadOutcome> => {
+    // The account key says whether a session stands behind it: `none:` is
+    // signed out or still checking, and no request is made for it.
+    if (this.snap.account.startsWith(SIGNED_OUT)) return SEATS_FAILED
+    const epoch = this.epoch
+    const result = await listSeats(cursor, this.fetcher())
+    // An answer for a previous account is dropped, never shown to the new one.
+    if (epoch !== this.epoch || result.kind !== 'ok') return SEATS_FAILED
+    return { kind: 'ok', items: result.items, nextCursor: result.nextCursor }
+  }
+
   registerSwitchGuard = (guard: SwitchGuard): (() => void) => {
     this.guards = [...this.guards, guard]
     return () => {
@@ -641,11 +753,20 @@ const INERT: CampaignContextValue = {
   clearCampaign: inertOutcome<SwitchOutcome>('unchanged'),
   retrySelection: () => {},
   createCampaign: inertOutcome<CreateOutcome>(FAILED),
+  setConcluded: inertOutcome<ConcludeOutcome>('failed'),
+  readSeats: inertOutcome<SeatReadOutcome>(SEATS_FAILED),
   registerSwitchGuard: () => () => {},
   isCurrentScope: () => false,
 }
 
+const INERT_DOCUMENT: CampaignDocumentValue = {
+  documentKey: null,
+  setDocumentKey: () => {},
+  onDocumentLink: () => () => {},
+}
+
 const CampaignContext = React.createContext<CampaignContextValue | null>(null)
+const CampaignDocumentContext = React.createContext<CampaignDocumentValue | null>(null)
 
 export interface CampaignProviderProps {
   children: React.ReactNode
@@ -663,7 +784,10 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
   const userId = currentUser?.user.id ?? 'guest'
   const enabled = authStatus === 'authenticated' && canUseCampaigns(currentUser?.user.role ?? 'player')
   const settled = authStatus === 'authenticated' || authStatus === 'unauthenticated'
-  const account = `${enabled ? 'campaigns' : 'none'}:${userId}`
+  // `member` is a signed-in account that cannot use campaigns (a player): it
+  // still reads its own seats (30c PR-2), so it is not the signed-out key.
+  const prefix = enabled ? 'campaigns' : authStatus === 'authenticated' ? 'member' : 'none'
+  const account = `${prefix}:${userId}`
   const [store] = React.useState(() => new CampaignStore(restore, fetchImpl, window, account, enabled))
   const getSnapshot = React.useCallback(() => store.snapshotFor(account, enabled), [store, account, enabled])
   const snap = React.useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
@@ -697,9 +821,18 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
     clearCampaign: store.clearCampaign,
     retrySelection: store.retrySelection,
     createCampaign: store.createCampaign,
+    setConcluded: store.setConcluded,
+    readSeats: store.readSeats,
     registerSwitchGuard: store.registerSwitchGuard,
     isCurrentScope: store.isCurrentScope,
-  }), [snap, store])
+    // Only these four snapshot fields reach the value, so a change to the document key,
+    // the thread bookkeeping or anything else does not re-render a useCampaign consumer (C-13).
+  }), [snap.enabled, snap.list, snap.selection, snap.scope, store])
+  const documentValue = React.useMemo<CampaignDocumentValue>(() => ({
+    documentKey: snap.documentKey,
+    setDocumentKey: store.setDocumentKey,
+    onDocumentLink: store.onDocumentLink,
+  }), [snap.documentKey, store])
   const visibleId = visibleConversation(nav, snap)
   const scopedNav = React.useMemo(
     () => (visibleId === nav.conversationId ? nav : { ...nav, conversationId: visibleId }),
@@ -710,7 +843,9 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
   return (
     <AppNavContext.Provider value={scopedNav}>
       <CampaignContext.Provider value={value}>
-        <CampaignThreadsContext.Provider value={threads}>{children}</CampaignThreadsContext.Provider>
+        <CampaignDocumentContext.Provider value={documentValue}>
+          <CampaignThreadsContext.Provider value={threads}>{children}</CampaignThreadsContext.Provider>
+        </CampaignDocumentContext.Provider>
       </CampaignContext.Provider>
     </AppNavContext.Provider>
   )
@@ -721,4 +856,10 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
 // eslint-disable-next-line react-refresh/only-export-components -- hook co-located with provider
 export function useCampaign(): CampaignContextValue {
   return React.useContext(CampaignContext) ?? INERT
+}
+
+/** The canvas's document key and its fragment link (1kg.6.3); inert outside a provider. */
+// eslint-disable-next-line react-refresh/only-export-components -- hook co-located with provider
+export function useCampaignDocument(): CampaignDocumentValue {
+  return React.useContext(CampaignDocumentContext) ?? INERT_DOCUMENT
 }

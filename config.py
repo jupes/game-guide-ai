@@ -403,6 +403,25 @@ WORKBENCH_WRITE_RATE_LIMIT_WINDOW_S: float = _float("WORKBENCH_WRITE_RATE_LIMIT_
 # storage — the byte cap below is what bounds storage.
 WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT: int = _int("WORKBENCH_WRITE_RATE_LIMIT_PER_ACCOUNT", 600)
 
+# --- Reveal Stop budget (agent-forge-harness-1kg.7.2, ID-8) -----------------
+# A Stop is a narrowing: it must not fail because autosaves spent the shared
+# write budget above (X-3, REVEAL-16). It has its own bound instead, because
+# every Stop writes an epoch update and at least one audit row while a session
+# is live. 100 per 600 s is an hourly ceiling of 600, the shared budget's own, so
+# the storage ceiling does not rise; a human, backoff included, never reaches it.
+# Per account, per instance, like the write budget.
+REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT: int = _int("REVEAL_STOP_RATE_LIMIT_PER_ACCOUNT", 100)
+REVEAL_STOP_RATE_LIMIT_WINDOW_S: float = _float("REVEAL_STOP_RATE_LIMIT_WINDOW_S", 600.0)
+
+# --- Table snapshot read budget (agent-forge-harness-1kg.7.2 PR-2) ----------
+# A table client polls `GET /table/snapshot` (RT-9). Each read is one
+# transaction, so the entitled read has its own bound, keyed by the principal
+# (an account id or a screen grant id, never a source address that a table
+# sharing one egress would share). 120 a minute is two a second: a client that
+# polls every few seconds stays far below it. Per instance, like the others.
+TABLE_READ_RATE_LIMIT_PER_PRINCIPAL: int = _int("TABLE_READ_RATE_LIMIT_PER_PRINCIPAL", 120)
+TABLE_READ_RATE_LIMIT_WINDOW_S: float = _float("TABLE_READ_RATE_LIMIT_WINDOW_S", 60.0)
+
 # --- Per-account storage caps (agent-forge-harness-531x, PR-B) --------------
 # The write throttle above bounds RATE; these bound STORAGE itself, so a
 # script that stays under the rate limit cannot still fill the disk by running

@@ -102,7 +102,7 @@ test('a model-authored remote image renders no <img> and starts no request to th
   await page.getByRole('button', { name: 'Create account' }).click()
 
   await expect(page.getByRole('button', { name: 'Enter the Tavern' })).toBeVisible()
-  await page.getByRole('button', { name: 'Enter the Tavern' }).click()
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
   await page
     .getByRole('navigation', { name: 'Channels' })
     .getByRole('button', { name: 'Spell' })

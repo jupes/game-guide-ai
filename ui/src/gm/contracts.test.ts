@@ -96,6 +96,7 @@ import {
   parseConversation,
   parseConversationPage,
   parseDocument,
+  presentForReveal,
   parseGmEvent,
   parseGmSnapshot,
   parseTableEvent,
@@ -1980,5 +1981,37 @@ describe('the character-sheet link (q156)', () => {
     ).toBe(true)
     expect(CharacterSheetLinkSchema.safeParse({ ...base, participant_id: null, seat_active: true }).success)
       .toBe(false)
+  })
+})
+
+// ── presentForReveal (1kg.7.3): the client twin of the server's `reveals._present` ──
+
+describe('presentForReveal', () => {
+  it('holds for a present value of each kind and for 0', () => {
+    expect(presentForReveal('text', 'Ondrey')).toBe(true)
+    expect(presentForReveal('prose', 'A long line')).toBe(true)
+    expect(presentForReveal('text_list', ['one'])).toBe(true)
+    expect(presentForReveal('integer', 0)).toBe(true)
+    expect(presentForReveal('abilities', { str: 10 })).toBe(true)
+    expect(presentForReveal('entry_list', [{ name: 'Bite', text: 'Bites.' }])).toBe(true)
+  })
+
+  it('fails for a value a player could not be shown', () => {
+    expect(presentForReveal('text', '')).toBe(false)
+    expect(presentForReveal('text', '   ')).toBe(false)
+    expect(presentForReveal('prose', undefined)).toBe(false)
+    expect(presentForReveal('text_list', [])).toBe(false)
+    expect(presentForReveal('text_list', ['fine', ' '])).toBe(false)
+    expect(presentForReveal('integer', null)).toBe(false)
+    expect(presentForReveal('abilities', { str: null })).toBe(false)
+    expect(presentForReveal('abilities', {})).toBe(false)
+    expect(presentForReveal('entry_list', [{ name: 'Bite', text: '' }])).toBe(false)
+  })
+
+  it('reads the GM-side asset reference as present when it is there', () => {
+    const asset = { asset_id: 'ast_one', media_type: 'image', alt: 'A face', width: 10, height: 10 }
+    expect(presentForReveal('asset', asset)).toBe(true)
+    expect(presentForReveal('asset', null)).toBe(false)
+    expect(presentForReveal('asset', undefined)).toBe(false)
   })
 })

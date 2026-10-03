@@ -167,7 +167,8 @@ describe('a campaign deep link', () => {
     act(() => { window.dispatchEvent(new HashChangeEvent('hashchange')) })
     await waitFor(() => expect(server.scoped()).toContain('GET /conversations/cnv_2'))
     await flush()
-    expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+    // 1kg.6.3 (C-12c): the documents list reads the library by POST (a search never rides in a URL), and nothing else.
+    expect(server.calls.filter((c) => c.method !== 'GET' && !/^\/campaigns\/cmp_[AB]\/library$/.test(c.url))).toEqual([])
     await userEvent.type(screen.getByPlaceholderText('Ask…'), 'Where is the heist?{Enter}')
     await waitFor(() => expect(server.lines()).toContain('POST /chat'))
   })

@@ -1,7 +1,10 @@
 /**
  * Landing — Aetheril-branded entry screen.
  *
- * Shows the brand, tagline, a primary CTA, and optional mode entry chips.
+ * Shows the brand, tagline, a primary CTA, and optional mode entry chips. The
+ * CTA opens the tavern (`/tavern`) for every signed-in account (30c PR-2,
+ * ID-22): a campaign account finds its campaigns and seats there, and a player
+ * its seats.
  */
 
 import * as React from 'react'
@@ -15,7 +18,7 @@ import './Landing.css'
 import './modeAccents.css'
 
 export function Landing(): React.JSX.Element {
-  const { enterWorkspace } = useAppNav()
+  const { enterWorkspace, openTavern } = useAppNav()
   const { user } = useCurrentUser()
 
   return (
@@ -41,7 +44,7 @@ export function Landing(): React.JSX.Element {
             variant="filled"
             size="large"
             icon="login"
-            onClick={() => enterWorkspace()}
+            onClick={() => (openTavern ? openTavern() : enterWorkspace())}
             className="landing__cta-button"
           >
             Enter the Tavern

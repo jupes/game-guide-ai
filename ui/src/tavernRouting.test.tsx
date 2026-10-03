@@ -79,6 +79,7 @@ function stubServer(route: Route) {
  * `POST /conversations` echoes the posted campaign id. */
 const defaultRoute: Route = ({ method, url, body }) => {
   if (method === 'GET' && url === '/campaigns') return { status: 200, body: page([campaignBody('cmp_A')]) }
+  if (method === 'GET' && url.startsWith('/seats')) return { status: 200, body: page([]) }
   const one = /^\/campaigns\/(cmp_\w+)$/.exec(url)
   if (method === 'GET' && one !== null) return { status: 200, body: campaignBody(one[1]) }
   if (method === 'GET' && url === '/conversations/cnv_T') return { status: 200, body: THREAD_T }
@@ -246,51 +247,120 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
     expect(server.calls.filter((c) => c.method === 'POST' || c.method === 'PATCH')).toEqual([])
   })
 
-  it('T-5 as a player lands on Landing with no history entry and no campaign request; a dm is the control', async () => {
+  it('T-4 the seat read is one request per visit under StrictMode, for a dm and for a player', async () => {
+    const dm = boot('/tavern', { strict: true })
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await flush()
+    expect(dm.lines().filter((l) => l === 'GET /seats')).toHaveLength(1)
+    cleanup()
+    const player = boot('/tavern', { strict: true, role: 'player' })
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await flush()
+    expect(player.lines().filter((l) => l === 'GET /seats')).toHaveLength(1)
+  })
+
+  it('T-5 as a player a cold /tavern renders the tavern with no history entry: its seats are read, no campaign is (30c PR-2); a dm is the control', async () => {
     const before = window.history.length
     const server = boot('/tavern', { role: 'player' })
-    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
     await flush()
-    expect(window.location.pathname).toBe('/')
+    expect(window.location.pathname).toBe('/tavern')
     expect(window.history.length).toBe(before)
     expect(server.scoped()).toEqual([])
+    expect(server.lines()).toEqual(['GET /seats'])
     cleanup()
     const control = boot('/tavern', { role: 'dm' })
     await waitFor(() => expect(control.scoped()).toContain('GET /campaigns'))
   })
 
-  it('T-6 a signed-out load shows Login, and after sign-in lands on Landing, never the tavern; openTavern is the control (kills M-9)', async () => {
-    const server = bootProbed('/tavern', { signedOut: true })
-    await screen.findByRole('button', { name: /sign in/i })
-    const w = watch('Your Campaigns')
-    vi.spyOn(api, 'login').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
+  async function signInThroughLogin(role: 'dm' | 'player' = 'dm'): Promise<void> {
+    vi.spyOn(api, 'login').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role } })
     await userEvent.type(screen.getByLabelText('Email'), 'ada@example.com')
     await userEvent.type(screen.getByLabelText('Password'), 'pw')
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }))
+  }
+
+  it('T-6 a signed-out load of /tavern shows Login, and signing in returns you to /tavern with no new history entry and no flash of Landing (30c ID-26)', async () => {
+    const server = bootProbed('/tavern', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    expect(server.calls.filter((c) => c.url.startsWith('/campaigns') || c.url.startsWith('/seats'))).toEqual([])
+    const len = window.history.length
+    const landing = watch('Enter the Tavern')
+    await signInThroughLogin()
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await flush()
+    const seen = landing()
+    expect(seen.added).toBe(0)
+    expect(seen.present).toBe(0)
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.history.length).toBe(len)
+    await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
+    // An arrival by sign-in is a cold one: nothing takes focus.
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('T-6 the path is all that returns: a fragment on the signed-out /tavern is gone after sign-in and selects nothing', async () => {
+    const server = bootProbed('/tavern#campaign=cmp_A&conversation=cnv_1&x=1', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await flush()
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.location.hash).toBe('')
+    expect(live.c.selection.kind).toBe('none')
+    expect(server.calls.some((c) => c.url.includes('cmp_A') || c.url.includes('cnv_1'))).toBe(false)
+  })
+
+  it('T-6 a player who signs in over /tavern gets the player tavern, and its seats are read', async () => {
+    const server = bootProbed('/tavern', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin('player')
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await waitFor(() => expect(server.lines()).toContain('GET /seats'))
+    expect(window.location.pathname).toBe('/tavern')
+    expect(server.scoped()).toEqual([])
+  })
+
+  it('T-6 control: signing in from any other signed-out screen still lands on Landing (kills M-9)', async () => {
+    const server = bootProbed('/', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
     expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
     await flush()
-    const signedIn = w()
-    expect(signedIn.batches).toBeGreaterThanOrEqual(1)
-    expect(signedIn.added).toBe(0)
-    expect(signedIn.present).toBe(0)
     expect(window.location.pathname).toBe('/')
-    expect(server.calls.filter((c) => c.url.startsWith('/campaigns'))).toEqual([])
-    // Control, same harness: the tavern does read the list here, and watch() does see its heading.
-    const control = watch('Your Campaigns')
-    openTavern()
-    await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
+    expect(screen.queryByRole('heading', { name: 'Your Campaigns' })).toBeNull()
+    expect(server.calls.filter((c) => c.url.startsWith('/campaigns') || c.url.startsWith('/seats'))).toEqual([])
+    cleanup()
+    // A cold /workspace is still sent home to Landing, then signs in to Landing.
+    bootProbed('/workspace', { signedOut: true })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    expect(window.location.pathname).toBe('/')
+  })
+
+  it('T-6 control: signing OUT at the tavern and back in lands on Landing, not the tavern', async () => {
+    const server = bootProbed('/tavern')
     await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
-    expect(control().added).toBeGreaterThanOrEqual(1)
+    vi.spyOn(api, 'logout').mockResolvedValue(true)
+    await act(async () => { await live.user.user.signOut() })
+    await screen.findByRole('button', { name: /sign in/i })
+    await signInThroughLogin()
+    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    await flush()
+    expect(window.location.pathname).toBe('/')
+    expect(screen.queryByRole('heading', { name: 'Your Campaigns' })).toBeNull()
+    expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(1)
   })
 })
 
 describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)', () => {
   it('T-9 a pick lands selected in its GM channel with no conversation open; Back gives /tavern with an empty hash (kills M-14, X-frag)', async () => {
     bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_A' }))
     await waitFor(() => expect(window.location.pathname + window.location.hash).toBe('/workspace#campaign=cmp_A'))
     expect(live.c.selection.kind).toBe('selected')
     expect(live.nav.mode).toBe('gm')
@@ -307,7 +377,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 
   it('T-10 closes a legacy GM conversation on the pick; the first campaign send makes its own thread, naming neither the legacy id (Critic 44, kills M-16)', async () => {
     const server = bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P1}{Enter}`)
@@ -321,7 +391,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 
     openTavern()
     const pick = server.calls.length
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_A' }))
     await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_A'))
     expect(live.raw.conversationId).toBeNull()
 
@@ -329,11 +399,18 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
-    expect(server.calls[send].method).toBe('POST')
-    expect(server.calls[send].url).toBe('/conversations')
-    expect(JSON.parse(server.calls[send].body ?? '{}')).toEqual({ schema_version: 1, started_mode: 'gm', campaign_id: 'cmp_A' })
-    expect(server.calls[send + 1].url).toBe('/chat')
-    expect(JSON.parse(server.calls[send + 1].body ?? '{}').conversation_id).toBe('cnv_new')
+    // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
+    // anywhere after the click, so the requests are found by method and url, never by index.
+    const sent = server.calls.slice(send)
+    const createAt = sent.findIndex((c) => c.method === 'POST')
+    const chatAt = sent.findIndex((c) => c.url === '/chat')
+    const create = sent[createAt]
+    const chat = sent[chatAt]
+    expect(create?.url).toBe('/conversations')
+    expect(JSON.parse(create?.body ?? '{}')).toEqual({ schema_version: 1, started_mode: 'gm', campaign_id: 'cmp_A' })
+    expect(createAt).toBeGreaterThanOrEqual(0)
+    expect(chatAt).toBeGreaterThan(createAt)
+    expect(JSON.parse(chat?.body ?? '{}').conversation_id).toBe('cnv_new')
     // ModelPicker's own catalog read (GET /models) is unrelated to the
     // campaign/conversation surface this check is about (inferred decision:
     // the plan's whitelist did not name it, but it carries nothing scoped).
@@ -346,7 +423,11 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_A'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail).toBe(true)
+      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
+      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
+      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
+      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -354,7 +435,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 
   it('T-11 first run: exactly one JSON create names the typed campaign, then the new campaign GM channel (Critic 48, kills M-14)', async () => {
     const server = bootProbed('/', { route: listOf([]) })
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
@@ -372,7 +453,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
   it('T-11 a 503 on create leaves the typed name and the campaign list reachable (Critic 48)', async () => {
     const route: Route = (c) => (c.method === 'POST' && c.url === '/campaigns' ? { status: 503 } : listOf([])(c))
     const server = bootProbed('/', { route })
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
@@ -414,7 +495,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
 describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
   it('T-7 a hostile fragment on /tavern selects nothing, names neither id and is stripped to foreign keys (kills M-10)', async () => {
     const server = boot('/tavern#campaign=cmp_A&conversation=cnv_1&x=1')
-    const item = await screen.findByRole('button', { name: 'Name of cmp_A' })
+    const item = await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     await flush()
     await flush()
     expect(server.calls.length).toBeGreaterThan(0)
@@ -425,7 +506,10 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     expect(window.location.hash).toBe('#x=1')
     // Two added assertions (inferred decision): the same claim -- "selects
     // nothing" -- read straight from the DOM, not only from the request log.
-    expect(item).toHaveAttribute('aria-pressed', 'false')
+    // (30c: a campaign card has no pressed state, so the card is shown and
+    // Continue without a campaign -- offered only once something is selected --
+    // is absent.)
+    expect(item).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Continue without a campaign' })).toBeNull()
   })
 
@@ -445,7 +529,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     sessionStorage.removeItem('probe')
 
     // 2. Cold load.
-    await screen.findByRole('button', { name: 'Name of cmp_tavern_probe_1' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_tavern_probe_1' })
     check('cold load')
 
     // 3. Legacy control: a plain prompt still reaches the recall store.
@@ -458,7 +542,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
 
     // 4. The pick.
     openTavern()
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_tavern_probe_1' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_tavern_probe_1' }))
     await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_tavern_probe_1'))
     check('pick')
 
@@ -484,11 +568,11 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
 })
 
 describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
-  /** Enter the Tavern, GM, open `open`: the heading renders as /tavern's `h1`,
+  /** Enter the workspace (the Sage chip), GM, open `open`: the heading renders as /tavern's `h1`,
    * focused, with a fresh history entry and no own fragment key; Back returns
    * to the workspace unchanged, and Forward reopens the tavern. */
-  async function expectTavernRoundTrip(open: () => Promise<void> | void): Promise<void> {
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+  async function expectTavernRoundTrip(open: () => Promise<void> | void, focus: 'prep' | 'heading' = 'prep'): Promise<void> {
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     const kind = live.c.selection.kind
     const len = window.history.length
@@ -496,7 +580,15 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     const heading = await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
     expect(window.location.pathname).toBe('/tavern')
     expect(window.history.length).toBe(len + 1)
-    expect(document.activeElement).toBe(heading)
+    if (focus === 'prep') {
+      // 30c ID-4: once the list settles, focus moves on to the top card's Prep.
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Prep Name of cmp_A' })).toHaveFocus())
+    } else {
+      // An empty list has no card to move to: focus stays on the heading.
+      await screen.findByText('Create your first campaign', { exact: false })
+      await flush()
+      expect(document.activeElement).toBe(heading)
+    }
     expect(window.location.hash).not.toMatch(/campaign=/)
     expect(window.location.hash).not.toMatch(/conversation=/)
     act(() => { window.history.back() })
@@ -513,6 +605,43 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     await expectTavernRoundTrip(() => { openTavern() })
   })
 
+  it('T-30 the Landing CTA opens /tavern for a dm: one new history entry, and Back gives / (30c ID-1)', async () => {
+    const server = bootProbed('/')
+    const len = window.history.length
+    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.history.length).toBe(len + 1)
+    await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
+    act(() => { window.history.back() })
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    expect(await screen.findByRole('button', { name: 'Enter the Tavern' })).toBeInTheDocument()
+  })
+
+  it('T-30 the CTA of a player opens /tavern too (30c PR-2, ID-22): a new history entry, its seats read and no campaign request', async () => {
+    // A previous test's Back leaves forward entries, which a push would replace
+    // rather than add to: drop them first so the count below is the push's alone.
+    window.history.pushState(null, '', '/')
+    const server = bootProbed('/', { role: 'player' })
+    const len = window.history.length
+    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    expect(window.location.pathname).toBe('/tavern')
+    expect(window.history.length).toBe(len + 1)
+    await waitFor(() => expect(server.lines()).toContain('GET /seats'))
+    expect(server.scoped()).toEqual([])
+    // Back leaves it for Landing, and the Sage chip is still the way to chat.
+    act(() => { window.history.back() })
+    await waitFor(() => expect(window.location.pathname).toBe('/'))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace'))
+  })
+
+  it('T-8c with no campaigns openTavern still lands focus on the heading and round-trips through history (30c ID-4)', async () => {
+    bootProbed('/', { route: listOf([]) })
+    await expectTavernRoundTrip(() => { openTavern() }, 'heading')
+  })
+
   it("T-8b LeftNav's Choose a campaign opens the tavern from uncampaigned GM and round-trips through history, focused (kills M-48)", async () => {
     bootProbed('/')
     await expectTavernRoundTrip(async () => {
@@ -522,13 +651,13 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
 
   it('T-9 veto a guard that refuses the pick leaves the tavern open and the selection at none (kills M-15)', async () => {
     bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     const before = live.raw.conversationId
     live.c.registerSwitchGuard(() => false)
-    await userEvent.click(screen.getByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Prep Name of cmp_A' }))
     await flush()
     expect(window.location.pathname).toBe('/tavern')
     expect(live.c.selection.kind).toBe('none')
@@ -541,21 +670,25 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     const seen: Array<{ campaignId: string | null }> = []
     live.c.registerSwitchGuard((next) => { seen.push(next); return true })
     openTavern()
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     const len = window.history.length
     const mark = server.calls.length
-    await userEvent.click(screen.getByRole('button', { name: 'Name of cmp_A' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Prep Name of cmp_A' }))
     await waitFor(() => expect(window.location.pathname + window.location.hash).toBe('/workspace#campaign=cmp_A'))
     expect(live.nav.mode).toBe('gm')
     expect(live.raw.conversationId).toBeNull()
     expect(window.history.length).toBe(len + 1)
     expect(seen).toEqual([])
-    expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
+    // (The documents list's library read, 1kg.6.3, is a read of the campaign already selected, not a switch.)
+    // (So are the table session's and the reveal picture's reads, 1kg.7.3.)
+    expect(
+      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !/\/(library|reveals|table-session)$/.test(c.url)),
+    ).toBe(false)
     expect(server.lines()).toContain('GET /campaigns/cmp_A')
 
     // Guard control: a real switch does run the guard.
     openTavern()
-    await userEvent.click(await screen.findByRole('button', { name: 'Name of cmp_B' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Prep Name of cmp_B' }))
     await waitFor(() => expect(seen).toEqual([{ campaignId: 'cmp_B' }]))
   })
 
@@ -576,10 +709,10 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
 
   it('T-12b the none case: no Continue button when nothing was ever selected (positive control)', async () => {
     bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     expect(screen.queryByRole('button', { name: 'Continue without a campaign' })).toBeNull()
   })
 
@@ -660,7 +793,7 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       return defaultRoute(c)
     }
     const server = bootProbed('/', { route })
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     await userEvent.click(await screen.findByRole('button', { name: 'New conversation' }))
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P1}{Enter}`)
@@ -691,11 +824,18 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
-    expect(server.calls[send].method).toBe('POST')
-    expect(server.calls[send].url).toBe('/conversations')
-    expect(JSON.parse(server.calls[send].body ?? '{}').campaign_id).toBe('cmp_New')
-    expect(server.calls[send + 1].url).toBe('/chat')
-    expect(JSON.parse(server.calls[send + 1].body ?? '{}').conversation_id).toBe('cnv_new')
+    // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
+    // anywhere after the click, so the requests are found by method and url, never by index.
+    const sent = server.calls.slice(send)
+    const createAt = sent.findIndex((c) => c.method === 'POST')
+    const chatAt = sent.findIndex((c) => c.url === '/chat')
+    const create = sent[createAt]
+    const chat = sent[chatAt]
+    expect(create?.url).toBe('/conversations')
+    expect(JSON.parse(create?.body ?? '{}').campaign_id).toBe('cmp_New')
+    expect(createAt).toBeGreaterThanOrEqual(0)
+    expect(chatAt).toBeGreaterThan(createAt)
+    expect(JSON.parse(chat?.body ?? '{}').conversation_id).toBe('cnv_new')
     // Inferred decision, as in T-10: ModelPicker's catalog read and the new
     // thread's own timeline/attachments are unrelated to the leak this checks.
     for (const call of server.calls.slice(rel)) {
@@ -704,7 +844,11 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_New'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail).toBe(true)
+      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
+      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
+      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
+      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })
@@ -722,7 +866,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
       return defaultRoute(c)
     }
     bootProbed('/tavern', { route })
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     await userEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
     const n = getCount
 
@@ -732,7 +876,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     await waitFor(() => expect(getCount).toBe(n + 1))
 
     act(() => { held?.reply({ status: 200, body: page([campaignBody('cmp_A'), campaignBody('cmp_B')]) }) })
-    await screen.findByRole('button', { name: 'Name of cmp_B' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_B' })
     const aResult = a()
     const eResult = e()
     expect(aResult.batches).toBeGreaterThanOrEqual(1)
@@ -757,9 +901,9 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     expect(server.calls.filter((c) => c.url === '/campaigns')).toHaveLength(1)
   })
 
-  it("T-5b signing in as a player over a parked tavern history entry never re-requests it (kills M-7)", async () => {
+  it("T-5b signing in as a player over a parked tavern history entry never re-requests the dm's campaigns, and Back to it shows the player tavern (kills M-7)", async () => {
     const server = bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     openTavern()
     await waitFor(() => expect(server.lines()).toContain('GET /campaigns'))
     await userEvent.click(await screen.findByRole('button', { name: 'Back to chat' }))
@@ -775,10 +919,13 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     window.addEventListener('popstate', onPopState)
     act(() => { window.history.go(L2 === L1 + 1 ? -2 : -1) })
     await waitFor(() => expect(popped).toContain('/tavern'))
-    await waitFor(() => expect(window.location.pathname).toBe('/'))
     window.removeEventListener('popstate', onPopState)
 
-    expect(await screen.findByText('Enter the Tavern')).toBeInTheDocument()
+    // A player may open the tavern (30c PR-2): the entry shows its seats and
+    // asks the server for nothing a player may not read.
+    expect(await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeInTheDocument()
+    await waitFor(() => expect(server.calls.slice(mark).some((c) => c.url === '/seats')).toBe(true))
+    expect(window.location.pathname).toBe('/tavern')
     expect(window.history.length).toBe(L2)
     expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
   })
@@ -789,7 +936,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
       ? { status: 200, body: page([campaignBody(owner === 'ada' ? 'cmp_A' : 'cmp_B')]) }
       : defaultRoute(c))
     const server = bootProbed('/tavern', { route })
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
 
     const mark = server.calls.length
     const w = watch('Name of cmp_A')
@@ -804,9 +951,9 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     expect(server.calls.slice(mark).some((c) => c.url.includes('cmp_A') || (c.body ?? '').includes('cmp_A'))).toBe(false)
   })
 
-  it('T-13b a role change at /tavern (same account) resets mode and leaves without a history entry (kills M-41 and M-42)', async () => {
+  it('T-13b a role change at /tavern (same account) resets mode and stays on the tavern without a history entry, as the player tavern (30c PR-2; kills M-41 and M-42)', async () => {
     const server = bootProbed('/')
-    await userEvent.click(await screen.findByRole('button', { name: 'Enter the Tavern' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     openTavern()
     await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
@@ -814,12 +961,41 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     const mark = server.calls.length
 
     act(() => { live.user.signIn({ email: 'ada@example.com', role: 'player' }) })
-    await screen.findByText('Enter the Tavern')
+    await screen.findByRole('heading', { level: 2, name: 'Campaigns are being built' })
 
-    expect(window.location.pathname).toBe('/')
+    expect(window.location.pathname).toBe('/tavern')
+    expect(live.nav.screen).toBe('tavern')
     expect(live.nav.mode).toBe('sage')
     expect(window.history.length).toBe(len)
+    expect(screen.queryByRole('button', { name: /^Prep/ })).toBeNull()
     expect(server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns'))).toBe(false)
+  })
+
+  it("T-31 a seat answer that lands after an account switch is never shown to the new account (30c PR-2)", async () => {
+    let held: Call | null = null
+    let reads = 0
+    const route: Route = (call) => {
+      if (call.method === 'GET' && call.url.startsWith('/seats')) {
+        reads += 1
+        if (reads === 1) { held = call; return 'defer' }
+        return { status: 200, body: page([]) }
+      }
+      return defaultRoute(call)
+    }
+    bootProbed('/tavern', { role: 'player', route })
+    await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
+    await waitFor(() => expect(held).not.toBeNull())
+    const w = watch('Table of cmp_S9')
+    act(() => { live.user.signIn({ email: 'bob@example.com', role: 'player' }) })
+    await screen.findByText('Enter the Tavern')
+    act(() => (held as Call | null)?.reply({ status: 200, body: page([{
+      schema_version: 1, campaign_id: 'cmp_S9', campaign_name: 'Table of cmp_S9', alias: 'Brannoc',
+      accepted_at: '2026-09-10T12:00:00Z', confirmed: true, tone: null, game_system: 'dnd5e', avatar_icon: 'castle',
+      avatar_tone: 'gold', concluded: false, last_played_at: null, live: true,
+    }]) }))
+    await flush()
+    expect(w().present).toBe(0)
+    expect(screen.queryByText('Table of cmp_S9')).toBeNull()
   })
 
   it('T-29 a cold /tavern load never flashes the empty state while the first read is in flight (kills M-40)', async () => {
@@ -832,7 +1008,7 @@ describe('tavern visits and account changes (74j, H-3)', () => {
     boot('/tavern', { route })
     await screen.findByRole('heading', { name: 'Your Campaigns', level: 1 })
     act(() => { held?.reply({ status: 200, body: page([campaignBody('cmp_A')]) }) })
-    await screen.findByRole('button', { name: 'Name of cmp_A' })
+    await screen.findByRole('button', { name: 'Prep Name of cmp_A' })
     const result = w()
     expect(result.batches).toBeGreaterThanOrEqual(1)
     expect(result.added).toBe(0)

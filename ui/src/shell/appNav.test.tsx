@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { renderHook, act, render, screen } from '@testing-library/react'
+import { renderHook, act, render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavProvider, AppNavContext, useAppNav } from './AppNav'
 import type { AppNavState } from './AppNav'
@@ -7,6 +7,7 @@ import { CurrentUserContext, CurrentUserProvider } from './currentUser'
 import type { CurrentUserContextValue } from './currentUser'
 import { ThemeProvider } from '../ds/theme'
 import { Landing } from './Landing'
+import { CampaignProvider } from './campaignContext'
 import App from '../App'
 import * as api from '../api'
 
@@ -179,6 +180,58 @@ describe('Landing component', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Enter the Tavern/i }))
     expect(enterWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  // 30c ID-1, ID-22 (L-1): the CTA opens the tavern for every signed-in account,
+  // a player's included (PR-2 built its tavern); the workspace is the chips' way in.
+  it('L-1 the CTA of a dm and that of a player both open the tavern, never the workspace', async () => {
+    const stub = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
+    const mount = (role: 'dm' | 'player') => {
+      const enterWorkspace = vi.fn()
+      const openTavern = vi.fn()
+      const state: AppNavState = { ...makeNavState({ screen: 'landing' }), enterWorkspace, openTavern }
+      render(
+        <AppNavContext.Provider value={state}>
+          <CurrentUserContext.Provider value={makeUserState(role)}>
+            <CampaignProvider fetchImpl={stub}>
+              <Landing />
+            </CampaignProvider>
+          </CurrentUserContext.Provider>
+        </AppNavContext.Provider>,
+      )
+      return { enterWorkspace, openTavern }
+    }
+    const dm = mount('dm')
+    await userEvent.click(screen.getByRole('button', { name: /Enter the Tavern/i }))
+    expect(dm.openTavern).toHaveBeenCalledTimes(1)
+    expect(dm.enterWorkspace).not.toHaveBeenCalled()
+    cleanup()
+
+    const player = mount('player')
+    await userEvent.click(screen.getByRole('button', { name: /Enter the Tavern/i }))
+    expect(player.openTavern).toHaveBeenCalledTimes(1)
+    expect(player.enterWorkspace).not.toHaveBeenCalled()
+    // Landing's own reads and writes: none for either account.
+    expect(stub).not.toHaveBeenCalled()
+  })
+
+  it('L-3 the mode chips still enter the workspace in their mode, for a dm too', async () => {
+    const enterWorkspace = vi.fn()
+    const openTavern = vi.fn()
+    const state: AppNavState = { ...makeNavState({ screen: 'landing' }), enterWorkspace, openTavern }
+    render(
+      <AppNavContext.Provider value={state}>
+        <CurrentUserContext.Provider value={makeUserState('dm')}>
+          <CampaignProvider fetchImpl={vi.fn() as unknown as typeof fetch}>
+            <Landing />
+          </CampaignProvider>
+        </CurrentUserContext.Provider>
+      </AppNavContext.Provider>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Sage' }))
+    await userEvent.click(screen.getByRole('button', { name: 'GM' }))
+    expect(enterWorkspace.mock.calls).toEqual([['sage'], ['gm']])
+    expect(openTavern).not.toHaveBeenCalled()
   })
 
   // channel-chats CP-D — the GM entry chip is DM-only

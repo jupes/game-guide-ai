@@ -52,6 +52,7 @@ from . import (
     job_driver,
     media_objects,
     reconciliation,
+    reveals_api,
     seats_api,
     table_api,
     table_session_api,
@@ -120,6 +121,7 @@ from .ratelimit import (
     check_chat_request,
     client_source,
 )
+from .reveals import Reveals
 from .security_headers import (
     CONTENT_SECURITY_POLICY,
     CROSS_ORIGIN_OPENER_POLICY,
@@ -130,6 +132,7 @@ from .security_headers import (
 )
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
+from .table_reads import TableReads
 from .table_sessions import TableSessions
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
 from .usage_ledger import UsageDayReader
@@ -363,6 +366,7 @@ def _build_stores(db: Database) -> None:
     # through 1kg.3.5's enqueuer, never naming either kind here.
     from .audit_log import PostgresAuditLog
     from .campaign_store import PostgresCampaignStore
+    from .document_store import PostgresDocumentStore
     from .reveal_store import PostgresRevealStore
     from .reveals import make_reconcile_slots, slot_clear_for
     from .session_divider_store import PostgresSessionDividerStore
@@ -392,6 +396,18 @@ def _build_stores(db: Database) -> None:
         dividers=enqueuer(queue),
     )
     _state["table_sessions"] = table_sessions
+    # The GM's reveal service (1kg.7.2), over the same stores and the same rows.
+    _state["reveals"] = Reveals(
+        db,
+        campaigns=PostgresCampaignStore(),
+        sessions=sessions,
+        reveals=reveal_rows,
+        documents=PostgresDocumentStore(),
+        audit=PostgresAuditLog(),
+    )
+    # The table's read side (1kg.7.2 PR-2): the one module through which a table
+    # route reaches stored text (T-23), over the same rows.
+    _state["table_reads"] = TableReads(db, reveal_rows, PostgresDocumentStore())
     runner.register(EXPIRE_KIND, table_sessions.expire_handler())
     runner.register(
         DIVIDER_KIND, SessionDividers(db, sessions=sessions, store=PostgresSessionDividerStore()).handler()
@@ -1863,6 +1879,22 @@ def get_table_sessions() -> TableSessions | None:
     return _state.get("table_sessions")
 
 
+def get_reveals() -> Reveals | None:
+    """The GM's reveal service (1kg.7.2), built with the stores; None on a
+    degraded instance, which the reveal routes answer with a 503."""
+    if "reveals" not in _state:
+        recover_database()
+    return _state.get("reveals")
+
+
+def get_table_reads() -> TableReads | None:
+    """The table's read side (1kg.7.2 PR-2), built with the stores; None on a
+    degraded instance, which `GET /table/snapshot` answers with a 503."""
+    if "table_reads" not in _state:
+        recover_database()
+    return _state.get("table_reads")
+
+
 def start_gate(caller: SessionData) -> None:
     """The one check point for starting a live table (1kg.2.3, L-19; owner
     decision D-3: running a live table is Paid, joining one is Free).
@@ -1982,7 +2014,12 @@ app.include_router(
     asset_serving_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled, _job_driver)
 )
 app.include_router(table_session_api.build_router(WORKBENCH_GM, get_table_sessions, _job_driver, start_gate))
-app.include_router(table_api.build_router(require_session, get_auth_store, _clear_session_cookie, get_table_sessions))
+app.include_router(
+    table_api.build_router(
+        require_session, get_auth_store, _clear_session_cookie, get_table_sessions, get_table_reads
+    )
+)
+app.include_router(reveals_api.build_router(WORKBENCH_GM, get_reveals))
 app.include_router(tool_invocations_api.build_router(WORKBENCH_GM, get_timeline_database, get_usage_day))
 app.include_router(groups_api.build_router(WORKBENCH_GM, get_timeline_database, get_group_stores))
 

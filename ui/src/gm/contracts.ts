@@ -1676,6 +1676,10 @@ export const TableLeaveRequestSchema = refusingProtoKeys(
 )
 export type TableLeaveRequest = z.infer<typeof TableLeaveRequestSchema>
 
+/** GET /table/snapshot?campaign_id= (1kg.7.2): the campaign is in the query (SEC-43); the principal is the cookie. */
+export const TableSnapshotQuerySchema = refusingProtoKeys(z.strictObject({ campaign_id: OpaqueIdSchema }))
+export type TableSnapshotQuery = z.infer<typeof TableSnapshotQuerySchema>
+
 /** What the deployment has switched on (RAIL-10, AE-58): the answer to the lookup
  * a GM client makes once per load. A newer server may add a switch; it is
  * stripped, because this client's registry cannot name a tool for it. */
@@ -1782,6 +1786,8 @@ export const RevealAudienceSchema = refusingProtoKeys(
         .max(PRESENCE_MAX_PARTICIPANTS)
         .refine((ids) => new Set(ids).size === ids.length, { message: 'a recipient list names each participant once' }),
     }),
+    // TA-5, threat model 15.11: the server expands it to the accepted, GM-confirmed seats; no list travels.
+    z.strictObject({ kind: z.literal('everyone_seated') }),
   ]),
 )
 export type RevealAudience = z.infer<typeof RevealAudienceSchema>
@@ -1916,6 +1922,20 @@ function projectionValueSchema(kind: FieldKind): ZodType<unknown> {
     case 'entry_list':
       return z.array(PresentEntrySchema).min(1).max(LIST_FIELD_MAX_ITEMS)
   }
+}
+
+/**
+ * Whether a field's value is something a player could be shown: the client twin
+ * of the server's `reveals._present` (1kg.7.3). A reveal sheet offers a row only
+ * when this holds, so it never ticks a field the server would refuse as empty.
+ * An `asset` is present as the GM-side reference; the table's per-slot handle is
+ * minted by the server, so there is nothing to check beyond its being set. Every
+ * other kind is judged by the projection's own shape, so the two cannot disagree
+ * about what "present and non-empty" means (REVEAL-5, ED-9).
+ */
+export function presentForReveal(kind: FieldKind, value: unknown): boolean {
+  if (kind === 'asset') return value !== null && value !== undefined
+  return projectionValueSchema(kind).safeParse(value).success
 }
 
 /** One masked field as a player sees it: the key, and the text. The heading is
@@ -2079,6 +2099,14 @@ export const RevealStateSchema = z
     { path: ['slots'], message: 'a document has at most one live disclosure, and a disclosure is the table or its participant copies' },
   )
 export type RevealState = z.infer<typeof RevealStateSchema>
+
+/** The GM's reveal picture as a top-level answer: the read, a Confirm and a Stop (1kg.7.2).
+ * `state` is null only when the campaign has no live session. */
+export const RevealAnswerSchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  state: RevealStateSchema.nullable(),
+})
+export type RevealAnswer = z.infer<typeof RevealAnswerSchema>
 
 // ── Realtime events ──────────────────────────────────────────────────────────
 // Two channels, two unions (ADR RT-1, threat model 8.3). Every frame carries its
@@ -2835,6 +2863,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   ScreenMintRequest: ScreenMintRequestSchema,
   ScreenMintAnswer: ScreenMintAnswerSchema,
   TableLeaveRequest: TableLeaveRequestSchema,
+  TableSnapshotQuery: TableSnapshotQuerySchema,
   Capabilities: CapabilitiesSchema,
   RevealAudience: RevealAudienceSchema,
   RevealSlotRef: RevealSlotRefSchema,
@@ -2842,6 +2871,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   RevealStopRequest: RevealStopRequestSchema,
   RevealLive: RevealLiveSchema,
   RevealState: RevealStateSchema,
+  RevealAnswer: RevealAnswerSchema,
   TableProjection: TableProjectionSchema,
   GmEvent: GmEventSchema,
   TableEvent: TableEventSchema,

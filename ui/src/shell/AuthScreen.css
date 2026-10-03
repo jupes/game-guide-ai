@@ -33,6 +33,18 @@
   gap: var(--aether-space-3, 16px);
 }
 
+/* REVEAL-16: what the table can still see after a 401 during a live reveal. Louder than a hint, and it never waits. */
+.auth-screen__notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--md-sys-color-error);
+  border-radius: var(--aether-radius-button);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
 .auth-screen__error {
   margin: 0;
   /* Was `var(--aether-color-error, #b3261e)`. `--aether-color-error` is not a
