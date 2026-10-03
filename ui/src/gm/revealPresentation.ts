@@ -107,3 +107,51 @@ export function revealPresentation(
     canStop: true,
   }
 }
+
+// ── The workspace indicator (PR-2, REVEAL-14) ────────────────────────────────
+
+/** One live document, as the workspace indicator lists it. */
+export interface Projection {
+  readonly documentId: string
+  /** GM-private: rendered and nothing more (X-7). `a document` until it has been read. */
+  readonly title: string
+  /** `table`, `Brann`, or `2 players`. */
+  readonly who: string
+  /** A revealed field's text has changed since it was pinned (REVEAL-8). */
+  readonly staleText: boolean
+  /** Every copy is held until its seat is confirmed. */
+  readonly waiting: boolean
+}
+
+/**
+ * Every live document in the picture, once each, in slot order. Chat and canvas agree by construction:
+ * the canvas header reads `revealPresentation`, the workspace header reads this, both from `useReveals()`.
+ */
+export function revealProjections(
+  picture: RevealState | null,
+  titles: ReadonlyMap<string, string>,
+  seats: readonly Seat[],
+): Projection[] {
+  const ids = [...new Set(picture?.slots.flatMap((entry) => (entry.live === null ? [] : [entry.live.document_id])) ?? [])]
+  return ids.flatMap((documentId) => {
+    const live = liveOf(picture, documentId)
+    if (live === null) return []
+    return [
+      {
+        documentId,
+        title: titles.get(documentId) ?? REVEAL_COPY.aDocument,
+        who: live.audience.kind === 'table' ? REVEAL_COPY.indicatorTable : whoOf(live, seats),
+        staleText: live.staleText,
+        waiting: live.allWaiting,
+      },
+    ]
+  })
+}
+
+/** `Revealed · Ondrey (table) · +1 more`. */
+export function projectionSummary(projections: readonly Projection[]): string {
+  const [first, ...rest] = projections
+  if (first === undefined) return REVEAL_COPY.indicatorRevealed
+  const head = `${REVEAL_COPY.indicatorRevealed} · ${first.title} (${first.who})`
+  return rest.length === 0 ? head : `${head} · ${REVEAL_COPY.indicatorMore(rest.length)}`
+}

@@ -1,3 +1,4 @@
+import { afterEach } from 'vitest'
 import '@testing-library/jest-dom/vitest'
 
 // `jsdom` ships no type declarations (no `@types/jsdom` dependency here),
@@ -29,3 +30,15 @@ if (jsdomInstance) {
     })
   }
 }
+
+// A Stop pressed in one test leaves its opaque pending-stop marker in storage (REVEAL-16), and the next
+// test's provider would replay it on load, as the product should. Each test starts without one.
+afterEach(() => {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('game-guide-ai:gm-pending-stops')) localStorage.removeItem(key)
+    }
+  } catch {
+    // storage unavailable in this environment: nothing was left behind
+  }
+})

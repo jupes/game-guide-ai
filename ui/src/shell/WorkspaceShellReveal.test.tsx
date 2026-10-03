@@ -62,6 +62,9 @@ async function mountShell(width: number, options: MountOptions = {}, selected = 
 }
 
 const chrome = (): HTMLElement => document.querySelector('.workspace-shell__chrome') as HTMLElement
+/** Every part of the chrome is inert (the reveal indicator is left out on purpose: REVEAL-14). */
+const chromeInert = (): boolean =>
+  [...document.querySelectorAll('.workspace-shell__chrome-part, .app-header__controls')].every((part) => part.hasAttribute('inert'))
 const body = (): HTMLElement => document.querySelector('.workspace-shell__body') as HTMLElement
 const announcers = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('.workbench-announcer')]
 const revealAnnouncer = (): HTMLElement | null => document.querySelector('[data-reveal-announcer]')
@@ -71,17 +74,17 @@ describe('the sheet is modal (Critic 14)', () => {
     const user = userEvent.setup()
     await mountShell(1280, WITH_DOC)
     const open = await screen.findByRole('button', { name: 'Reveal to party' })
-    expect(chrome()).not.toHaveAttribute('inert')
+    expect(chromeInert()).toBe(false)
     expect(body()).not.toHaveAttribute('inert')
     await user.click(open)
     const sheet = await screen.findByRole('dialog', { name: 'Reveal Ondrey' })
-    expect(chrome()).toHaveAttribute('inert')
+    expect(chromeInert()).toBe(true)
     expect(body()).toHaveAttribute('inert')
     expect(chrome()).not.toContainElement(sheet)
     expect(body()).not.toContainElement(sheet)
     await user.click(within(sheet).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(chrome()).not.toHaveAttribute('inert')
+    expect(chromeInert()).toBe(false)
     expect(body()).not.toHaveAttribute('inert')
     await waitFor(() => expect(open).toHaveFocus())
   })
@@ -98,7 +101,7 @@ describe('the sheet is modal (Critic 14)', () => {
     })
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reveal Ondrey' })).toBeNull())
     expect(live.reveals.sheet).toBeNull()
-    expect(chrome()).not.toHaveAttribute('inert')
+    expect(chromeInert()).toBe(false)
     expect(body()).not.toHaveAttribute('inert')
   })
 
@@ -110,7 +113,7 @@ describe('the sheet is modal (Critic 14)', () => {
     await run(() => live.actions.closeDocument())
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(live.reveals.sheet).toBeNull()
-    expect(chrome()).not.toHaveAttribute('inert')
+    expect(chromeInert()).toBe(false)
     expect(body()).not.toHaveAttribute('inert')
   })
 

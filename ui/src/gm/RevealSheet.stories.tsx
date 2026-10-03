@@ -75,7 +75,7 @@ const meta = {
     effect: REVEAL,
     live: false,
     partialAudience: false,
-    staleNote: false,
+    latest: { status: 'none' },
     emptyDocument: false,
     conflict: false,
     error: null,
@@ -92,6 +92,8 @@ const meta = {
     onConfirm: fn(),
     onCancel: fn(),
     onStop: fn(),
+    onUseLatest: fn(),
+    onKeepPinned: fn(),
     restoreFocus: fn(),
   },
   render: (args) => <LiveSheet {...args} />,
@@ -196,7 +198,7 @@ export const ReadyLive: Story = {
 export const ReadyLiveStale: Story = {
   args: {
     live: true,
-    staleNote: true,
+    latest: { status: 'offer' },
     statusLine: 'Revealed · Name & voice · to the table',
     effect: { kind: 'none', label: 'Update', notices: ['Nothing has changed.'] },
   },
@@ -317,7 +319,7 @@ export const ReadyDark: Story = {
 
 export const ErrorDark: Story = {
   globals: { theme: 'dark' },
-  args: { error: "Couldn't reveal — Try again", tryAgain: true, conflict: true, staleNote: true },
+  args: { error: "Couldn't reveal — Try again", tryAgain: true, conflict: true, latest: { status: 'offer' } },
 }
 
 /** Below 768px it is a full-screen sheet with no horizontal scroll. */
@@ -345,3 +347,108 @@ export const PhoneDark: Story = {
   },
 }
 
+
+// ── PR-2: REVEAL-8 Use latest version ────────────────────────────────────────
+
+const LATEST_ROWS = [
+  { key: 'voice', label: 'Voice', oldText: 'Quiet, clipped, never raised', newText: 'Loud, sudden, and never alone' },
+  { key: 'name', label: 'Name', oldText: 'Ondrey', newText: 'Ondrey' },
+]
+const LIVE_STALE = {
+  live: true,
+  statusLine: 'Revealed · Name & voice · to the table',
+  effect: { kind: 'none', label: 'Update', notices: ['Nothing has changed.'] },
+} as const
+
+/** The table is seeing an earlier version: the sheet says so and offers the latest. */
+export const UseLatestOffered: Story = {
+  args: { ...LIVE_STALE, latest: { status: 'offer' } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText('The table is seeing an earlier version.')).toBeVisible()
+    await expect(canvas.getByRole('button', { name: 'Use latest version' })).toBeEnabled()
+  },
+}
+
+export const UseLatestLoading: Story = { args: { ...LIVE_STALE, latest: { status: 'loading' } } }
+
+export const UseLatestFailed: Story = { args: { ...LIVE_STALE, latest: { status: 'failed' } } }
+
+/** Every ticked field, the table text beside the latest, and the choice to go back. */
+export const UseLatestReview: Story = {
+  args: {
+    ...LIVE_STALE,
+    latest: { status: 'review', rows: LATEST_ROWS },
+    effect: { kind: 'update', label: 'Update', notices: [] },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const list = canvas.getByRole('list', { name: 'What changes for the table' })
+    await expect(within(list).getAllByRole('listitem')).toHaveLength(2)
+    await expect(canvas.getByRole('button', { name: 'Keep what the table sees' })).toBeEnabled()
+  },
+}
+
+// ── PR-2, F-6: the remaining states in the dark Tavern, and the review on a phone ──
+
+const darkPlay = async ({ canvasElement }: { canvasElement: HTMLElement }): Promise<void> => {
+  await expectTheme('dark')
+  await expect(within(canvasElement).getByRole('dialog')).toBeVisible()
+}
+
+export const UseLatestReviewDark: Story = {
+  globals: { theme: 'dark' },
+  args: { ...UseLatestReview.args },
+  play: darkPlay,
+}
+
+export const PreparingDark: Story = { globals: { theme: 'dark' }, args: { phase: 'preparing' }, play: darkPlay }
+
+export const NoSessionDark: Story = { globals: { theme: 'dark' }, args: { phase: 'no_session' }, play: darkPlay }
+
+export const NoSessionFailedDark: Story = {
+  globals: { theme: 'dark' },
+  args: { phase: 'no_session', start: { pending: false, notice: "Couldn't start a session.", retry: true } },
+  play: darkPlay,
+}
+
+export const UnknownDark: Story = { globals: { theme: 'dark' }, args: { phase: 'unknown', live: true }, play: darkPlay }
+
+export const EmptyDocumentDark: Story = {
+  globals: { theme: 'dark' },
+  args: { ...EmptyDocument.args },
+  play: darkPlay,
+}
+
+export const SealFailedDark: Story = { globals: { theme: 'dark' }, args: { phase: 'seal_failed' }, play: darkPlay }
+
+export const DocumentUnavailableDark: Story = { globals: { theme: 'dark' }, args: { phase: 'unavailable' }, play: darkPlay }
+
+export const PlayersChosenDark: Story = { globals: { theme: 'dark' }, args: { ...PlayersChosen.args }, play: darkPlay }
+
+export const SeatsFailedDark: Story = {
+  globals: { theme: 'dark' },
+  args: { seats: { status: 'failed', items: [] } },
+  play: darkPlay,
+}
+
+export const EffectReplaceDark: Story = { globals: { theme: 'dark' }, args: { ...EffectReplace.args }, play: darkPlay }
+
+export const EffectMoveDark: Story = { globals: { theme: 'dark' }, args: { ...EffectMove.args }, play: darkPlay }
+
+export const ConfirmInFlightDark: Story = { globals: { theme: 'dark' }, args: { confirming: true }, play: darkPlay }
+
+export const WaitingForStopDark: Story = { globals: { theme: 'dark' }, args: { ...WaitingForStop.args }, play: darkPlay }
+
+export const ThrottledDark: Story = { globals: { theme: 'dark' }, args: { ...Throttled.args }, play: darkPlay }
+
+export const UseLatestReviewPhone: Story = {
+  ...atViewport('phone375', 'dark'),
+  args: { ...UseLatestReview.args },
+  play: async ({ canvasElement }) => {
+    await expectViewport('phone375')
+    await expectTheme('dark')
+    await expect(within(canvasElement).getByRole('list', { name: 'What changes for the table' })).toBeVisible()
+    await expectNoPageOverflow()
+  },
+}

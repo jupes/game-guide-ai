@@ -27,7 +27,7 @@ interface World {
   /** The body for `GET /reveals`. */
   picture: Record<string, unknown>
   seats: readonly Seat[]
-  seal: () => Reply
+  seal: (call: Call) => Reply
   version: (number: number) => Reply
   link: Reply
   confirm: (call: Call) => Reply
@@ -81,7 +81,7 @@ const route: Route = (call) => {
   if (world.canvas !== undefined && isGet(call, /\/documents\/doc_a$/)) return answer(world.canvas())
   if (isGet(call, /\/table-session$/)) return { status: 200, body: world.session ?? tableSessionBody(null) }
   if (isGet(call, /\/participants/)) return { status: 200, body: seatBody(world.seats) }
-  if (isPost(call, SEAL)) return answer(world.seal())
+  if (isPost(call, SEAL)) return answer(world.seal(call))
   if (isGet(call, /\/versions\/\d+$/)) return answer(world.version(Number(call.url.split('/').pop())))
   if (isGet(call, /\/link$/)) return answer(world.link)
   if (isPost(call, REVEALS)) return answer(world.confirm(call))
@@ -206,13 +206,12 @@ describe('opening the sheet: preparing, and what it seals and reads (test 20)', 
     expect(confirmBodies(server)[0]).toMatchObject({ version: 2 })
   })
 
-  it('a stale live copy says how to show the latest text', async () => {
+  it('a stale live copy says the table is seeing an earlier version, and offers the latest (REVEAL-8)', async () => {
     const picture = revealPicture({ table: liveFixture(DOC, ['name'], { version: 2, stale_text: true }) })
     await openSheet({ worldOverrides: { picture } })
     await ready()
-    expect(
-      inDialog().getByText('The table is seeing an earlier version. To show the latest text, stop showing and reveal it again.'),
-    ).toBeInTheDocument()
+    expect(inDialog().getByText('The table is seeing an earlier version.')).toBeInTheDocument()
+    expect(inDialog().getByRole('button', { name: 'Use latest version' })).toBeEnabled()
   })
 })
 
@@ -740,3 +739,240 @@ function sealedSheet(): { status: number; body: unknown } {
   return { status: 200, body: documentBody('cmp_A', DOC, sheetDocFor()) }
 }
 
+
+// ── PR-2: REVEAL-8 Use latest version ─────────────────────────────────────────
+
+describe('REVEAL-8: Use latest version (PR-2)', () => {
+  const stale = revealPicture({ epoch: 3, table: liveFixture(DOC, ['name', 'voice'], { version: 2, stale_text: true }) })
+  const latest = (extra: Record<string, unknown> = {}) => ({
+    status: 200,
+    body: documentBody('cmp_A', DOC, {
+      version: versionBody(7),
+      data: { name: 'Pinned name', qualifier: 'Latest qualifier', voice: 'Latest voice', wants: 'Latest wants' },
+      ...extra,
+    }),
+  })
+  const reply = revealPicture({ epoch: 4, table: liveFixture(DOC, ['name', 'voice'], { version: 7 }) })
+
+  it('is offered only for a live document whose revealed text moved on, and nothing is sealed until it is pressed', async () => {
+    const fresh = revealPicture({ epoch: 3, table: liveFixture(DOC, ['name'], { version: 2 }) })
+    const { server } = await openSheet({ worldOverrides: { picture: fresh } })
+    await ready()
+    expect(inDialog().queryByRole('button', { name: 'Use latest version' })).toBeNull()
+    expect(posts(server, SEAL)).toEqual([])
+  })
+
+  it('seals only when pressed, then lists every ticked field with the table text beside the latest', async () => {
+    const { server, user } = await openSheet({ worldOverrides: { picture: stale, seal: () => latest() } })
+    await ready()
+    expect(posts(server, SEAL)).toEqual([])
+    await user.click(inDialog().getByRole('button', { name: 'Use latest version' }))
+    const changes = await inDialog().findByRole('list', { name: 'What changes for the table' })
+    expect(posts(server, SEAL)).toHaveLength(1)
+    const rows = within(changes).getAllByRole('listitem')
+    expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining('Name'), expect.stringContaining('Voice')])
+    expect(within(rows[1]).getByText('Pinned voice')).toBeInTheDocument()
+    expect(within(rows[1]).getByText('Latest voice')).toBeInTheDocument()
+    // The comparison is of text: the name did not change and is listed unchanged.
+    expect(within(rows[0]).getAllByText('Pinned name')).toHaveLength(2)
+    expect(inDialog().queryByRole('button', { name: 'Use latest version' })).toBeNull()
+  })
+
+  it('Confirm then pins the version displayed, with the same mask, and Update is enabled although nothing was unticked', async () => {
+    const { server, user } = await openSheet({
+      worldOverrides: { picture: stale, seal: () => latest(), confirm: () => ({ status: 200, body: reply }) },
+    })
+    await ready()
+    // Before the review the mask is the live one, so there is nothing to update.
+    expect(inDialog().getByRole('button', { name: 'Update' })).toBeDisabled()
+    await user.click(inDialog().getByRole('button', { name: 'Use latest version' }))
+    await inDialog().findByRole('list', { name: 'What changes for the table' })
+    await user.click(inDialog().getByRole('button', { name: 'Update' }))
+    await waitFor(() => expect(posts(server, REVEALS)).toHaveLength(1))
+    // Mutation: sending the pinned version (2) after the GM chose the latest (7).
+    expect(confirmBodies(server)[0]).toMatchObject({ version: 7, mask: ['name', 'voice'], audience: { kind: 'table' } })
+    expect(JSON.stringify(confirmBodies(server)[0])).not.toContain('Latest voice')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('Keep what the table sees goes back to the pinned version: the old text, and the pinned version on Confirm', async () => {
+    const { server, user } = await openSheet({
+      worldOverrides: { picture: stale, seal: () => latest(), confirm: () => ({ status: 200, body: reply }) },
+    })
+    await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Use latest version' }))
+    await inDialog().findByRole('list', { name: 'What changes for the table' })
+    await user.click(inDialog().getByRole('button', { name: 'Keep what the table sees' }))
+    expect(inDialog().queryByRole('list', { name: 'What changes for the table' })).toBeNull()
+    expect(inDialog().getByRole('button', { name: 'Use latest version' })).toBeEnabled()
+    expect(inDialog().getByRole('button', { name: 'Update' })).toBeDisabled()
+    await user.click(inDialog().getByRole('switch', { name: 'Qualifier' }))
+    await user.click(inDialog().getByRole('button', { name: 'Update' }))
+    await waitFor(() => expect(posts(server, REVEALS)).toHaveLength(1))
+    expect(confirmBodies(server)[0]).toMatchObject({ version: 2 })
+  })
+
+  it('a field that is empty in the latest version drops out of the review and the mask', async () => {
+    const { user } = await openSheet({
+      worldOverrides: { picture: stale, seal: () => latest({ data: { name: 'Pinned name', qualifier: 'Latest qualifier', voice: '' } }) },
+    })
+    await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Use latest version' }))
+    const changes = await inDialog().findByRole('list', { name: 'What changes for the table' })
+    // Name & voice stays ticked through its name; the voice, empty now, is not listed.
+    expect(within(changes).getAllByRole('listitem')).toHaveLength(1)
+    expect(within(changes).getByText('Name')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['cannot be reached', { status: 503, body: {} }],
+    ['is not sealed', { status: 200, body: documentBody('cmp_A', DOC, { version: { ...versionBody(7), sealed: false } }) }],
+    ['belongs to an archived document', { status: 200, body: documentBody('cmp_A', DOC, { version: versionBody(7), archived: true }) }],
+  ])('a latest version that %s says nothing changed, keeps the pinned one, and can be tried again', async (_name, bad) => {
+    let answer: { status: number; body?: unknown } = bad
+    const { server, user } = await openSheet({ worldOverrides: { picture: stale, seal: () => answer } })
+    await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Use latest version' }))
+    expect(await inDialog().findByText("Couldn't load the latest version. Nothing changed.")).toBeInTheDocument()
+    expect(inDialog().queryByRole('list', { name: 'What changes for the table' })).toBeNull()
+    expect(inDialog().getByText('Pinned voice')).toBeInTheDocument()
+    expect(posts(server, REVEALS)).toEqual([])
+    answer = latest()
+    await user.click(inDialog().getByRole('button', { name: 'Use latest version' }))
+    await inDialog().findByRole('list', { name: 'What changes for the table' })
+  })
+
+  it('a refused Confirm re-reads the pin and asks the GM to choose again: the latest is not silently kept', async () => {
+    const { user } = await openSheet({
+      worldOverrides: {
+        picture: stale,
+        seal: () => latest(),
+        confirm: () => ({ status: 409, body: { detail: { code: 'conflict', message: 'x', retryable: false } } }),
+      },
+    })
+    await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Use latest version' }))
+    await inDialog().findByRole('list', { name: 'What changes for the table' })
+    await user.click(inDialog().getByRole('button', { name: 'Update' }))
+    expect((await inDialog().findAllByText("Reveal changed — check and confirm again")).length).toBeGreaterThan(0)
+    await waitFor(() => expect(inDialog().getByRole('button', { name: 'Use latest version' })).toBeInTheDocument())
+    expect(inDialog().queryByRole('list', { name: 'What changes for the table' })).toBeNull()
+  })
+})
+
+// ── PR-2: F-7, a Try again after an edit is a different intent ────────────────
+
+describe('F-7: Try again after the draft was edited mints a new command id', () => {
+  const failing = { confirm: () => ({ status: 503, body: {} }) } as const
+
+  it('an edit after a failure makes the next press a new Confirm with a new id (and drops the failure line)', async () => {
+    const { user, server } = await openSheet({ worldOverrides: failing })
+    await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Reveal to the table' }))
+    await inDialog().findByText("Couldn't reveal — Try again")
+    await user.click(inDialog().getByRole('switch', { name: 'Qualifier' }))
+    // The failure belonged to the old choice: its line and its Try again label are gone.
+    expect(inDialog().queryByText("Couldn't reveal — Try again")).toBeNull()
+    expect(inDialog().queryByRole('button', { name: 'Try again' })).toBeNull()
+    await user.click(inDialog().getByRole('button', { name: 'Reveal to the table' }))
+    await waitFor(() => expect(posts(server, REVEALS)).toHaveLength(2))
+    const [first, second] = confirmBodies(server)
+    // Mutation: keeping the old id for a different mask.
+    expect(second.command_id).not.toBe(first.command_id)
+    expect(second.mask).toEqual(['name', 'qualifier', 'voice'])
+  })
+
+  it('changing the audience does the same', async () => {
+    const { user, server } = await openSheet({ worldOverrides: failing })
+    await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Reveal to the table' }))
+    await inDialog().findByText("Couldn't reveal — Try again")
+    await user.click(inDialog().getByRole('radio', { name: 'Chosen players' }))
+    await user.click(inDialog().getByRole('checkbox', { name: 'Brann' }))
+    expect(inDialog().queryByText("Couldn't reveal — Try again")).toBeNull()
+    await user.click(inDialog().getByRole('switch', { name: 'Name & voice' }))
+    await user.click(inDialog().getByRole('button', { name: 'Reveal to Brann' }))
+    await waitFor(() => expect(posts(server, REVEALS)).toHaveLength(2))
+    const [first, second] = confirmBodies(server)
+    expect(second.command_id).not.toBe(first.command_id)
+    expect(second.audience).toEqual({ kind: 'participants', participant_ids: [BRANN.participant_id] })
+  })
+})
+
+// ── PR-2: the indicator opens another document's sheet without swapping the canvas ──
+
+describe('REVEAL-14: a sheet for a document the canvas does not show', () => {
+  const OTHER = 'doc_b'
+  const bothLive = revealPicture({ epoch: 3, table: liveFixture(OTHER, ['name'], { version: 4 }) })
+  const sealOther = (call: Call) =>
+    call.url.includes(OTHER)
+      ? { status: 200, body: documentBody('cmp_A', OTHER, { version: versionBody(5) }) }
+      : sealedDocument()
+  const pinOther = (number: number) => ({
+    status: 200,
+    body: {
+      schema_version: 1, document_id: OTHER, type: 'npc', type_version: 1, version: versionBody(number), data: { name: 'Brannoch', voice: 'Gruff' },
+    },
+  })
+
+  async function openOther(overrides: Partial<World> = {}, useRoute: Route = route) {
+    world = makeWorld({ seal: sealOther, version: pinOther, ...overrides })
+    const mounted = await mountSelected(
+      (server) => (
+        <>
+          <CanvasHost fetchImpl={server.fetchImpl} />
+          <RevealSheetHost fetchImpl={server.fetchImpl} />
+        </>
+      ),
+      { route: useRoute },
+    )
+    await run(() => live.actions.openDocument({ documentId: DOC, title: null }, { gesture: true }))
+    await screen.findByRole('heading', { name: 'Ondrey' })
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    act(() => live.reveals.openSheet(OTHER, opener, DOC))
+    return { ...mounted, opener, user: userEvent.setup() }
+  }
+
+  it("opens that document's sheet as a dialog named for it, and the canvas keeps showing the open document", async () => {
+    const { server } = await openOther({ picture: bothLive })
+    await screen.findByRole('dialog', { name: 'Reveal Brannoch' })
+    expect(live.state.doc.kind === 'open' && live.state.doc.document.document_id).toBe(DOC)
+    expect(screen.getAllByRole('heading', { name: 'Ondrey' }).length).toBeGreaterThan(0)
+    // It works against that document: its pinned version (it is live), read by its own id.
+    await waitFor(() => expect(inDialog().queryByText('Getting the document ready…')).toBeNull())
+    expect(server.calls.some((call) => isGet(call, /\/documents\/doc_b\/versions\/4$/))).toBe(true)
+    expect(posts(server, SEAL)).toEqual([])
+  })
+
+  it('a hidden document is sealed by its own id and a Confirm names it', async () => {
+    const reply = revealPicture({ epoch: 4, table: liveFixture(OTHER, ['name', 'voice'], { version: 5 }) })
+    const { server, user } = await openOther({ confirm: () => ({ status: 200, body: reply }) })
+    await screen.findByRole('dialog', { name: 'Reveal Brannoch' })
+    await waitFor(() => expect(inDialog().getByRole('switch', { name: 'Name & voice' })).toBeInTheDocument())
+    expect(posts(server, SEAL).map((call) => call.url)).toEqual(['/campaigns/cmp_A/documents/doc_b/seal'])
+    await user.click(inDialog().getByRole('button', { name: 'Reveal to the table' }))
+    await waitFor(() => expect(posts(server, REVEALS)).toHaveLength(1))
+    expect(confirmBodies(server)[0]).toMatchObject({ document_id: OTHER, version: 5 })
+  })
+
+  it('Cancel closes it and returns focus to the control that opened it', async () => {
+    const { server, user, opener } = await openOther()
+    await screen.findByRole('dialog', { name: 'Reveal Brannoch' })
+    await waitFor(() => expect(inDialog().queryByText('Getting the document ready…')).toBeNull())
+    await user.click(inDialog().getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(opener).toHaveFocus()
+    expect(posts(server, REVEALS)).toEqual([])
+  })
+
+  it('a document that cannot be read says so with Cancel only, never a guess at its fields', async () => {
+    const gone: Route = (call) => (isGet(call, /\/documents\/doc_b$/) ? { status: 404, body: { code: 'not_found' } } : route(call))
+    await openOther({}, gone)
+    const sheet = await screen.findByRole('dialog')
+    expect(within(sheet).getByRole('heading', { level: 2 })).toHaveTextContent('Reveal a document')
+    expect(await within(sheet).findByText("This document isn't available.")).toBeInTheDocument()
+    expect(within(sheet).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+    expect(within(sheet).queryAllByRole('switch')).toEqual([])
+  })
+})

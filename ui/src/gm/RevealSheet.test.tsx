@@ -37,7 +37,7 @@ function build(overrides: Partial<RevealSheetProps> = {}): RevealSheetProps {
     effect: REVEAL,
     live: false,
     partialAudience: false,
-    staleNote: false,
+    latest: { status: 'none' },
     emptyDocument: false,
     conflict: false,
     error: null,
@@ -54,6 +54,8 @@ function build(overrides: Partial<RevealSheetProps> = {}): RevealSheetProps {
     onConfirm: vi.fn(),
     onCancel: vi.fn(),
     onStop: vi.fn(),
+    onUseLatest: vi.fn(),
+    onKeepPinned: vi.fn(),
     restoreFocus: vi.fn(),
     ...overrides,
   }
@@ -299,7 +301,7 @@ describe('the action (test 22)', () => {
     show({
       effect: { kind: 'move', label: 'Move to Brann', notices: ['It stops showing to the table.', 'This replaces what Brann is seeing now.'] },
       conflict: true,
-      staleNote: true,
+      latest: { status: 'offer' },
       partialAudience: true,
       stopWaiting: true,
     })
@@ -307,7 +309,7 @@ describe('the action (test 22)', () => {
       'It stops showing to the table.',
       'This replaces what Brann is seeing now.',
       'Reveal changed — check and confirm again',
-      'The table is seeing an earlier version. To show the latest text, stop showing and reveal it again.',
+      'The table is seeing an earlier version.',
       "Some players who can see this can't be chosen here.",
       'Waiting for Stop showing to finish…',
     ]) {
@@ -425,5 +427,81 @@ describe('every other state (brief 6.3)', () => {
     show({ statusLine: 'Choices reset for Brann' })
     const line = screen.getByText('Choices reset for Brann')
     expect(line.closest('[role="status"]')).toBeNull()
+  })
+})
+
+describe('REVEAL-8: Use latest version (PR-2)', () => {
+  const review = (rows = [{ key: 'voice', label: 'Voice', oldText: 'Quiet, clipped', newText: 'Loud and sudden' }]) =>
+    ({ status: 'review', rows }) as const
+
+  it('a stale live copy says so and offers Use latest version; nothing is said when nothing is stale', async () => {
+    const user = userEvent.setup()
+    const { props, unmount } = show({ live: true, latest: { status: 'offer' } })
+    expect(screen.getByText('The table is seeing an earlier version.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Use latest version' }))
+    expect(props.onUseLatest).toHaveBeenCalledTimes(1)
+    unmount()
+    show({ live: true, latest: { status: 'none' } })
+    expect(screen.queryByRole('button', { name: 'Use latest version' })).toBeNull()
+    expect(screen.queryByText('The table is seeing an earlier version.')).toBeNull()
+  })
+
+  it('while the latest version loads it says so and offers nothing to press', () => {
+    show({ live: true, latest: { status: 'loading' } })
+    expect(screen.getByText('Loading the latest version…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Use latest version' })).toBeNull()
+  })
+
+  it('a failed load says nothing changed, as an alert, and Use latest version tries again', async () => {
+    const user = userEvent.setup()
+    const { props } = show({ live: true, latest: { status: 'failed' } })
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load the latest version. Nothing changed.")
+    await user.click(screen.getByRole('button', { name: 'Use latest version' }))
+    expect(props.onUseLatest).toHaveBeenCalledTimes(1)
+  })
+
+  it('the review lists every ticked field with the table text beside the latest, and Keep goes back', async () => {
+    const user = userEvent.setup()
+    const { props } = show({
+      live: true,
+      latest: review([
+        { key: 'voice', label: 'Voice', oldText: 'Quiet, clipped', newText: 'Loud and sudden' },
+        { key: 'name', label: 'Name', oldText: 'Ondrey', newText: 'Ondrey' },
+      ]),
+    })
+    const list = screen.getByRole('list', { name: 'What changes for the table' })
+    const items = within(list).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('Voice')
+    expect(within(items[0]).getByText('Quiet, clipped')).toBeInTheDocument()
+    expect(within(items[0]).getByText('Loud and sudden')).toBeInTheDocument()
+    expect(within(items[0]).getByText('The table sees')).toBeInTheDocument()
+    expect(within(items[0]).getByText('Latest')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Use latest version' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Keep what the table sees' }))
+    expect(props.onKeepPinned).toHaveBeenCalledTimes(1)
+  })
+
+  it('an empty side reads Empty, and text is never interpreted as markup', () => {
+    const hostile = '<img src=x onerror=alert(1)>'
+    show({ live: true, latest: review([{ key: 'voice', label: 'Voice', oldText: '', newText: hostile }]) })
+    const item = within(screen.getByRole('list', { name: 'What changes for the table' })).getByRole('listitem')
+    expect(within(item).getByText('Empty')).toBeInTheDocument()
+    expect(within(item).getByText(hostile)).toBeInTheDocument()
+    expect(item.querySelector('img')).toBeNull()
+  })
+
+  it('with nothing ticked the review says what to do instead of an empty list', () => {
+    show({ live: true, latest: review([]) })
+    expect(screen.getByText('Tick a field to compare it with the latest version.')).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: 'What changes for the table' })).toBeNull()
+  })
+
+  it('while a Confirm is in flight the version choice cannot be changed', () => {
+    const { unmount } = show({ live: true, latest: { status: 'offer' }, confirming: true })
+    expect(screen.getByRole('button', { name: 'Use latest version' })).toBeDisabled()
+    unmount()
+    show({ live: true, latest: review(), confirming: true })
+    expect(screen.getByRole('button', { name: 'Keep what the table sees' })).toBeDisabled()
   })
 })

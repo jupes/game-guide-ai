@@ -1,0 +1,126 @@
+/* ── RevealIndicator ─────────────────────────────────────────────────────────
+   1kg.7.3 PR-2 (REVEAL-14). The workspace indicator in the AppHeader row. It stays
+   operable above any modal, so it sits one step above the dialogs' scrims
+   (`--aether-z-overlay`) and the shell leaves it out of what it makes inert.
+   Tokens only, so both themes follow the palette; a focus ring and the touch floor
+   on every control; nothing animates.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.reveal-indicator {
+  position: relative;
+  z-index: calc(var(--aether-z-overlay) + 1);
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--aether-space-2);
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 var(--aether-space-3);
+  border: 1px solid var(--md-sys-color-tertiary);
+  border-radius: var(--aether-radius-button);
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+  font-family: var(--aether-font-ui);
+}
+
+.reveal-indicator[data-state='unknown'] {
+  border-color: var(--md-sys-color-error);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+
+.reveal-indicator__summary,
+.reveal-indicator__button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--aether-space-1);
+  min-height: var(--aether-touch-min);
+  padding: 0 var(--aether-space-2);
+  border: none;
+  border-radius: var(--aether-radius-button);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: start;
+  cursor: pointer;
+}
+
+.reveal-indicator__summary:focus-visible,
+.reveal-indicator__button:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
+
+.reveal-indicator__icon {
+  font-size: 20px;
+}
+
+.reveal-indicator__text {
+  font-size: 14px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* Stop is always its own button, and reads as the narrowing it is. */
+.reveal-indicator__button--stop {
+  border: 1px solid var(--md-sys-color-error);
+  color: var(--md-sys-color-error);
+  background: var(--md-sys-color-surface);
+}
+
+.reveal-indicator__note {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.reveal-indicator__note[data-tone='error'] {
+  color: var(--md-sys-color-error);
+  font-weight: 700;
+}
+
+/* The list of every projection, under the indicator, above the page. */
+.reveal-indicator__list {
+  position: absolute;
+  inset-block-start: calc(100% + var(--aether-space-1));
+  inset-inline-end: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-1);
+  width: max-content;
+  min-width: min(280px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: 60dvh;
+  margin: 0;
+  padding: var(--aether-space-2);
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-button);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: var(--md-sys-elevation-level3);
+}
+
+.reveal-indicator__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--aether-space-2);
+}
+
+.reveal-indicator__open {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Below the wide layout the header has no room beside the channels, the model picker and the theme control, so the
+   indicator takes its own full row (the layout is the shell's `data-layout`, not a media query of this sheet's own).
+   At wide it sits in the row, and the channels scroll. */
+.workspace-shell:not([data-layout='wide']) .reveal-indicator {
+  flex: 1 1 100%;
+}

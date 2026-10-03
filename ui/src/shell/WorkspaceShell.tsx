@@ -50,6 +50,9 @@
  * - The loss-guard dialog, the reveal sheet (1kg.7.3) and the Workbench's announcers
  *   render at the root, as siblings of the chrome and the body, outside every
  *   container this component makes `inert`.
+ * - The workspace reveal indicator (1kg.7.3 PR-2, REVEAL-14) lives in the AppHeader row and
+ *   stays operable above every modal: the chrome is made inert part by part, and the
+ *   indicator is the one part left out.
  */
 
 import * as React from 'react'
@@ -68,7 +71,7 @@ import { ModelCatalogProvider } from './ModelCatalogContext'
 import { NavRail } from './NavRail'
 import { NavSettings } from './NavSettings'
 import { RevealAnnouncer } from './RevealAnnouncer'
-import { RevealProvider, useRevealSheetOpen } from './revealContext'
+import { RevealProvider, useRevealSheetOpen, useReveals } from './revealContext'
 import { TableSessionProvider } from './tableSession'
 import { TopBar, type TopBarNavToggle } from './TopBar'
 import { WorkbenchAnnouncer } from './WorkbenchAnnouncer'
@@ -127,6 +130,7 @@ interface WorkspaceShellBodyProps {
 function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps): React.JSX.Element {
   const layout = useShellLayout()
   const workbench = useWorkbenchActive()
+  const reveals = useReveals()
   const { doc, view, guardDialog } = useCanvasState()
   const { setView, titleRef, chatRegionRef, setDrawerOpener } = useCanvasActions()
   const library = useLibraryPanel()
@@ -305,10 +309,18 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
         </div>
       )}
 
-      <div className="workspace-shell__chrome" inert={drawerOpen || modal}>
-        <TopBar navToggle={navToggle} />
-        <AppHeader showSettings={!settingsInDrawer} />
-        {single && shown && <WorkbenchViewSwitch view={view} onChange={setView} />}
+      {/* Behind a modal every part of the chrome is inert EXCEPT the workspace reveal indicator in the AppHeader
+          row (REVEAL-14: it stays operable above any modal), so the inertness is applied per part. */}
+      <div className="workspace-shell__chrome">
+        <div className="workspace-shell__chrome-part" inert={drawerOpen || modal}>
+          <TopBar navToggle={navToggle} />
+        </div>
+        <AppHeader showSettings={!settingsInDrawer} inert={drawerOpen || modal} />
+        {single && shown && (
+          <div className="workspace-shell__chrome-part" inert={drawerOpen || modal}>
+            <WorkbenchViewSwitch view={view} onChange={setView} />
+          </div>
+        )}
       </div>
 
       <div className="workspace-shell__body" inert={modal}>
@@ -391,7 +403,7 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
       </div>
 
       {workbench && <WorkbenchAnnouncer />}
-      {workbench && <RevealAnnouncer />}
+      {reveals.status !== 'idle' && <RevealAnnouncer />}
       {workbench && <RevealSheetHost />}
       <LossGuardHost />
     </div>

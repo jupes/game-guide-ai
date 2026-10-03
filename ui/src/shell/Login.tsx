@@ -5,6 +5,9 @@
  * URL carries no invite token. On success, adopts the session via
  * useCurrentUser().signIn and resets the screen to landing -- except over the
  * tavern, which a cold load of the signed-out /tavern returns to (30c PR-2).
+ *
+ * A 401 during a live reveal (agent-forge-harness-1kg.7.3 PR-2, REVEAL-16) says what the table
+ * can still see, from a notice held in memory until the GM has signed in again.
  */
 
 import * as React from 'react'
@@ -18,6 +21,7 @@ import { useCurrentUser } from './currentUser'
 import { GoogleOutcomeNotice } from './GoogleOutcomeNotice'
 import { GoogleSignInButton } from './GoogleSignInButton'
 import { useGoogleAvailable } from './googleAvailability'
+import { revealSignOutNotice, useRevealSignOutNotice } from './revealSignOut'
 import './AuthScreen.css'
 
 export function Login(): React.JSX.Element {
@@ -28,6 +32,7 @@ export function Login(): React.JSX.Element {
   const [submitting, setSubmitting] = useState(false)
   const { signIn } = useCurrentUser()
   const { screen, backToLanding } = useAppNav()
+  const stillSees = useRevealSignOutNotice()
 
   async function handleSubmit(e: React.FormEvent): Promise<void> {
     e.preventDefault()
@@ -40,6 +45,7 @@ export function Login(): React.JSX.Element {
     const result = await api.login(email, password)
     setSubmitting(false)
     if (result.kind === 'ok') {
+      revealSignOutNotice.clear()
       signIn(result.user)
       // 30c PR-2 (ID-26): a sign-in over a cold-loaded /tavern stays there; every
       // other screen resets to Landing as before.
@@ -54,6 +60,11 @@ export function Login(): React.JSX.Element {
       <Card className="auth-screen__card">
         <h1 className="auth-screen__title">Aetheril</h1>
         <p className="auth-screen__tagline">Sign in to continue</p>
+        {stillSees !== null && (
+          <p role="alert" className="auth-screen__notice">
+            {stillSees}
+          </p>
+        )}
         <GoogleOutcomeNotice />
         {googleAvailable && (
           <>

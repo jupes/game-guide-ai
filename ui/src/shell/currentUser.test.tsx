@@ -7,6 +7,7 @@ import {
   STUB,
 } from './currentUser'
 import * as api from '../api'
+import { revealSignOutNotice } from './revealSignOut'
 
 // ── 02t.6 — useCurrentUser provider guard (matches useTheme's pattern) ─────────
 
@@ -46,6 +47,7 @@ describe('session check', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    revealSignOutNotice.clear()
   })
 
   it('adopts the session when getMe resolves ok', async () => {
@@ -122,6 +124,14 @@ describe('session check', () => {
     act(() => result.current.signIn({ email: 'bob@example.com', role: 'player' }))
     expect(result.current.authStatus).toBe('authenticated')
     expect(result.current.user.id).toBe('bob@example.com')
+  })
+
+  it('signIn on ANY path (Signup too) clears the "table can still see" notice, so another account never reads it (REVEAL-16)', () => {
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
+    revealSignOutNotice.set(['Ondrey'])
+    const { result } = renderHook(() => useCurrentUser(), { wrapper })
+    act(() => result.current.signIn({ email: 'new@example.com', role: 'player' }))
+    expect(revealSignOutNotice.text).toBeNull()
   })
 
   it('signOut calls the logout endpoint and reverts to unauthenticated', async () => {

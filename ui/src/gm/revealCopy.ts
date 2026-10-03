@@ -55,8 +55,7 @@ export const REVEAL_COPY = {
   // ── States ──
   unknown: 'Reveal state unknown — reconnecting',
   emptyDocument: 'Nothing to reveal yet — this document is empty',
-  staleNote:
-    'The table is seeing an earlier version. To show the latest text, stop showing and reveal it again.',
+  staleNote: 'The table is seeing an earlier version.',
   conflict: 'Reveal changed — check and confirm again',
   documentRefused: "This document can't be shown right now.",
   documentUnavailable: "This document isn't available.",
@@ -99,6 +98,46 @@ export const REVEAL_COPY = {
   tableCanSee: 'The table can see this',
   whoCanSee: (who: string): string => `${who} can see this`,
   waitingToShow: (who: string): string => `Waiting to show ${who}`,
+
+  // ── The workspace indicator (PR-2, REVEAL-14) ──
+  indicatorLabel: 'What the table sees',
+  indicatorListLabel: 'Everything the table is shown',
+  stopping: 'Stopping…',
+  indicatorRevealed: 'Revealed',
+  indicatorUnknown: 'Reveal state unknown — reconnecting',
+  indicatorTable: 'table',
+  indicatorMore: (count: number): string => `+${count} more`,
+  aDocument: 'a document',
+  showList: 'Show everything that is revealed',
+  hideList: 'Hide the list',
+  stopAll: (count: number | null): string => (count === null ? 'Stop all' : `Stop all (${count})`),
+  stopShowingTitle: (title: string): string => `Stop showing ${title}`,
+  stopShort: 'Stop',
+  everything: 'everything',
+  openSheetFor: (title: string): string => `Open the reveal sheet for ${title}`,
+  goToGm: (title: string): string => `Go to the GM channel for ${title}`,
+  earlierVersionShort: 'Table is seeing an earlier version',
+  updateEllipsis: 'Update…',
+  stopFailedShort: "Couldn't stop showing — retrying",
+  documentNotOpened: "Couldn't open that document.",
+
+  // ── REVEAL-8: Use latest version (PR-2) ──
+  useLatest: 'Use latest version',
+  loadingLatest: 'Loading the latest version…',
+  latestFailed: "Couldn't load the latest version. Nothing changed.",
+  latestHeading: 'What changes for the table',
+  latestOld: 'The table sees',
+  latestNew: 'Latest',
+  latestEmpty: 'Empty',
+  keepPinned: 'Keep what the table sees',
+  latestNoTicked: 'Tick a field to compare it with the latest version.',
+
+  // ── REVEAL-16: the Login screen after a 401 during a live reveal (PR-2) ──
+  stillSees: (titles: readonly string[]): string => {
+    if (titles.length === 1) return `The table can still see ${titles[0]}`
+    if (titles.length === 2) return `The table can still see ${titles[0]} and ${titles[1]}`
+    return `The table can still see ${titles[0]}, ${titles[1]} and ${titles.length - 2} more`
+  },
 } as const
 
 /** Used where a seat id names nobody this client knows (removed, or not yet listed). */
