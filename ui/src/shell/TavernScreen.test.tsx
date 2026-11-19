@@ -626,12 +626,16 @@ describe('Concluded (S-8, S-9, S-10, S-11)', () => {
     const concluded = Array.from({ length: 13 }, (_, i) => campaignBody(`cmp_x${String(i + 1).padStart(2, '0')}`, {
       concluded_at: day(10), last_activity_at: day(28 - i),
     }))
-    await mount({ route: listOf(concluded) })
+    const { server } = await mount({ route: listOf(concluded) })
     openTavern()
     await userEvent.click(await screen.findByRole('button', { name: 'Concluded (13)' }))
     expect(screen.getAllByRole('button', { name: /^Reopen / })).toHaveLength(12)
-    await userEvent.click(screen.getByRole('button', { name: 'Show more concluded campaigns' }))
+    const before = server.calls.length
+    screen.getByRole('button', { name: 'Show more concluded campaigns' }).focus()
+    await userEvent.keyboard('{Enter}')
     expect(screen.getAllByRole('button', { name: /^Reopen / })).toHaveLength(13)
+    expect(prepButton('cmp_x13')).toHaveFocus()
+    expect(server.calls).toHaveLength(before)
   })
 
   it('S-9 Mark concluded sends one POST; the card moves to Concluded (3), focus goes to the toggle, and the status reads Marking concluded… then Marked concluded', async () => {
@@ -1140,7 +1144,7 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     const { server } = await asPlayer(route)
     const retry = await screen.findByRole('button', { name: 'Retry' })
     expect(statusNode()).toHaveTextContent("Couldn't load your seats")
-    expect(document.querySelector('p.tavern-screen__message')).toHaveTextContent("Couldn't load your seats")
+    expect(screen.getByText("Couldn't load your seats", { selector: 'p.tavern-screen__message' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /^Retry/ })).toHaveLength(1)
     failing = false
     await userEvent.click(retry)
@@ -1219,8 +1223,10 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     await screen.findByRole('list', { name: 'Your seats' })
     expect(seatNames()).toHaveLength(12)
     const before = server.calls.length
-    await userEvent.click(screen.getByRole('button', { name: 'Show more seats' }))
+    screen.getByRole('button', { name: 'Show more seats' }).focus()
+    await userEvent.keyboard('{Enter}')
     expect(seatNames()).toHaveLength(13)
+    expect(screen.getByRole('heading', { name: 'Table of cmp_s00' })).toHaveFocus()
     expect(screen.queryByRole('button', { name: 'Show more seats' })).toBeNull()
     expect(server.calls.length).toBe(before)
     cleanup()

@@ -34,6 +34,8 @@ export const SEAT_CONCLUDED = 'This table has concluded'
 export interface TavernSeatCardProps {
   seat: PlayerSeat
   now: Date
+  /** Focus the first newly revealed seat without adding it to the Tab order. */
+  headingRef?: React.RefObject<HTMLHeadingElement | null>
 }
 
 function Note({ icon, children }: { icon: string; children: React.ReactNode }): React.JSX.Element {
@@ -45,7 +47,7 @@ function Note({ icon, children }: { icon: string; children: React.ReactNode }): 
   )
 }
 
-export function TavernSeatCard({ seat, now }: TavernSeatCardProps): React.JSX.Element {
+export function TavernSeatCard({ seat, now, headingRef }: TavernSeatCardProps): React.JSX.Element {
   const nameId = React.useId()
   const live = seat.live && seat.confirmed && !seat.concluded
   const state = seat.concluded ? 'concluded' : !seat.confirmed ? 'waiting' : live ? 'live' : 'quiet'
@@ -56,7 +58,9 @@ export function TavernSeatCard({ seat, now }: TavernSeatCardProps): React.JSX.El
         <Avatar icon={seat.avatar_icon} tone={seat.avatar_tone} size={46} aria-hidden="true" />
         <div className="tavern-card__title">
           <div className="tavern-card__name-row">
-            <h2 id={nameId} className="tavern-card__name">{seat.campaign_name}</h2>
+            <h2 id={nameId} className="tavern-card__name" ref={headingRef} tabIndex={headingRef ? -1 : undefined}>
+              {seat.campaign_name}
+            </h2>
             {live && <Badge tone="nat20">{LIVE_NOW}</Badge>}
           </div>
           {seat.tone !== null && <p className="tavern-card__tone">{seat.tone}</p>}
