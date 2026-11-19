@@ -16,6 +16,8 @@ import { IconButton } from '../ds/IconButton'
 import { useAppNav } from './AppNav'
 import { UserMenu } from './UserMenu'
 import { useConversationStore } from './ConversationStoreContext'
+import { useChannelSwitch } from './channelSwitch'
+import { serverOnlyRows, useConversationIndex, type IndexRow } from './conversationIndex'
 import { useCurrentUser } from './currentUser'
 import type { Conversation } from './conversationStore'
 import { modesForRole, accentClass } from './modes'
@@ -54,7 +56,8 @@ export interface LeftNavProps {
 }
 
 export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): React.JSX.Element {
-  const { mode, setMode, conversationId, setConversationId, openTavern } = useAppNav()
+  const { mode, conversationId, setConversationId, openTavern } = useAppNav()
+  const switchChannel = useChannelSwitch()
   const { user } = useCurrentUser()
   const store = useConversationStore()
   const { selection, enabled } = useCampaign()
@@ -68,6 +71,23 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
     title: string
   } | null>(null)
   const convs: Conversation[] = store.list(mode)
+  const { rows } = useConversationIndex()
+  const indexed = campaignGm ? [] : serverOnlyRows(rows, store, mode)
+  const other = campaignGm ? [] : serverOnlyRows(rows, store, null)
+
+  const openConversation = (id: string): void => {
+    setConversationId(id)
+    onNavigate?.()
+  }
+
+  const indexedButton = (row: IndexRow): React.JSX.Element => (
+    <div className="left-nav__conversation-row" key={row.id}>
+      <button type="button" onClick={() => openConversation(row.id)} aria-pressed={conversationId === row.id}
+        className={conversationId === row.id ? 'left-nav__conversation left-nav__conversation--selected' : 'left-nav__conversation'}>
+        {row.title}
+      </button>
+    </div>
+  )
 
   const handleNew = React.useCallback(() => {
     const conv = store.create(mode)
@@ -96,7 +116,7 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
             label={label}
             selected={mode === m}
             onClick={() => {
-              setMode(m)
+              switchChannel(m)
               onNavigate?.()
             }}
             className={`left-nav__mode-chip ${accentClass(m)}`}
@@ -152,10 +172,7 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
               ) : (
                 <button
                   type="button"
-                  onClick={() => {
-                    setConversationId(conv.id)
-                    onNavigate?.()
-                  }}
+                  onClick={() => openConversation(conv.id)}
                   aria-pressed={conversationId === conv.id}
                   className={
                     conversationId === conv.id
@@ -178,6 +195,13 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
             </div>
           )
         })}
+        {indexed.map(indexedButton)}
+        {other.length > 0 && (
+          <div className="left-nav__other-conversations" role="group" aria-label="Other conversations">
+            <p className="left-nav__conversations-title">Other conversations</p>
+            {other.map(indexedButton)}
+          </div>
+        )}
       </div>
       )}
 

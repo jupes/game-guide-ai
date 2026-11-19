@@ -12,6 +12,7 @@ import { Button } from '../ds/Button'
 import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import { useAppNav } from './AppNav'
+import { useChannelSwitch } from './channelSwitch'
 import { useCurrentUser } from './currentUser'
 import { modesForRole, accentClass } from './modes'
 import './Landing.css'
@@ -19,6 +20,7 @@ import './modeAccents.css'
 
 export function Landing(): React.JSX.Element {
   const { enterWorkspace, openTavern } = useAppNav()
+  const switchChannel = useChannelSwitch()
   const { user } = useCurrentUser()
 
   return (
@@ -59,7 +61,7 @@ export function Landing(): React.JSX.Element {
               type="suggestion"
               icon={icon}
               label={label}
-              onClick={() => enterWorkspace(mode)}
+              onClick={() => switchChannel(mode, true)}
               className={`landing__mode-chip ${accentClass(mode)}`}
             />
           ))}

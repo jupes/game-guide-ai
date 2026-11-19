@@ -103,6 +103,7 @@ interface SettleRecord {
 interface ChatState {
   /** The conversationId these exchanges belong to. */
   scopeId: string | null
+  scopeMode: ChatMode
   exchanges: Exchange[]
   /** Non-null when the history recall for this scope failed. */
   historyError: string | null
@@ -137,6 +138,18 @@ function toExchanges(messages: StoredMessage[], nextId: { current: number }): Ex
   return out
 }
 
+/** The first recall can contain the answer that just minted this ID. Keep the
+ * live reply until the stored one arrives, then show that turn only once. */
+function mergeRecall(recalled: Exchange[], live: Exchange[], adoptedExchange: number | undefined): Exchange[] {
+  const first = live.find((entry) => entry.id === adoptedExchange)
+  const match = first === undefined ? -1 : recalled.findIndex((entry) => entry.prompt === first.prompt)
+  if (first === undefined || match < 0) return [...recalled, ...live]
+  if (recalled[match].response === undefined || recalled[match].response?.answer === first.response?.answer) {
+    recalled[match] = first
+  }
+  return [...recalled, ...live.filter((entry) => entry.id !== first.id)]
+}
+
 // postChat's own params keep fetchImpl in test call sites' existing 4th
 // position (real signature: prompt, mode, conversationId, fetchImpl,
 // modelPreference) — this adapter is what lets the default `post` satisfy
@@ -159,6 +172,7 @@ export function useChat({
 }: UseChatOptions) {
   const [state, setState] = useState<ChatState>({
     scopeId: conversationId,
+    scopeMode: mode,
     exchanges: [],
     historyError: null,
     // A conversation opened at mount is loading until the recall effect settles.
@@ -176,11 +190,12 @@ export function useChat({
   const nextId = useRef(1)
   /** The settle `onTurnSettled` last reported — each is reported exactly once. */
   const reportedSettle = useRef<SettleRecord | null>(null)
+  const adoptedScope = useRef<{ id: string; mode: ChatMode; exchange: number } | null>(null)
 
   // Derive the visible exchanges: if the scope has changed, treat as empty
   // (and loading) until the recall effect below re-seeds. Pure derivation —
   // the effect only does async work; it never sets state synchronously.
-  const scoped = state.scopeId === conversationId
+  const scoped = state.scopeId === conversationId && state.scopeMode === mode
   const exchanges = scoped ? state.exchanges : []
   const historyError = scoped ? state.historyError : null
   const loadingHistory = scoped ? state.loadingHistory : conversationId !== null
@@ -191,17 +206,21 @@ export function useChat({
   // any exchange sent while the recall was in flight; a stale response for a
   // conversation we've already left is dropped.
   useEffect(() => {
+    const adopted = adoptedScope.current
+    adoptedScope.current = null
     if (conversationId === null) return
+    const firstTurn = adopted?.id === conversationId && adopted.mode === mode ? adopted.exchange : undefined
     let cancelled = false
     void loadHistory(conversationId).then(
       (result) => {
         if (cancelled) return
         setState((prev) => {
-          const live = prev.scopeId === conversationId ? prev.exchanges : []
+          const live = prev.scopeId === conversationId && prev.scopeMode === mode ? prev.exchanges : []
           if (result.kind === 'ok') {
             return {
               scopeId: conversationId,
-              exchanges: [...toExchanges(result.messages, nextId), ...live],
+              scopeMode: mode,
+              exchanges: mergeRecall(toExchanges(result.messages, nextId), live, firstTurn),
               historyError: null,
               loadingHistory: false,
               lastSettle: prev.lastSettle,
@@ -209,6 +228,7 @@ export function useChat({
           }
           return {
             scopeId: conversationId,
+            scopeMode: mode,
             exchanges: live,
             historyError: result.message,
             loadingHistory: false,
@@ -221,7 +241,8 @@ export function useChat({
         if (cancelled) return
         setState((prev) => ({
           scopeId: conversationId,
-          exchanges: prev.scopeId === conversationId ? prev.exchanges : [],
+          scopeMode: mode,
+          exchanges: prev.scopeId === conversationId && prev.scopeMode === mode ? prev.exchanges : [],
           historyError: err instanceof Error ? err.message : 'Message history unavailable.',
           loadingHistory: false,
           lastSettle: prev.lastSettle,
@@ -231,7 +252,7 @@ export function useChat({
     return () => {
       cancelled = true
     }
-  }, [conversationId, loadHistory])
+  }, [conversationId, mode, loadHistory])
 
   const send = useCallback(
     (prompt: string) => {
@@ -242,18 +263,18 @@ export function useChat({
       const startedAt = now()
 
       const id = nextId.current++
-      setState((prev) => ({
-        scopeId: conversationId,
-        exchanges: [
-          ...(prev.scopeId === conversationId ? prev.exchanges : []),
-          { id, prompt: trimmed, status: 'pending' },
-        ],
-        historyError: prev.scopeId === conversationId ? prev.historyError : null,
-        // Entering a new scope via send(): its recall may still be in flight.
-        loadingHistory:
-          prev.scopeId === conversationId ? prev.loadingHistory : conversationId !== null,
-        lastSettle: prev.lastSettle,
-      }))
+      setState((prev) => {
+        const same = prev.scopeId === conversationId && prev.scopeMode === mode
+        return {
+          scopeId: conversationId,
+          scopeMode: mode,
+          exchanges: [...(same ? prev.exchanges : []), { id, prompt: trimmed, status: 'pending' }],
+          historyError: same ? prev.historyError : null,
+          // Entering a new scope via send(): its recall may still be in flight.
+          loadingHistory: same ? prev.loadingHistory : conversationId !== null,
+          lastSettle: prev.lastSettle,
+        }
+      })
 
       const settle = (
         update: Partial<Exchange> & { status: 'done' | 'error' },
@@ -296,8 +317,8 @@ export function useChat({
           // scope matches again, but there is nothing left to write into).
           // `conversationId` here is THIS send's own closure — the
           // conversation the turn was sent for (agent-forge-harness-swg).
-          const applied =
-            prev.scopeId === conversationId && prev.exchanges.some((e) => e.id === id)
+          const applied = prev.scopeId === conversationId && prev.scopeMode === mode
+            && prev.exchanges.some((e) => e.id === id)
           const lastSettle: SettleRecord = {
             exchangeId: id,
             outcome: update.status,
@@ -306,8 +327,11 @@ export function useChat({
             applied,
           }
           if (!applied) return { ...prev, lastSettle }
+          const adopting = adoptedId !== null && onConversationAdopted !== undefined
           return {
             ...prev,
+            scopeId: adopting ? adoptedId : prev.scopeId,
+            loadingHistory: adopting ? false : prev.loadingHistory,
             exchanges: prev.exchanges.map((e) => (e.id === id ? { ...e, ...update } : e)),
             lastSettle,
           }
@@ -323,8 +347,9 @@ export function useChat({
             const supplied = result.response.conversation_id
             const adopted =
               conversationId === null && typeof supplied === 'string' && supplied ? supplied : null
-            if (adopted !== null) {
-              onConversationAdopted?.(adopted)
+            if (adopted !== null && onConversationAdopted !== undefined) {
+              adoptedScope.current = { id: adopted, mode, exchange: id }
+              onConversationAdopted(adopted)
             }
             const routing = result.response.routing
             const scopeId = conversationId ?? adopted

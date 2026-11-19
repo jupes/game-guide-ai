@@ -243,7 +243,7 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
     await flush()
     expect(window.location.pathname).toBe('/tavern')
     expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(1)
-    expect(server.lines().some((l) => l.includes('/conversations'))).toBe(false)
+    expect(server.lines().filter((l) => l.includes('/conversations'))).toEqual(['GET /conversations'])
     expect(server.calls.filter((c) => c.method === 'POST' || c.method === 'PATCH')).toEqual([])
   })
 
@@ -499,7 +499,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     await flush()
     await flush()
     expect(server.calls.length).toBeGreaterThan(0)
-    expect(server.calls.every((c) => c.method === 'GET')).toBe(true)
+    expect(server.lines().filter((line) => !line.startsWith('GET '))).toEqual([])
     expect(server.calls.some((c) => c.url === '/campaigns')).toBe(true)
     expect(server.calls.some((c) => c.url.includes('cmp_A') || c.url.includes('cnv_1')
       || (c.body ?? '').includes('cmp_A') || (c.body ?? '').includes('cnv_1'))).toBe(false)
@@ -816,7 +816,9 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(live.nav.mode).toBe('sage')
     expect(window.location.pathname).toBe('/workspace')
     expect(window.history.length).toBe(len)
-    expect(live.raw.conversationId).toBe(L)
+    // Sage is empty; the previous uncampaigned GM row remains in its own channel.
+    expect(live.raw.conversationId).toBeNull()
+    expect(storageHolds(L as string)).toBe(true)
 
     const rel = server.calls.length
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))

@@ -17,6 +17,7 @@
 import * as React from 'react'
 import { useAppNav } from './AppNav'
 import { useConversationStore } from './ConversationStoreContext'
+import { conversationInChannel, useConversationIndex } from './conversationIndex'
 import { useModelCatalogState } from './ModelCatalogContext'
 import { FALLBACK_CATALOG, preferenceToSend } from './modelPreference'
 import type { ModelCatalog } from './modelPreference'
@@ -46,8 +47,10 @@ export function ModelPicker({
   getModels = defaultGetModels,
   confirmChange = (message: string) => window.confirm(message),
 }: ModelPickerProps): React.JSX.Element {
-  const { mode, conversationId, setConversationId } = useAppNav()
+  const { mode, conversationId: selectedId, setConversationId } = useAppNav()
   const store = useConversationStore()
+  const { rows } = useConversationIndex()
+  const conversationId = conversationInChannel(selectedId, mode, store, rows)
   // agent-forge-harness-bta: the catalog lives where ChatPane reads it too
   // (ModelCatalogProvider), so the pane never sends what this does not show.
   const [catalog, setCatalog] = useModelCatalogState()
