@@ -1405,7 +1405,8 @@ def test_i2_the_real_executors_and_settings_disable_every_tool(world: World, cli
     for dependency in (tool_invocations_api.get_tool_executors, tool_invocations_api.get_tool_settings):
         app.dependency_overrides.pop(dependency)
     assert set(tool_invocations_api.get_tool_executors()) == {
-        ToolId.NPC, ToolId.ENCOUNTER, ToolId.MONSTER, ToolId.LOOT, ToolId.NAMES, ToolId.RULES, ToolId.HOOKS,
+        ToolId.NPC, ToolId.ENCOUNTER, ToolId.RECAP, ToolId.MONSTER,
+        ToolId.LOOT, ToolId.NAMES, ToolId.RULES, ToolId.HOOKS,
     }
     table = world.table()
     for tool in ToolId:

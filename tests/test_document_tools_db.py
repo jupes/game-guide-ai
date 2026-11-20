@@ -36,8 +36,11 @@ from service.history import PostgresMessageStore
 from service.model_catalog import DEFAULT_ALIAS
 from service.providers import ProviderClientFactory
 from service.session import SessionData
+from service.session_divider_store import PostgresSessionDividerStore
+from service.session_dividers import divider_entry
 from service.tests import document_generation_fixtures as fx
-from service.timeline_store import PostgresTimelineStore, TimelineStoreError
+from service.tests.test_recap_window import append_chat
+from service.timeline_store import PostgresTimelineStore, TimelineStoreError, new_entry_id
 from service.tool_invocation_store import PostgresToolInvocationStore
 from service.tool_invocations import (
     ATTEMPT_TTL_S,
@@ -49,7 +52,7 @@ from service.tool_invocations import (
     cancellation_probe,
     context_reader,
 )
-from service.workbench_contracts import ToolId, ToolInvocationRequest
+from service.workbench_contracts import SessionBoundary, ToolId, ToolInvocationRequest
 from service.workbench_load import PostgresWorkbenchLoad
 
 pytestmark = needs_db
@@ -126,12 +129,13 @@ def world() -> Iterator[World]:
             fx.BASE_FIELDS[fx.NPC])), owner, campaign, conversation)
 
 
-def _admit(world: World, now: datetime) -> Admission | Replay:
+def _admit(world: World, now: datetime, tool: ToolId = ToolId.NPC) -> Admission | Replay:
     request = ToolInvocationRequest.model_validate({
-        "schema_version": 1, "invocation_id": INV, "tool_id": "npc", "brief": "A smith",
+        "schema_version": 1, "invocation_id": INV, "tool_id": tool.value,
+        "brief": "" if tool is ToolId.RECAP else "A smith",
         "campaign_id": world.campaign, "conversation_id": world.conversation,
     })
-    return tool_invocations.submit(world.db, world.stores, world.executors, ToolSettings(frozenset({ToolId.NPC})),
+    return tool_invocations.submit(world.db, world.stores, world.executors, ToolSettings(frozenset({tool})),
                                    SessionData(user_id=world.owner, role="dm"), request, now=now,
                                    chat_turns_today=0)
 
@@ -147,17 +151,18 @@ def _ctx(world: World, admitted: Admission, now: datetime) -> ExecutionContext:
 
 
 def _execute(world: World, admitted: Admission, ctx: ExecutionContext) -> tool_invocations.Outcome:
-    return tool_invocations.execute(world.executors[ToolId.NPC], ctx, available=lambda tool: True)
+    return tool_invocations.execute(world.executors[admitted.target.tool_id], ctx, available=lambda tool: True)
 
 
 def _complete(world: World, admitted: Admission, ctx: ExecutionContext, outcome: tool_invocations.Outcome,
               now: datetime) -> Any:
-    return tool_invocations.complete(world.db, world.stores, world.executors[ToolId.NPC], admitted, outcome, ctx,
-                                     now=now)
+    return tool_invocations.complete(
+        world.db, world.stores, world.executors[admitted.target.tool_id], admitted, outcome, ctx, now=now,
+    )
 
 
-def _attempt(world: World, now: datetime) -> Any:
-    admitted = _admit(world, now)
+def _attempt(world: World, now: datetime, tool: ToolId = ToolId.NPC) -> Any:
+    admitted = _admit(world, now, tool)
     if isinstance(admitted, Replay):
         return admitted.invocation
     ctx = _ctx(world, admitted, now + timedelta(seconds=5))
@@ -245,3 +250,24 @@ def test_d4_creation_takes_no_campaign_lock_and_changes_no_other_campaign_table(
         "documents", "document_versions", "tool_invocations", "tool_attempts"}
     assert {name: count for name, count in after.items() if name not in WRITTEN} == {
         name: count for name, count in before.items() if name not in WRITTEN}
+
+
+def test_d5_recap_reads_session_dividers_and_replay_creates_no_extra_notes(world: World) -> None:
+    timeline = world.tools.timeline
+    dividers = PostgresSessionDividerStore()
+    with world.db.transaction() as unit:
+        for boundary, minutes in [(SessionBoundary.START, 0), (SessionBoundary.END, 2)]:
+            marker = divider_entry(
+                entry_id=new_entry_id(), session_id="ses_recap", boundary=boundary, at=T0 + timedelta(minutes=minutes),
+            )
+            assert dividers.append_divider(unit, world.conversation, marker, owner_id=world.owner,
+                                           campaign_id=world.campaign)
+        append_chat(timeline, unit, world.conversation, world.owner, T0 + timedelta(minutes=1), "We found the key")
+        append_chat(timeline, unit, world.conversation, world.owner, T0 + timedelta(minutes=3), "After End")
+    world.llm.script = [fx.envelope(fx.BASE_FIELDS[fx.NOTES])]
+    now = T0 + timedelta(minutes=5)
+    done = _attempt(world, now, ToolId.RECAP)
+    assert (done.status.value, done.result.document.type.value) == ("done", "session-notes")
+    assert done.result.prose.startswith("Recap of the last session.")
+    assert _attempt(world, now + timedelta(seconds=20), ToolId.RECAP) == done
+    assert world.llm.calls == world.count("documents") == world.count("document_versions") == 1

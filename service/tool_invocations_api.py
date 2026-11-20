@@ -111,8 +111,8 @@ def get_invocation_stores() -> InvocationStores:
 
 
 def get_tool_executors() -> Mapping[ToolId, ToolExecutor]:
-    """The registered executors. 1kg.4.4 registers npc and encounter (recap
-    follows); 1kg.4.3 adds the five card tools beside it, one spread per
+    """The registered executors. 1kg.4.4 registers npc, encounter, and recap.
+    1kg.4.3 adds five card tools beside them, one spread per
     module (1kg.8.3 adds its own later). Registered is not enabled: a tool
     runs only when `WORKBENCH_ENABLED_TOOLS` names it (I-7 of 1kg.4.1). Built
     per request: the stores hold no state and nothing connects until a read."""

@@ -553,19 +553,18 @@ def test_n12_no_value_log_or_repr_carries_private_text_or_a_model(caplog: pytest
 # ── N-13, N-14: which tools, and what the module may import ──────────────────
 
 
-@pytest.mark.parametrize("tool", [t for t in ToolId if t not in TOOLS])
+@pytest.mark.parametrize("tool", [t for t in ToolId if t not in (*TOOLS, ToolId.RECAP)])
 def test_n13_every_other_tool_is_refused_at_construction(tool: ToolId) -> None:
-    """Kills: a default spec (X-8). `recap` is refused until its window lands
-    (PR 2 of 2)."""
+    """Kills: a default spec (X-8)."""
     twin = a_twin()
     with pytest.raises(ValueError):
         DocumentToolExecutor(tool, twin.stores)
 
 
-def test_n13_the_module_registers_exactly_npc_and_encounter() -> None:
+def test_n13_the_module_registers_exactly_npc_encounter_and_recap() -> None:
     twin = a_twin()
     made = document_executors(twin.stores)
-    assert set(made) == set(TOOLS)
+    assert set(made) == {*TOOLS, ToolId.RECAP}
     assert all(executor.tool_id is tool for tool, executor in made.items())
     assert set(LEAD_SENTENCES) == set(TOOLS)
 
