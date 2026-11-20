@@ -2,6 +2,7 @@ import * as React from 'react'
 import './Button.css'
 
 export interface ButtonProps {
+  ref?: React.Ref<HTMLButtonElement>
   children?: React.ReactNode
   /** Visual emphasis. @default "filled" */
   variant?: 'filled' | 'tonal' | 'elevated' | 'outlined' | 'text'
@@ -24,6 +25,7 @@ export interface ButtonProps {
 }
 
 export function Button({
+  ref,
   children,
   variant = 'filled',
   size = 'medium',
@@ -44,6 +46,7 @@ export function Button({
 
   return (
     <button
+      ref={ref}
       type={type}
       disabled={disabled}
       onClick={onClick}

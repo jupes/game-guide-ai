@@ -374,7 +374,8 @@ DARK_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
 def _dark_pairs() -> list[tuple[str, str]]:
     campaign, asset = "cmp_" + "a" * 22, "ast_" + "b" * 22
     return [(f"/campaigns/{campaign}/assets", f"/campaigns/{campaign}/assetz"),
-            (_bytes_path(campaign, asset), f"/campaigns/{campaign}/assetz/{asset}/bytes")]
+            (_bytes_path(campaign, asset), f"/campaigns/{campaign}/assetz/{asset}/bytes"),
+            (f"/campaigns/{campaign}/assets/upload-capability", f"/campaigns/{campaign}/assetz/upload-capability")]
 
 
 @pytest.mark.parametrize("topology", ["no static mount", "root static mount"])
@@ -413,8 +414,8 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert appmod._media_enabled() is True
     media = [route for path, route in api_routes(app) if "/assets" in path]
-    # Two upload routes, and 1kg.8.1.3's read and delete (`asset_serving_api`).
-    assert len(media) == 4 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
+    # Three upload routes, and 1kg.8.1.3's read and delete (`asset_serving_api`).
+    assert len(media) == 5 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
     assert not [path for path, _ in api_routes(app) if ":path}" in path]
     app.openapi_schema = None
     assert not [path for path in app.openapi()["paths"] if "/assets" in path], "no announcement either"
@@ -423,6 +424,19 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
 def test_no_api_route_begins_with_assets() -> None:
     """RV-1: the built UI loads its bundle from /assets/<name>-<hash>.js."""
     assert not [path for path, _ in api_routes(app) if path == "/assets" or path.startswith("/assets/")]
+
+
+def test_upload_availability_checks_ownership_without_reserving_storage(client: TestClient, world: World) -> None:
+    campaign = world.campaign()
+    path = f"/campaigns/{campaign}/assets/upload-capability"
+    mine = client.get(path)
+    assert mine.status_code == 204 and mine.content == b""
+    assert mine.headers["cache-control"] == "no-store"
+    assert not world.rows() and world.reserved(campaign) == (0, 0)
+    _as(GM_B)
+    assert client.get(path).json() == NOT_FOUND
+    _as(PLAYER, "player")
+    assert client.get(path).status_code == 403
 
 
 # ── AC 20: the proxies carry the prefix, and the bytes path's posture ───────

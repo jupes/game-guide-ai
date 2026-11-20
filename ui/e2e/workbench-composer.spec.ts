@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { CAMPAIGN_ID, DOCUMENT, DOCUMENT_ID, DOCUMENT_TITLE, HISTORY, installWorkbenchRoutes } from './workbenchStubs'
-import { DocumentHistoryPageSchema, DocumentVersionSchema, TOOL_IDS, type FieldPatchRequest, type ToolInvocationRequest } from '../src/gm/contracts'
+import { DocumentHistoryPageSchema, DocumentVersionSchema, TOOL_IDS, type AssetRef, type FieldPatchRequest, type ToolInvocationRequest } from '../src/gm/contracts'
 import { cardResult, documentResult, toolInvocation } from '../src/gm/laneFixtures'
 
 const THREAD = 'cnv_e2eWorkbenchThread00000001'
@@ -22,6 +22,8 @@ async function prepWorkbench(page: Page): Promise<void> {
     default: 'auto', models: [{ id: 'auto', display_name: 'Automatic' }],
   } }))
   await page.route((url) => /\/(reveals|table-session|attachments)$/.test(url.pathname),
+    (route) => route.fulfill({ status: 404, json: {} }))
+  await page.route((url) => url.pathname.endsWith('/assets/upload-capability'),
     (route) => route.fulfill({ status: 404, json: {} }))
   await page.route('**/metrics/ui', (route) => route.fulfill({ status: 204 }))
   await page.route((url) => url.pathname === `/conversations/${THREAD}`, (route) => route.fulfill({ json: thread }))
@@ -272,4 +274,97 @@ test('history restore on a phone flushes drafts and appends a new version', asyn
   await expect(canvas.getByText('The first voice', { exact: true })).toBeVisible()
   await expect(canvas.getByRole('heading', { name: DOCUMENT_TITLE })).toBeFocused()
   await expect(versions.getByRole('alert')).toBeHidden()
+})
+
+test('a phone retries a portrait upload without reserving a second asset', async ({ page }) => {
+  await prepWorkbench(page)
+  const collection = `/campaigns/${CAMPAIGN_ID}/assets`
+  const documentPath = `/campaigns/${CAMPAIGN_ID}/documents/${DOCUMENT_ID}`
+  const assetId = 'ast_e2ePortraitAsset0000000001'
+  const abandonedId = 'ast_e2ePortraitAbandoned000001'
+  const description = 'A traveller wearing a sea-green cloak'
+  const image = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8/x8AAwMCAO+/T1sAAAAASUVORK5CYII=',
+    'base64',
+  )
+  const commands: string[] = []
+  const order: string[] = []
+  const discarded: string[] = []
+  let server = { ...DOCUMENT, data: { ...DOCUMENT.data, portrait: undefined as AssetRef | undefined } }
+  const asset = {
+    schema_version: 1, asset_id: assetId, campaign_id: CAMPAIGN_ID, kind: 'image',
+    state: 'uploading', media_type: 'image/png', size_bytes: image.length,
+    width: null, height: null, duration_ms: null, alt: description, failure: null,
+    created_at: DOCUMENT.created_at, updated_at: DOCUMENT.created_at,
+  }
+  await page.route((url) => url.pathname === `/conversations/${THREAD}/timeline`, (route) => route.fulfill({ json: {
+    schema_version: 1, conversation_id: THREAD, next_cursor: null, items: [],
+  } }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/tool-availability`,
+    (route) => route.fulfill({ json: Object.fromEntries(TOOL_IDS.map((id) => [id, null])) }))
+  await page.route((url) => url.pathname === `${collection}/upload-capability`,
+    (route) => route.fulfill({ status: 204 }))
+  await page.route((url) => url.pathname === collection, (route) => {
+    expect(route.request().method()).toBe('POST')
+    const request = route.request().postDataJSON()
+    expect(request).toMatchObject({ kind: 'image', media_type: 'image/png', alt: description, size_bytes: image.length })
+    expect(JSON.stringify(request)).not.toContain('personal-photo.png')
+    commands.push(request.command_id)
+    order.push('reserve')
+    return route.fulfill({ status: 201, json: commands.length <= 2 ? asset : { ...asset, asset_id: abandonedId } })
+  })
+  await page.route((url) => url.pathname === `${collection}/${assetId}/bytes`, (route) => {
+    expect(route.request().method()).toBe('PUT')
+    expect(route.request().postDataBuffer()).toEqual(image)
+    order.push('upload')
+    if (commands.length === 1) return route.fulfill({ status: 503, json: {} })
+    return route.fulfill({ json: { ...asset, state: 'ready', width: 1, height: 1 } })
+  })
+  await page.route((url) => url.pathname === `${collection}/${assetId}` && url.search === '?rendition=thumb',
+    (route) => route.fulfill({ body: image, contentType: 'image/png' }))
+  await page.route((url) => url.pathname === `${collection}/${abandonedId}/bytes`,
+    (route) => route.fulfill({ status: 503, json: {} }))
+  await page.route((url) => url.pathname === `${collection}/${abandonedId}`, (route) => {
+    expect(route.request().method()).toBe('DELETE')
+    discarded.push(abandonedId)
+    return route.fulfill({ status: 204 })
+  })
+  await page.route((url) => url.pathname === documentPath, (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: server })
+    const patch = route.request().postDataJSON() as FieldPatchRequest
+    const portrait = { asset_id: assetId, media_type: 'image', width: 1, height: 1, alt: description } as const
+    expect(patch).toMatchObject({ base_write_revision: 4, fields: { portrait } })
+    order.push('attach')
+    server = { ...server, write_revision: 5, data: { ...server.data, portrait } }
+    return route.fulfill({ json: server })
+  })
+  await page.goto(`${WORKSPACE}&document=${DOCUMENT_ID}`)
+  const canvas = page.getByRole('region', { name: DOCUMENT_TITLE })
+  await canvas.getByRole('button', { name: 'Attach portrait' }).click()
+  const form = canvas.getByRole('form', { name: 'Portrait upload' })
+  await form.getByLabel('Image file').setInputFiles({ name: 'personal-photo.png', mimeType: 'image/png', buffer: image })
+  await form.getByLabel('Image description').fill(description)
+  expect(order).toEqual([])
+  await form.getByRole('button', { name: 'Upload portrait' }).click()
+  await expect(form.getByRole('alert')).toHaveText('The portrait could not be uploaded. Try again.')
+  await expect(canvas.getByRole('img', { name: description })).toBeHidden()
+  await form.getByRole('button', { name: 'Upload portrait' }).click()
+  await expect(canvas.getByRole('img', { name: description })).toBeVisible()
+  await expect.poll(() => canvas.getByRole('img', { name: description }).evaluate((node: HTMLImageElement) => node.naturalWidth)).toBe(1)
+  await expect(canvas.getByRole('button', { name: 'Replace portrait' })).toBeFocused()
+  expect(order).toEqual(['reserve', 'upload', 'reserve', 'upload', 'attach'])
+  expect(commands).toHaveLength(2)
+  expect(commands[1]).toEqual(commands[0])
+
+  await canvas.getByRole('button', { name: 'Replace portrait' }).click()
+  await form.getByLabel('Image file').setInputFiles({ name: 'personal-photo.png', mimeType: 'image/png', buffer: image })
+  await form.getByLabel('Image description').fill(description)
+  await form.getByRole('button', { name: 'Upload portrait' }).click()
+  await expect(form.getByRole('alert')).toBeVisible()
+  await form.getByRole('button', { name: 'Cancel upload' }).click()
+  await expect.poll(() => discarded).toEqual([abandonedId])
+  expect(commands[2]).not.toBe(commands[0])
+  expect(order.filter((step) => step === 'attach')).toHaveLength(1)
+  await expect(canvas.getByRole('img', { name: description })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })

@@ -77,7 +77,7 @@ import anyio.to_thread
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
@@ -116,6 +116,7 @@ from .workbench_contracts import (
 
 CREATE_PATH = "/campaigns/{campaign_id}/assets"
 BYTES_PATH = "/campaigns/{campaign_id}/assets/{asset_id}/bytes"
+UPLOAD_CAPABILITY_PATH = "/campaigns/{campaign_id}/assets/upload-capability"
 #: Every type an upload may declare: the origin check's content types for the
 #: bytes route (SEC-7's upload exception).
 UPLOAD_TYPES: tuple[str, ...] = tuple(media for kind in AssetKind for media in MEDIA_TYPES[kind])
@@ -470,7 +471,7 @@ def build_router(
     media: Callable[[], MediaRuntime | None],
     enabled: Callable[[], bool],
 ) -> APIRouter:
-    """The two routes, given the app's GM gate, its database getter, the media
+    """The upload routes, given the app's GM gate, its database getter, the media
     runtime getter and the capability switch."""
     route_class = media_route(enabled)
     create_router = workbench_router(gm)
@@ -493,6 +494,24 @@ def build_router(
 
     # Out of the published schema, as SchedulerRoute is: a dark route does not
     # announce itself in /openapi.json either.
+    @create_router.get(UPLOAD_CAPABILITY_PATH, status_code=204, include_in_schema=False)
+    def upload_capability(
+        campaign_id: str,
+        user: SessionData = Depends(gm),
+        db: TransactionalDatabase | None = Depends(database),
+        runtime: MediaRuntime | None = Depends(media),
+    ) -> Response:
+        live_db, live = _available(db, runtime)
+        _shaped(campaign_id)
+
+        def check() -> None:
+            with live_db.transaction() as unit:
+                if live.assets.usage(unit, campaign_id, owner_id=user.user_id) is None:
+                    not_found()
+
+        _guarded(check)
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
     @create_router.post(CREATE_PATH, response_model=Asset, status_code=201, include_in_schema=False)
     def create(
         campaign_id: str,

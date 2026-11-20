@@ -359,6 +359,7 @@ export interface DocumentFieldProps {
   selectionEnabled?: boolean
   /** CANVAS-23: the bar lives here so it follows the field in the tab order. */
   selectionBar?: React.ReactNode
+  assetEditor?: React.ReactNode
   className?: string
 }
 
@@ -382,6 +383,7 @@ export function DocumentField({
   onArmEdit,
   selectionEnabled = true,
   selectionBar,
+  assetEditor,
   className,
 }: DocumentFieldProps): React.JSX.Element {
   const ids = React.useId()
@@ -1025,7 +1027,7 @@ export function DocumentField({
               </span>
             </button>
           )}
-          {editable && field.kind === 'asset' && asset !== null && (
+          {editable && field.kind === 'asset' && asset !== null && !heldOpen && (
             <button
               type="button"
               className="gm-field__icon"
@@ -1053,6 +1055,7 @@ export function DocumentField({
       </div>
 
       {editing ? editor() : view(committed, labelId, selectable)}
+      {editable && assetEditor}
 
       {selectable && (
         <span className="gm-field__hint" id={hintId}>
