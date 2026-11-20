@@ -779,8 +779,14 @@ region, and a sequence gap reopens the stream for a fresh snapshot. End,
 page hiding, account changes and ten seconds without bytes remove revealed
 content from the DOM. When streaming is unavailable, the page labels the
 connection as degraded and refreshes through `/table/snapshot` while it
-retries the stream. The stream endpoint, PostgreSQL fanout and connection
-admission are server work under the same bead.
+retries the stream.
+
+`TableStreamReads` rechecks each subscription's exact session generation,
+account or screen grant, and current set of entitled slots in one statement
+on the async database pool. It reads only masked values of the approved
+sealed version and uses the same projection builder as the polling snapshot.
+The stream endpoint, PostgreSQL fanout and connection admission are server
+work under the same bead.
 
 ### Who may see what: the decision point and the principals
 
