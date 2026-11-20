@@ -401,8 +401,8 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
             >
               {chat}
             </div>
-            {shown && (
-              <div ref={canvasColumnRef} className="workbench__canvas" hidden={single && view === 'chat'}>
+            {doc.kind !== 'closed' && (
+              <div ref={canvasColumnRef} className="workbench__canvas" hidden={!shown || (single && view === 'chat')}>
                 <CanvasHost />
               </div>
             )}

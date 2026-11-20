@@ -25,7 +25,7 @@ paragraph "Conversations"
 button "New conversation" aria-pressed=false
 button "A legacy GM question about the heist" aria-pressed=false
 button "Rename A legacy GM question about the heist" aria-pressed=false
-button "Another legacy GM question" aria-pressed=false
+button "Another legacy GM question" aria-pressed=true
 button "Rename Another legacy GM question" aria-pressed=false
 button "Open user menu""
 `;
@@ -37,7 +37,7 @@ button "checkRules" aria-pressed=true
 button "castleGM" aria-pressed=false
 paragraph "Conversations"
 button "New conversation" aria-pressed=false
-button "How does cover work" aria-pressed=false
+button "How does cover work" aria-pressed=true
 button "Rename How does cover work" aria-pressed=false
 button "Open user menu""
 `;
@@ -49,7 +49,7 @@ button "gavelRules" aria-pressed=false
 button "castleGM" aria-pressed=false
 paragraph "Conversations"
 button "New conversation" aria-pressed=false
-button "A Sage question about grappling" aria-pressed=false
+button "A Sage question about grappling" aria-pressed=true
 button "Rename A Sage question about grappling" aria-pressed=false
 button "Open user menu""
 `;
@@ -61,7 +61,7 @@ button "gavelRules" aria-pressed=false
 button "castleGM" aria-pressed=false
 paragraph "Conversations"
 button "New conversation" aria-pressed=false
-button "Fireball at higher levels" aria-pressed=false
+button "Fireball at higher levels" aria-pressed=true
 button "Rename Fireball at higher levels" aria-pressed=false
 button "Open user menu""
 `;

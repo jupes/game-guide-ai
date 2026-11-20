@@ -61,6 +61,7 @@ export interface GuardDialogState {
   readonly retryable: boolean
   /** A "Try saving again" is running. */
   readonly busy: boolean
+  readonly keepDraft?: boolean
 }
 
 export interface CanvasState {
@@ -98,6 +99,7 @@ export interface CanvasActions {
   refreshDocument(documentId: string): Promise<void>
   acceptDocument(document: Document): void
   flushBeforeLeaving(): Promise<boolean>
+  switchWithCanvas(proceed: () => void): void
   /** Speaks an outcome in the one canvas-level status node (`WorkbenchAnnouncer`). */
   announce(text: string): void
   setView(view: WorkbenchView): void
@@ -488,19 +490,33 @@ class CanvasStore {
   }
 
   /** True to proceed, false to keep the document as it is. Never rejects. */
-  guard = async (): Promise<boolean> => {
+  switchWithCanvas = (proceed: () => void): void => {
+    if (!this.isDirty() && this.dialogResolve === null) {
+      proceed()
+      return
+    }
+    void this.guard(true).then((allowed) => { if (allowed) proceed() })
+  }
+
+  guard = async (keepDraft = false): Promise<boolean> => {
     try {
       if (this.dialogResolve !== null) return false
       const result = await runGuard(this.sources)
       if (result.kind === 'proceed') return true
-      if (result.kind === 'refused-offline') {
+      if (result.kind === 'refused-offline' && !keepDraft) {
         this.announce(WORKBENCH_COPY.offlineRefusal)
         return false
       }
       if (this.dialogResolve !== null) return false
       return await new Promise<boolean>((resolve) => {
         this.dialogResolve = resolve
-        this.set({ ...this.snap, guardDialog: { title: this.currentTitle(), retryable: result.retryable, busy: false } })
+        this.set({
+          ...this.snap,
+          guardDialog: {
+            title: this.currentTitle(), retryable: !keepDraft && result.kind === 'ask' && result.retryable,
+            busy: false, ...(keepDraft ? { keepDraft: true } : {}),
+          },
+        })
       })
     } catch {
       return false
@@ -521,6 +537,10 @@ class CanvasStore {
 
   guardDiscard = (): void => {
     if (this.snap.guardDialog?.busy === true) return
+    if (this.snap.guardDialog?.keepDraft === true) {
+      this.finishDialog(true)
+      return
+    }
     for (const source of this.sources) {
       try {
         source.discard()
@@ -544,7 +564,7 @@ class CanvasStore {
     if (result.kind === 'refused-offline') this.announce(WORKBENCH_COPY.offlineRefusal)
     this.set({
       ...this.snap,
-      guardDialog: { title: dialog.title, retryable: result.kind === 'ask' ? result.retryable : dialog.retryable, busy: false },
+      guardDialog: { ...dialog, retryable: result.kind === 'ask' ? result.retryable : dialog.retryable, busy: false },
     })
   }
 }
@@ -566,6 +586,7 @@ const INERT_ACTIONS: CanvasActions = {
   refreshDocument: () => Promise.resolve(),
   acceptDocument: () => {},
   flushBeforeLeaving: () => Promise.resolve(true),
+  switchWithCanvas: (proceed) => proceed(),
   announce: () => {},
   setView: () => {},
   registerDirtySource: () => () => {},
@@ -654,6 +675,7 @@ function CanvasProviderRoot({ children, fetchImpl }: CanvasProviderProps): React
       refreshDocument: store.refreshDocument,
       acceptDocument: (document) => store.acceptDocument(scopeKey, document),
       flushBeforeLeaving: store.guard,
+      switchWithCanvas: store.switchWithCanvas,
       announce: store.announce,
       setView: store.setView,
       registerDirtySource: store.registerDirtySource,

@@ -243,7 +243,7 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
     await flush()
     expect(window.location.pathname).toBe('/tavern')
     expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(1)
-    expect(server.lines().some((l) => l.includes('/conversations'))).toBe(false)
+    expect(server.lines().filter((l) => l.includes('/conversations'))).toEqual(['GET /conversations'])
     expect(server.calls.filter((c) => c.method === 'POST' || c.method === 'PATCH')).toEqual([])
   })
 
@@ -426,8 +426,8 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
       const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
       // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
-      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
+      const isWorkbenchRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session|tool-availability)$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -499,7 +499,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     await flush()
     await flush()
     expect(server.calls.length).toBeGreaterThan(0)
-    expect(server.calls.every((c) => c.method === 'GET')).toBe(true)
+    expect(server.lines().filter((line) => !line.startsWith('GET '))).toEqual([])
     expect(server.calls.some((c) => c.url === '/campaigns')).toBe(true)
     expect(server.calls.some((c) => c.url.includes('cmp_A') || c.url.includes('cnv_1')
       || (c.body ?? '').includes('cmp_A') || (c.body ?? '').includes('cnv_1'))).toBe(false)
@@ -682,7 +682,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     // (The documents list's library read, 1kg.6.3, is a read of the campaign already selected, not a switch.)
     // (So are the table session's and the reveal picture's reads, 1kg.7.3.)
     expect(
-      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !/\/(library|reveals|table-session)$/.test(c.url)),
+      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') &&
+        !(c.method === 'GET' && /\/(library|reveals|table-session|tool-availability)$/.test(c.url))),
     ).toBe(false)
     expect(server.lines()).toContain('GET /campaigns/cmp_A')
 
@@ -816,7 +817,9 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(live.nav.mode).toBe('sage')
     expect(window.location.pathname).toBe('/workspace')
     expect(window.history.length).toBe(len)
-    expect(live.raw.conversationId).toBe(L)
+    // Sage is empty; the previous uncampaigned GM row remains in its own channel.
+    expect(live.raw.conversationId).toBeNull()
+    expect(storageHolds(L as string)).toBe(true)
 
     const rel = server.calls.length
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
@@ -847,8 +850,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
       const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
       // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
-      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
+      const isWorkbenchRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session|tool-availability)$/.test(call.url)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })

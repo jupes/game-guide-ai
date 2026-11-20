@@ -57,8 +57,8 @@ function boot(url: string, options: BootOptions = {}) {
   window.history.replaceState(null, '', url)
   render(options.strict === true ? <React.StrictMode><AppRoot /></React.StrictMode> : <AppRoot />)
   const lines = () => calls.map((c) => `${c.method} ${c.url}`)
-  /** Requests for anything campaign-scoped: campaigns, and every conversation route. */
-  const scoped = () => lines().filter((line) => / \/(campaigns|conversations)/.test(line))
+  /** Explicit campaign or thread work, excluding the account-level background read. */
+  const scoped = () => lines().filter((line) => line !== 'GET /conversations' && / \/(campaigns|conversations)/.test(line))
   return { calls, lines, scoped }
 }
 
@@ -144,7 +144,7 @@ describe('a campaign deep link', () => {
     await flush()
     expect(server.calls.slice(before).filter((c) => c.url.includes('cnv_1'))).toEqual([])
     await userEvent.click(screen.getAllByRole('button', { name: 'GM' })[0])
-    await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_A'))
+    await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_A&conversation=cnv_1'))
     await userEvent.click(screen.getAllByRole('button', { name: /open user menu/i })[0])
     await userEvent.click(screen.getAllByRole('button', { name: /profile/i })[0])
     expect(await screen.findByRole('heading', { name: 'Profile' })).toBeInTheDocument()

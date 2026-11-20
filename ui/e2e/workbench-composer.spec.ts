@@ -25,6 +25,8 @@ async function prepWorkbench(page: Page): Promise<void> {
     (route) => route.fulfill({ status: 404, json: {} }))
   await page.route((url) => url.pathname.endsWith('/assets/upload-capability'),
     (route) => route.fulfill({ status: 404, json: {} }))
+  await page.route((url) => url.pathname === '/conversations' && !url.searchParams.has('campaign_id'),
+    (route) => route.fulfill({ json: { schema_version: 1, items: [], next_cursor: null } }))
   await page.route('**/metrics/ui', (route) => route.fulfill({ status: 204 }))
   await page.route((url) => url.pathname === `/conversations/${THREAD}`, (route) => route.fulfill({ json: thread }))
 }
@@ -190,6 +192,14 @@ test('phone autosave keeps new typing and resolves two-tab conflicts before swit
   await expect(guard.getByRole('button', { name: 'Keep editing' })).toBeFocused()
   await guard.getByRole('button', { name: 'Keep editing' }).click()
   await expect(input).toHaveValue('A gravelly whisper')
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
+  await guard.getByRole('button', { name: 'Switch anyway' }).click()
+  await expect(canvas).toBeHidden()
+  await page.getByRole('button', { name: 'Spell', exact: true }).click()
+  await page.getByRole('button', { name: 'GM', exact: true }).click()
+  await expect(conflict).toBeVisible()
+  await expect(input).toHaveValue('A gravelly whisper')
+  expect(requests).toHaveLength(3)
   await conflict.getByRole('button', { name: 'Keep mine' }).click()
   await expect(conflict).toBeHidden()
   expect(requests[3]).toMatchObject({ base_write_revision: 7, fields: { voice: 'A gravelly whisper' } })

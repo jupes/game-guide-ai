@@ -31,6 +31,7 @@ export interface LossGuardDialogProps {
   retryable: boolean
   /** A retry is running: it cannot be pressed again, and nothing can be discarded meanwhile. */
   busy: boolean
+  keepDraft?: boolean
   onKeep: () => void
   onRetry: () => void
   onDiscard: () => void
@@ -40,6 +41,7 @@ export function LossGuardDialog({
   title,
   retryable,
   busy,
+  keepDraft = false,
   onKeep,
   onRetry,
   onDiscard,
@@ -84,7 +86,8 @@ export function LossGuardDialog({
           {WORKBENCH_COPY.guardHeading(title)}
         </h2>
         <p id={bodyId} className="loss-guard__body">
-          {retryable ? WORKBENCH_COPY.guardBodyRetryable : WORKBENCH_COPY.guardBody}
+          {keepDraft ? 'Your edits will stay in this canvas when you switch channels.' :
+            retryable ? WORKBENCH_COPY.guardBodyRetryable : WORKBENCH_COPY.guardBody}
         </p>
         <div className="loss-guard__actions">
           <button ref={keepRef} type="button" className="loss-guard__button loss-guard__button--primary" onClick={onKeep}>
@@ -97,11 +100,11 @@ export function LossGuardDialog({
           )}
           <button
             type="button"
-            className="loss-guard__button loss-guard__button--destructive"
+            className={keepDraft ? 'loss-guard__button' : 'loss-guard__button loss-guard__button--destructive'}
             disabled={busy}
             onClick={onDiscard}
           >
-            {WORKBENCH_COPY.discardChanges}
+            {keepDraft ? 'Switch anyway' : WORKBENCH_COPY.discardChanges}
           </button>
         </div>
       </div>
@@ -123,6 +126,7 @@ export function LossGuardHost(): React.JSX.Element | null {
       title={guardDialog.title}
       retryable={guardDialog.retryable}
       busy={guardDialog.busy}
+      keepDraft={guardDialog.keepDraft}
       onKeep={guard.keep}
       onRetry={guard.retry}
       onDiscard={guard.discard}
