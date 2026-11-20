@@ -183,7 +183,10 @@ function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string
   // the pane stays the one it was drawn over: a refused turn keeps its prompt
   // and its announced failure until the next pick or a clear.
   const { selection, scope } = useCampaign()
-  const drafts = useConversationDrafts(conversationId ?? (scope === null ? null : `new:${scope.key}`))
+  const draftKey = mode === 'gm'
+    ? conversationId ?? (scope === null ? null : `new:${scope.key}`)
+    : `${mode}:${conversationId ?? ''}`
+  const drafts = useConversationDrafts(draftKey)
   const tools = useToolInvocations(selection.kind === 'selected' ? selection.campaign.campaign_id : null)
   const pins = usePins(account)
   const owner = selection.kind === 'none' || selection.kind === 'unavailable'
@@ -379,7 +382,7 @@ function ChatPaneBody({
   // cursor behind it, and the thread (with its Load earlier control) is then
   // what to draw, not the empty label.
   const threadEmpty = threadLength === 0 && !(gm && timeline.hasEarlier)
-  const [draft, setDraft] = React.useState('')
+  const { draft, setDraft } = drafts
   // agent-forge-harness-764: block a submit before it ever reaches the wire,
   // mirroring the server-side gate in service/app.py::chat().
   const draftLength = codePointLength(draft)
@@ -394,10 +397,9 @@ function ChatPaneBody({
   // it silently refuses would clear the GM's text.
   const gmLive = gm && destination === 'gm'
   const showTools = gmLive && enabled
-  const inputDraft = showTools ? drafts.draft : draft
-  const parsedDraft = showTools ? parseDraft(inputDraft) : null
+  const parsedDraft = showTools ? parseDraft(draft) : null
   const overPlainLength = (parsedDraft === null || parsedDraft.kind === 'plain' || parsedDraft.kind === 'escaped')
-    && codePointLength(inputDraft) > CHAT_TEXT_MAX_CHARS
+    && overLength
   const sendBlocked = inFlight || pending
   // agent-forge-harness-8tt: announce the crossing itself — once when the
   // draft first goes over CHAT_TEXT_MAX_CHARS and once when it comes back
@@ -411,9 +413,8 @@ function ChatPaneBody({
   // pending phrase, pr129 M-2, so it leaves this one alone). Further edits
   // that leave the draft over the bound — a paste growing an already-over-
   // length draft, or one more keystroke — must NOT re-announce (the visible counter already
-  // updates every keystroke; the live region does not need to). No effect on
-  // conversation switches or a `side` remount: `draft` resets to '' there, so
-  // overLength starts false and matches this ref's own initial value.
+  // updates every keystroke; the live region does not need to). Returning to a
+  // different draft can also cross the limit.
   const wasOverLengthRef = React.useRef(overPlainLength)
   React.useEffect(() => {
     if (overPlainLength !== wasOverLengthRef.current) {
@@ -662,7 +663,7 @@ function ChatPaneBody({
     if (sendBlocked || overLength || draft.trim() === '') return
     sendText(draft.trim())
     setDraft('')
-  }, [draft, overLength, sendBlocked, sendText])
+  }, [draft, overLength, sendBlocked, sendText, setDraft])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {

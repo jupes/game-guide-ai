@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 import { BASE_URL } from './e2e/stack'
 
-const mobileSpecs = ['**/tavern-seats.spec.ts', '**/workbench-composer.spec.ts']
+const mobileSpecs = ['**/phone.spec.ts', '**/tavern-seats.spec.ts', '**/workbench-composer.spec.ts']
 export const mobileProjects = [
   { name: 'mobile-chromium', use: devices['Pixel 5'], testMatch: mobileSpecs },
   { name: 'mobile-webkit', use: devices['iPhone 13'], testMatch: mobileSpecs },
