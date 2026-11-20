@@ -1,13 +1,18 @@
+import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { CAMPAIGN_ID, DOCUMENT_ID, DOCUMENT_TITLE, installWorkbenchRoutes } from './workbenchStubs'
 import { TOOL_IDS, type ToolInvocationRequest } from '../src/gm/contracts'
-import { documentResult, toolInvocation } from '../src/gm/laneFixtures'
+import { cardResult, documentResult, toolInvocation } from '../src/gm/laneFixtures'
 
 const THREAD = 'cnv_e2eWorkbenchThread00000001'
 const ENTRY = 'entry_e2eWorkbenchTool00000001'
 const WORKSPACE = `/workspace#campaign=${CAMPAIGN_ID}&conversation=${THREAD}`
+const thread = {
+  schema_version: 1, conversation_id: THREAD, campaign_id: CAMPAIGN_ID, started_mode: 'gm',
+  title: null, created_at: '2026-09-16T19:20:11Z', updated_at: null, archived_at: null,
+}
 
-test('a phone keeps the GM draft, runs from Send, and restores the result after reload', async ({ page }) => {
+async function prepWorkbench(page: Page): Promise<void> {
   await page.setViewportSize({ width: 375, height: 812 })
   await page.route('**/auth/me', (route) => route.fulfill({
     json: { email: 'composer-e2e@example.com', role: 'dm' },
@@ -19,11 +24,12 @@ test('a phone keeps the GM draft, runs from Send, and restores the result after 
   await page.route((url) => /\/(reveals|table-session|attachments)$/.test(url.pathname),
     (route) => route.fulfill({ status: 404, json: {} }))
   await page.route('**/metrics/ui', (route) => route.fulfill({ status: 204 }))
+  await page.route((url) => url.pathname === `/conversations/${THREAD}`, (route) => route.fulfill({ json: thread }))
+}
+
+test('a phone keeps the GM draft, runs from Send, and restores the result after reload', async ({ page }) => {
+  await prepWorkbench(page)
   const calls: ToolInvocationRequest[] = []
-  const thread = {
-    schema_version: 1, conversation_id: THREAD, campaign_id: CAMPAIGN_ID, started_mode: 'gm',
-    title: null, created_at: '2026-09-16T19:20:11Z', updated_at: null, archived_at: null,
-  }
   const invocation = (request: ToolInvocationRequest) => toolInvocation({
     invocation_id: request.invocation_id,
     status: 'done',
@@ -31,7 +37,6 @@ test('a phone keeps the GM draft, runs from Send, and restores the result after 
       title: DOCUMENT_TITLE, document_id: DOCUMENT_ID, type: 'npc', library_category: 'npcs',
     } }),
   })
-  await page.route((url) => url.pathname === `/conversations/${THREAD}`, (route) => route.fulfill({ json: thread }))
   await page.route((url) => url.pathname === `/conversations/${THREAD}/timeline`, (route) => route.fulfill({ json: {
     schema_version: 1, conversation_id: THREAD, next_cursor: null,
     items: calls.map((request) => ({
@@ -81,4 +86,50 @@ test('a phone keeps the GM draft, runs from Send, and restores the result after 
   await expect(page.getByRole('heading', { name: DOCUMENT_TITLE })).toBeVisible()
   expect(calls).toHaveLength(1)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
+test('a hydrated monster card saves without replacing the canvas and opens on a second press', async ({ page }) => {
+  await prepWorkbench(page)
+  const invocation = toolInvocation({ tool_id: 'monster', status: 'done', result: cardResult() })
+  const entryId = 'ent_e2eWorkbenchMonster000001'
+  const statBlockId = 'doc_e2ePromotedStatBlock000001'
+  const called: string[] = []
+  const saved = {
+    schema_version: 1, document_id: statBlockId, campaign_id: CAMPAIGN_ID, type: 'statblock', type_version: 1,
+    data: { name: 'Drowned Thing', ac: 14, hp: 42 }, write_revision: 1, archived: false,
+    created_at: invocation.created_at, updated_at: invocation.updated_at, version: {
+      number: 1, author: 'assistant', summary: '', created_at: invocation.created_at,
+      sealed: false, changed_fields: ['name', 'ac', 'hp'], restored_from: null,
+    },
+  }
+  const savePath = `/campaigns/${CAMPAIGN_ID}/conversations/${THREAD}/timeline/${entryId}/promote`
+  await page.route((url) => url.pathname === `/conversations/${THREAD}/timeline`, (route) => route.fulfill({ json: {
+    schema_version: 1, conversation_id: THREAD, next_cursor: null,
+    items: [{
+      schema_version: 1, entry_id: entryId, entry_kind: 'tool',
+      created_at: invocation.created_at, brief: 'A guard for the shrine', invocation,
+    }],
+  } }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/tool-availability`,
+    (route) => route.fulfill({ json: Object.fromEntries(TOOL_IDS.map((id) => [id, null])) }))
+  await page.route((url) => url.pathname === savePath, (route) => {
+    expect(route.request().method()).toBe('POST')
+    expect(route.request().postDataJSON()).toEqual({})
+    called.push(savePath)
+    return route.fulfill({ json: saved })
+  })
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/documents/${statBlockId}`,
+    (route) => route.fulfill({ json: saved }))
+  await page.goto(WORKSPACE)
+  const save = page.getByRole('button', { name: 'Save to Bestiary' })
+  await expect(save).toBeVisible()
+  expect(called).toEqual([])
+  await save.click()
+  const open = page.getByRole('button', { name: 'Open in Bestiary' })
+  await expect(open).toBeFocused()
+  await expect(page).not.toHaveURL(/document=/)
+  await open.click()
+  await expect(page.getByRole('heading', { name: 'Drowned Thing', level: 2 })).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`document=${statBlockId}`))
+  expect(called).toEqual([savePath])
 })

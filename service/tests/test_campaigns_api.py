@@ -795,7 +795,7 @@ def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) 
     # five group paths (their answers name seats by id, never an account), and
     # q156's three character-sheet link paths (also nested under a campaign), and
     # 1kg.7.2's two reveal paths (a picture, Confirm and Stop carry no field text).
-    assert len(family) == 39
+    assert len(family) == 40
     schemas = document["components"]["schemas"]
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
                 "PlayerSeatPage"}

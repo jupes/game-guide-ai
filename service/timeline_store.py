@@ -325,6 +325,10 @@ class TimelineStore(Protocol):
         — the legacy rows the read model must not render a second time."""
         ...  # pragma: no cover - structural type
 
+    def get_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> StoredEntryRow | None:
+        """Read one entry using both its id and the already authorized conversation."""
+        ...  # pragma: no cover - structural type
+
 
 class ToolTurnStore(Protocol):
     """What a tool invocation (`1kg.4.1`) needs of the timeline, beside
@@ -503,6 +507,13 @@ class PostgresTimelineStore:
     def has_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> bool:
         return pg(unit).conn.execute(_HAS_ENTRY, (entry_id, conversation_id)).fetchone() is not None
 
+    def get_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> StoredEntryRow | None:
+        row = pg(unit).conn.execute(
+            f"SELECT {_ENTRY_COLUMNS} FROM chat.timeline_entries WHERE conversation_id = %s AND entry_id = %s",
+            (conversation_id, entry_id),
+        ).fetchone()
+        return None if row is None else StoredEntryRow(row[0], row[1], int(row[2]), row[3], row[4], row[5])
+
     def replace_tool_invocation(
         self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],
         created_at: datetime, *, owner_id: int,
@@ -666,6 +677,10 @@ class InMemoryTimelineStore:
     def has_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> bool:
         found = self._rows.visible(fake(unit)).get(entry_id)
         return found is not None and found.conversation_id == conversation_id
+
+    def get_entry(self, unit: UnitOfWork, conversation_id: str, entry_id: str) -> StoredEntryRow | None:
+        found = self._rows.visible(fake(unit)).get(entry_id)
+        return found.stored() if found is not None and found.conversation_id == conversation_id else None
 
     def replace_tool_invocation(
         self, unit: UnitOfWork, conversation_id: str, entry: AnyEntry | Mapping[str, Any],

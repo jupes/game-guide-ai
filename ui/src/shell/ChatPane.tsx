@@ -459,6 +459,7 @@ function ChatPaneBody({
     return {
       availability,
       campaignId,
+      bestiary: { conversationId, onSaved: bumpDocumentsVersion },
       onArmSuggestion: armSuggestion,
       onRetry: () => act('try-again'),
       onCancel: () => act('cancel'),
@@ -500,7 +501,7 @@ function ChatPaneBody({
   // so the canvas can return focus to the composer and the shell can skip to the
   // conversation without querying the DOM. These are the stable canvas ACTIONS, so a
   // document loading, opening or closing never re-renders this pane (C-13).
-  const { openDocument, composerRef, setChatRegion } = useCanvasActions()
+  const { openDocument, composerRef, setChatRegion, bumpDocumentsVersion } = useCanvasActions()
   const openFromLink = React.useCallback(
     (link: DocumentLink): void => {
       void openDocument({ documentId: link.document_id, title: link.title }, { gesture: true })

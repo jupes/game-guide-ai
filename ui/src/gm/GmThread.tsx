@@ -79,7 +79,8 @@ export interface GmThreadProps {
   /** CANVAS-3: Open in canvas. */
   onOpenDocument?: (link: DocumentLink) => void
   toolLaneProps?: (turn: Extract<GmTurn, { kind: 'tool' }>) => Partial<Pick<AssistantLaneProps,
-    'onArmSuggestion' | 'onRetry' | 'onCancel' | 'onCheckAgain' | 'onEditBrief' | 'onRunAgain' | 'availability' | 'campaignId'>>
+    'onArmSuggestion' | 'onRetry' | 'onCancel' | 'onCheckAgain' | 'onEditBrief' | 'onRunAgain' | 'availability'
+    | 'campaignId' | 'bestiary'>>
   /** 1kg.3.6: an older page exists to walk to. Omitted (or false) draws no
    * control — a thread that fits in one page has nothing to load. */
   hasEarlier?: boolean

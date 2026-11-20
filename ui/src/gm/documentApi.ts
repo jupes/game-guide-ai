@@ -369,6 +369,31 @@ export async function createDocument(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request.data),
   })
+  return readCreatedDocument(res, campaignId, input.type)
+}
+
+/** Take only a reference to the source. The server owns the card and its idempotency key. */
+export async function promoteMonsterCard(
+  campaignId: string,
+  conversationId: string,
+  entryId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CreateResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(conversationId) || !isOpaqueId(entryId)) return { kind: 'unavailable' }
+  const base = `/campaigns/${encodeURIComponent(campaignId)}/conversations/${encodeURIComponent(conversationId)}`
+  const res = await send(fetchImpl, `${base}/timeline/${encodeURIComponent(entryId)}/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  return readCreatedDocument(res, campaignId, 'statblock')
+}
+
+async function readCreatedDocument(
+  res: Response | null,
+  campaignId: string,
+  docType: DocumentTypeId,
+): Promise<CreateResult> {
   if (res === null) return { kind: 'failed' }
   if (res.status === UNAUTHORIZED) {
     notifyUnauthorized()
@@ -388,7 +413,7 @@ export async function createDocument(
   const parsed = parseDocument(raw)
   if (parsed.kind === 'unknown') return { kind: 'failed' }
   const document = parsed.value
-  if (document.campaign_id !== campaignId || document.type !== input.type) return { kind: 'failed' }
+  if (document.campaign_id !== campaignId || document.type !== docType) return { kind: 'failed' }
   return { kind: 'ok', document }
 }
 

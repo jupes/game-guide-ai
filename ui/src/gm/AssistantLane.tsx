@@ -57,6 +57,7 @@ import {
 import type { ArmedSuggestion, LaneActionId, LaneTimer, LaneView } from './laneState'
 import type { ToolAvailability } from './registry'
 import { assetPath } from './documentFields'
+import { BestiaryPromotion } from './BestiaryPromotion'
 import './AssistantLane.css'
 
 export interface AssistantLaneProps {
@@ -79,6 +80,7 @@ export interface AssistantLaneProps {
   /** RAIL-8: the timeline entry a suggestion cites as its source. */
   sourceEntryId?: string | null
   campaignId?: string
+  bestiary?: { conversationId: string; onSaved: () => void }
   /** The lane's kicker. @default 'Aetheril · Assistant' */
   author?: string
   /** Material Symbols Rounded ligature, decorative. @default 'castle' */
@@ -177,6 +179,7 @@ export function AssistantLane({
   availability,
   sourceEntryId = null,
   campaignId,
+  bestiary,
   author = LANE_COPY.author,
   icon = 'castle',
   onOpenDocument,
@@ -309,6 +312,17 @@ export function AssistantLane({
         <div className="assistant-lane__body">
           {view.result.prose.trim() !== '' && <AssistantText source={view.result.prose} />}
           <ResultBody result={view.result} onOpenDocument={onOpenDocument} campaignId={campaignId} />
+          {view.result.result_kind === 'card' && view.result.card.card_kind === 'stat_block'
+            && campaignId !== undefined && sourceEntryId !== null && bestiary !== undefined && (
+            <BestiaryPromotion
+              key={sourceEntryId}
+              campaignId={campaignId}
+              conversationId={bestiary.conversationId}
+              entryId={sourceEntryId}
+              onSaved={bestiary.onSaved}
+              onOpen={onOpenDocument}
+            />
+          )}
         </div>
       )}
 

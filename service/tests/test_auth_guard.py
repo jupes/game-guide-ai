@@ -112,6 +112,9 @@ PROTECTED_ROUTES: list[Route] = [
     ("POST", "/campaigns/{campaign_id}/documents", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents",
      {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
       "type": "npc", "type_version": 1, "data": {"name": "Mira"}}),
+    ("POST", "/campaigns/{campaign_id}/conversations/{conversation_id}/timeline/{entry_id}/promote",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/conversations/cnv_aaaaaaaaaaaaaaaaaaaaaa"
+     "/timeline/ent_aaaaaaaaaaaaaaaaaaaaaa/promote", {}),
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa", None),
     ("PATCH", "/campaigns/{campaign_id}/documents/{document_id}",
