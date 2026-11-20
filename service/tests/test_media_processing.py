@@ -159,6 +159,8 @@ def test_the_tools_read_one_file_through_one_named_demuxer_and_write_nothing_els
     assert pairs["-map"] == "0:a:0" and pairs["-map_metadata"] == "-1" and pairs["-map_chapters"] == "-1"
     assert pairs["-id3v2_version"] == "0" and pairs["-write_id3v1"] == "0"
     assert pairs["-c:a"] == "libmp3lame" and pairs["-q:a"] == "5"
+    assert pairs["-t"] == f"{AMBIENCE_MAX_MS}ms"
+    assert transcode.index("-t") > transcode.index(str(source)), "the time bound applies to the encoded output"
     assert {"-nostdin", "-vn", "-sn", "-dn"} <= set(transcode)
     assert transcode[-1] == str(target)
 
@@ -209,8 +211,40 @@ def test_every_child_is_started_behind_the_limiting_launcher(monkeypatch: pytest
     source.write_bytes(b"")
     mp.process(AssetKind.IMAGE, "image/png", source, tmp_path)
     mp.process(AssetKind.AUDIO, "audio/mpeg", source, tmp_path)
-    children = [["LIMITED", sys.executable], ["LIMITED", "ffprobe"], ["LIMITED", "ffmpeg"]]
+    children = [["LIMITED", sys.executable], ["LIMITED", "ffprobe"], ["LIMITED", "ffmpeg"], ["LIMITED", "ffprobe"]]
     assert [argv[:2] for argv in started] == children
+
+
+@pytest.mark.parametrize(("output_seconds", "expected"), [
+    ("14.100", 14_100),
+    ("600.001", AssetFailure.TOO_LONG),
+    ("N/A", AssetFailure.UNREADABLE),
+])
+def test_audio_duration_comes_from_the_encoded_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, output_seconds: str, expected: int | AssetFailure
+) -> None:
+    source, target = tmp_path / "in", tmp_path / "out.mp3"
+    deadlines: list[float] = []
+
+    def run(argv: list[str], deadline: float) -> subprocess.CompletedProcess[bytes]:
+        deadlines.append(deadline)
+        if argv[0] == "ffmpeg":
+            target.write_bytes(b"normalized")
+            return subprocess.CompletedProcess(argv, 0, b"")
+        assert argv[0] == "ffprobe"
+        encoded = argv[-1] == str(target)
+        assert argv[argv.index("-f") + 1] == ("mp3" if encoded else "ogg")
+        return subprocess.CompletedProcess(argv, 0, report(AUDIO, duration=output_seconds if encoded else "1.0"))
+
+    monkeypatch.setattr(mp, "_run", run)
+    if isinstance(expected, AssetFailure):
+        with pytest.raises(mp.ProcessingFailed) as refused:
+            mp.process(AssetKind.AUDIO, "audio/ogg", source, tmp_path)
+        assert refused.value.failure is expected
+    else:
+        made = mp.process(AssetKind.AUDIO, "audio/ogg", source, tmp_path)
+        assert made.duration_ms == expected and made.path == target
+    assert len(deadlines) == 3 and len(set(deadlines)) == 1
 
 
 @pytest.mark.skipif(os.name != "posix" and not os.environ.get("CI"), reason="RLIMIT_AS is POSIX; CI runs Linux")

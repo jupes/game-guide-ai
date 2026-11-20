@@ -888,7 +888,12 @@ def audio(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bytes]:
                 "-f", "mp3"]
     video = ["-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5", "-f", "lavfi", "-i",
              "sine=duration=1", "-c:v", "mpeg4", "-c:a", "aac", "-f", "mp4"]
-    for name, args in {"forty seconds": long_wav, "601 seconds": too_long, "video": video}.items():
+    # Without a Xing header, probing extrapolates from the high-bitrate first
+    # second and underestimates the later, very low-bitrate silence.
+    vbr = ["-f", "lavfi", "-i", "anoisesrc=d=1:r=44100:a=0.8:seed=7", "-f", "lavfi", "-i",
+           "anullsrc=r=44100:cl=mono:d=9", "-filter_complex", "concat=n=2:v=0:a=1",
+           "-c:a", "libmp3lame", "-q:a", "2", "-write_xing", "0", "-f", "mp3"]
+    for name, args in {"forty seconds": long_wav, "601 seconds": too_long, "video": video, "vbr": vbr}.items():
         target = work / name.replace(" ", "_")
         subprocess.run(["ffmpeg", "-v", "error", "-y", *args, str(target)], check=True, timeout=120)
         out[name] = target.read_bytes()
@@ -924,6 +929,24 @@ def test_a_forty_second_six_megabyte_clip_is_accepted_the_cue_decides_its_kind(
     _, answer = _upload(client, world.campaign(), upload, "audio/wav")
     assert answer.status_code == 200, answer.text
     assert 39_900 <= answer.json()["duration_ms"] <= 40_100
+
+
+def test_a_vbr_upload_with_no_length_header_reports_the_served_duration(
+    client: TestClient, world: World, audio: dict[str, bytes], tmp_path: Path
+) -> None:
+    source = tmp_path / "source.mp3"
+    source.write_bytes(audio["vbr"])
+    before = subprocess.run(mp.ffprobe_argv("mp3", source), capture_output=True, check=True, timeout=30)
+    assert mp.probe_verdict(before.stdout) < 7000, "the fixture must understate its ten seconds"
+
+    asset, answer = _upload(client, world.campaign(), audio["vbr"], "audio/mpeg")
+    assert answer.status_code == 200, answer.text
+    output = tmp_path / "served.mp3"
+    output.write_bytes(world.objects.read(world.row(asset).object_key))
+    after = subprocess.run(mp.ffprobe_argv("mp3", output), capture_output=True, check=True, timeout=30)
+    duration = mp.probe_verdict(after.stdout)
+    assert 9900 <= duration <= 10_200
+    assert answer.json()["duration_ms"] == duration
 
 
 def test_audio_past_ten_minutes_is_too_long_and_video_is_unsupported(

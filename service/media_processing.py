@@ -213,12 +213,17 @@ def _process_audio(declared: str, source: Path, scratch: Path, deadline: float) 
     probed = _run(ffprobe_argv(demuxer, source), deadline)
     if probed.returncode != 0:
         raise ProcessingFailed(AssetFailure.UNREADABLE)
-    duration_ms = probe_verdict(probed.stdout)
+    probe_verdict(probed.stdout)
     target = scratch / "out.mp3"
     done = _run(ffmpeg_argv(demuxer, source, target), deadline)
     if done.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
         raise ProcessingFailed(AssetFailure.UNREADABLE)
-    return Processed(target, PROCESSED_AUDIO_TYPE, None, None, duration_ms)
+    # An upload's container can understate its duration (for example, VBR MP3
+    # without a length header). Measure the exact file that will be served.
+    measured = _run(ffprobe_argv(AUDIO_DEMUXERS[PROCESSED_AUDIO_TYPE], target), deadline)
+    if measured.returncode != 0:
+        raise ProcessingFailed(AssetFailure.UNREADABLE)
+    return Processed(target, PROCESSED_AUDIO_TYPE, None, None, probe_verdict(measured.stdout))
 
 
 def image_argv(pillow_format: str, source: Path, target: Path) -> list[str]:
@@ -239,6 +244,7 @@ def ffmpeg_argv(demuxer: str, source: Path, target: Path) -> list[str]:
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe",
         "-f", demuxer, "-i", str(source),
         "-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1", "-vn", "-sn", "-dn",
+        "-t", f"{AMBIENCE_MAX_MS}ms",
         "-c:a", "libmp3lame", "-q:a", "5", "-id3v2_version", "0", "-write_id3v1", "0",
         # No version string in the Info frame either: bitexact leaves ffmpeg's
         # fixed "Lavf" there instead of this build's encoder version.
