@@ -178,7 +178,8 @@ CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every pull r
 `master` and every merge — PRs run all gates but never deploy. Alongside `python-tests` and
 `ui-tests` (the commands above), a **`ui-e2e`** job drives the production Nginx UI image with
 Playwright over a DB-/key-free [`docker-compose.e2e.yml`](docker-compose.e2e.yml) stack and
-enforces Web-Vital budgets (TTFB ≤ 1500 ms · FCP ≤ 2000 · LCP ≤ 2500 · CLS ≤ 0.1), and a
+checks the Workbench and table entry in Pixel Chromium and iPhone WebKit emulation.
+It enforces Web-Vital budgets (TTFB ≤ 1500 ms · FCP ≤ 2000 · LCP ≤ 2500 · CLS ≤ 0.1). A
 **`retrieval-metrics`** job re-runs `eval_golden.py` against the live corpus DB and **fails on a
 >2-point drop** in Hit@1 or Recall@10 versus the committed `ingestion/eval_results.json` baseline.
 All-green gates a `deploy` job that no-ops until a hosting target exists. Full rules — the

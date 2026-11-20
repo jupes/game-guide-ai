@@ -281,9 +281,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         run: bun install --frozen-lockfile
-      - name: Install Chromium
-        run: bunx playwright install --with-deps chromium
-      - name: Playwright E2E and UI performance budgets
+      - name: Install Chromium and WebKit
+        run: bunx playwright install --with-deps chromium webkit
+      - name: Playwright desktop and mobile E2E and UI performance budgets
+        env:
+          E2E_INCLUDE_MOBILE: "1"
         run: bun run test:e2e
       - name: Upload Playwright performance evidence
         if: always()
