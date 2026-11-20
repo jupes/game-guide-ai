@@ -38,14 +38,17 @@ import {
   DocumentHistoryPageSchema,
   DocumentVersionSnapshotSchema,
   ErrorBodySchema,
+  FieldPatchRequestSchema,
   LibraryPageSchema,
   LibraryQuerySchema,
   parseDocument,
   type CharacterSheetLink,
+  type ConflictInfo,
   type Document,
   type DocumentTypeId,
   type DocumentHistoryPage,
   type DocumentVersionSnapshot,
+  type FieldValue,
   type LibraryPage,
   type LibraryQuery,
 } from './contracts'
@@ -173,6 +176,49 @@ export async function getDocument(
 ): Promise<DocumentReadResult> {
   if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
   return readDocumentAnswer(await send(fetchImpl, documentPath(campaignId, documentId)), campaignId, documentId)
+}
+
+export type FieldSaveResult =
+  | { kind: 'ok'; document: Document }
+  | { kind: 'conflict'; conflict: ConflictInfo }
+  | { kind: 'failed'; retryable: boolean; message?: string }
+
+export async function saveDocumentField(
+  document: Document,
+  field: string,
+  value: FieldValue,
+  baseWriteRevision: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<FieldSaveResult> {
+  const { campaign_id: campaignId, document_id: documentId, type, type_version: typeVersion } = document
+  const request = FieldPatchRequestSchema.safeParse({
+    schema_version: CONTRACT_VERSION,
+    type,
+    type_version: typeVersion,
+    base_write_revision: baseWriteRevision,
+    fields: { [field]: value },
+  })
+  if (!request.success) return { kind: 'failed', retryable: false, message: 'Check the value in this field' }
+  const response = await send(fetchImpl, documentPath(campaignId, documentId), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request.data),
+  })
+  if (response !== null && !response.ok && response.status !== UNAUTHORIZED) {
+    const error = ErrorBodySchema.safeParse(await bodyOf(response))
+    if (error.success) {
+      const { code, conflict, retryable, message } = error.data.detail
+      if (response.status === CONFLICT && code === 'conflict' && conflict?.fields.includes(field)) {
+        return { kind: 'conflict', conflict }
+      }
+      return { kind: 'failed', retryable, message }
+    }
+  }
+  const result = await readDocumentAnswer(response, campaignId, documentId)
+  if (result.kind === 'ok' && result.document.type === type && result.document.write_revision >= baseWriteRevision) {
+    return result
+  }
+  return { kind: 'failed', retryable: result.kind === 'failed' || result.kind === 'ok' }
 }
 
 /**

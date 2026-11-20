@@ -213,6 +213,8 @@ export interface GameDocumentProps {
   /** Rendered for a `cites_corpus` type only: plain text, no links, no images. */
   sources?: readonly Source[]
   onFieldDraft?: (key: string, value: FieldValue) => void
+  onInvalidFieldDraft?: (key: string) => void
+  onCancelFieldDraft?: (key: string) => void
   onFieldCommit?: (key: string, value: FieldValue) => void
   onRetry?: (key: string) => void
   onKeepMine?: (key: string, value: FieldValue) => void
@@ -221,6 +223,7 @@ export interface GameDocumentProps {
   onArmFieldEdit?: (key: string) => void
   /** CANVAS-23. The bar reports; the owner decides whether to spend (X-1). */
   onSelectionAction?: (action: EditAction, selection: DocumentSelection) => void
+  selectionEnabled?: boolean
   /** CANVAS-29's **Got it**. */
   onAcknowledgeChanges?: () => void
   /**
@@ -245,12 +248,15 @@ export function GameDocument({
   revealedNote,
   sources = [],
   onFieldDraft,
+  onInvalidFieldDraft,
+  onCancelFieldDraft,
   onFieldCommit,
   onRetry,
   onKeepMine,
   onUseLatest,
   onArmFieldEdit,
   onSelectionAction,
+  selectionEnabled = true,
   onAcknowledgeChanges,
   readOnly = false,
   className,
@@ -384,11 +390,14 @@ export function GameDocument({
         documentName={name}
         campaignId={gameDocument.campaign_id}
         onDraft={onFieldDraft}
+        onInvalidDraft={onInvalidFieldDraft}
+        onCancel={onCancelFieldDraft}
         onCommit={onFieldCommit}
         onRetry={onRetry}
         onKeepMine={onKeepMine}
         onUseLatest={onUseLatest}
         onArmEdit={onArmFieldEdit}
+        selectionEnabled={selectionEnabled}
         selectionBar={
           raised !== null && raised.selection.field === field.key ? (
             <SelectionBar

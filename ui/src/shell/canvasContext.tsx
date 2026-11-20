@@ -96,10 +96,12 @@ export interface CanvasActions {
    * nothing unless `documentId` is the open document. A document the server no longer has becomes `unavailable`.
    * Never rejects. */
   refreshDocument(documentId: string): Promise<void>
+  acceptDocument(document: Document): void
+  flushBeforeLeaving(): Promise<boolean>
   /** Speaks an outcome in the one canvas-level status node (`WorkbenchAnnouncer`). */
   announce(text: string): void
   setView(view: WorkbenchView): void
-  /** 1kg.6.5's field editors register here; PR-1 registers none. */
+  /** The canvas field editors register here. */
   registerDirtySource(source: CanvasDirtySource): () => void
   bumpDocumentsVersion(): void
   /** The loss-guard dialog's three buttons (`LossGuardHost` is the only caller). */
@@ -293,11 +295,26 @@ class CanvasStore {
       const now = this.snap.doc
       if (seq !== this.seq || this.snap.scopeKey !== scopeKey) return
       if (now.kind !== 'open' || now.document.document_id !== documentId) return
-      if (result.kind === 'ok') this.set({ ...this.snap, doc: { kind: 'open', document: result.document } })
-      else if (result.kind === 'unavailable') this.set({ ...this.snap, doc: { kind: 'unavailable', documentId } })
+      if (this.isDirty()) return
+      if (result.kind === 'ok' &&
+          (doc.document === now.document || result.document.write_revision > now.document.write_revision)) {
+        this.acceptDocument(scopeKey, result.document)
+      }
+      else if (result.kind === 'unavailable' && now.document === doc.document) {
+        this.set({ ...this.snap, doc: { kind: 'unavailable', documentId } })
+      }
     } catch {
       // C-17: nothing here rejects.
     }
+  }
+
+  acceptDocument(scopeKey: string | null, document: Document): void {
+    const { doc } = this.snap
+    if (scopeKey === null || this.snap.scopeKey !== scopeKey || doc.kind !== 'open') return
+    if (document.campaign_id !== doc.document.campaign_id || document.document_id !== doc.document.document_id ||
+        document.write_revision < doc.document.write_revision) return
+    const documentsVersion = this.snap.documentsVersion + (document.write_revision > doc.document.write_revision ? 1 : 0)
+    this.set({ ...this.snap, documentsVersion, doc: { kind: 'open', document } })
   }
 
   private captureOpener(): Element | null {
@@ -547,6 +564,8 @@ const INERT_ACTIONS: CanvasActions = {
   closeDocument: () => Promise.resolve(true),
   retry: () => {},
   refreshDocument: () => Promise.resolve(),
+  acceptDocument: () => {},
+  flushBeforeLeaving: () => Promise.resolve(true),
   announce: () => {},
   setView: () => {},
   registerDirtySource: () => () => {},
@@ -633,6 +652,8 @@ function CanvasProviderRoot({ children, fetchImpl }: CanvasProviderProps): React
       closeDocument: store.closeDocument,
       retry: store.retry,
       refreshDocument: store.refreshDocument,
+      acceptDocument: (document) => store.acceptDocument(scopeKey, document),
+      flushBeforeLeaving: store.guard,
       announce: store.announce,
       setView: store.setView,
       registerDirtySource: store.registerDirtySource,
@@ -646,7 +667,7 @@ function CanvasProviderRoot({ children, fetchImpl }: CanvasProviderProps): React
       drawerOpenerRef,
       setDrawerOpener,
     }),
-    [store, setChatRegion, setDrawerOpener],
+    [store, scopeKey, setChatRegion, setDrawerOpener],
   )
 
   return (

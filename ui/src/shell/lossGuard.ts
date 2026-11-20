@@ -16,8 +16,7 @@
  * a flush that throws, or never answers, is a failed save. The caller (the canvas
  * provider) owns the dialog and the announcement.
  *
- * PR-1 registers no dirty source: the canvas is read-only until 1kg.6.5, so
- * production never reaches the dialog yet. The contract is proven with test sources.
+ * The field autosave queue registers the open document as one dirty source.
  */
 
 export type FlushOutcome = 'saved' | 'failed' | 'retryable' | 'offline'

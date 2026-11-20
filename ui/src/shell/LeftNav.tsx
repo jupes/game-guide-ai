@@ -22,7 +22,7 @@ import { modesForRole, accentClass } from './modes'
 import { useCampaign } from './campaignContext'
 import { LibraryNavGroup } from './LibraryNavGroup'
 import { PARTICIPANTS_PANEL_ID, useLibraryPanel } from './libraryPanel'
-import { useCanvasMounted, useWorkbenchActive } from './canvasContext'
+import { useCanvasActions, useCanvasMounted, useWorkbenchActive } from './canvasContext'
 import { useCampaignThreads } from './campaignThreads'
 import { PendingButton, useRetrying } from './CampaignPicker'
 import './LeftNav.css'
@@ -56,6 +56,7 @@ export interface LeftNavProps {
 
 export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId, openTavern } = useAppNav()
+  const { flushBeforeLeaving } = useCanvasActions()
   const { user } = useCurrentUser()
   const store = useConversationStore()
   const { selection, enabled } = useCampaign()
@@ -98,8 +99,18 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
             label={label}
             selected={mode === m}
             onClick={() => {
-              setMode(m)
-              onNavigate?.()
+              if (mode === m) {
+                onNavigate?.()
+              } else if (mode !== 'gm') {
+                setMode(m)
+                onNavigate?.()
+              } else {
+                void flushBeforeLeaving().then((proceed) => {
+                  if (!proceed) return
+                  setMode(m)
+                  onNavigate?.()
+                })
+              }
             }}
             className={`left-nav__mode-chip ${accentClass(m)}`}
           />
@@ -225,6 +236,7 @@ interface RenameDraft {
  * campaign never call `onNavigate`; choosing a thread and New conversation do. */
 function CampaignConversations({ onNavigate }: Pick<LeftNavProps, 'onNavigate'>): React.JSX.Element {
   const { conversationId, setConversationId, openTavern } = useAppNav()
+  const { flushBeforeLeaving } = useCanvasActions()
   const { selection, retrySelection, clearCampaign } = useCampaign()
   const threads = useCampaignThreads()
   const line = React.useRef<HTMLParagraphElement>(null)
@@ -273,8 +285,11 @@ function CampaignConversations({ onNavigate }: Pick<LeftNavProps, 'onNavigate'>)
           <Button variant="text" onClick={leave}>{CONTINUE_WITHOUT}</Button>
         )}
         <Button variant="text" onClick={() => {
-          openTavern?.()
-          onNavigate?.()
+          void flushBeforeLeaving().then((proceed) => {
+            if (!proceed) return
+            openTavern?.()
+            onNavigate?.()
+          })
         }}>{selection.kind === 'selected' ? SWITCH_CAMPAIGN : CHOOSE_CAMPAIGN}</Button>
       </div>
 

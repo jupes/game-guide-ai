@@ -21,6 +21,7 @@ import { Chip } from '../ds/Chip'
 import { Switch } from '../ds/Switch'
 import { useTheme } from '../ds/theme'
 import { useAppNav } from './AppNav'
+import { useCanvasActions } from './canvasContext'
 import { useCurrentUser } from './currentUser'
 import { ModelPicker } from './ModelPicker'
 import { modesForRole, accentClass } from './modes'
@@ -38,6 +39,7 @@ export interface AppHeaderProps {
 
 export function AppHeader({ showSettings = true, inert = false }: AppHeaderProps): React.JSX.Element {
   const { mode, setMode } = useAppNav()
+  const { flushBeforeLeaving } = useCanvasActions()
   const { user } = useCurrentUser()
   const { theme, toggleTheme } = useTheme()
   const channelsRef = React.useRef<HTMLDivElement>(null)
@@ -57,7 +59,11 @@ export function AppHeader({ showSettings = true, inert = false }: AppHeaderProps
               icon={icon}
               label={label}
               selected={mode === m}
-              onClick={() => setMode(m)}
+              onClick={() => {
+                if (mode === m) return
+                if (mode !== 'gm') setMode(m)
+                else void flushBeforeLeaving().then((proceed) => { if (proceed) setMode(m) })
+              }}
               className={`app-header__channel ${accentClass(m)}`}
             />
           ))}

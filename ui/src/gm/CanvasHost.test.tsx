@@ -219,11 +219,11 @@ describe('each state of the column (2.6)', () => {
     expect(view.container.querySelector('.canvas-host')).not.toHaveAttribute('aria-busy')
   })
 
-  it('an open document is read-only: no Edit anywhere, no field assistant, and no Export; Reveal to party is there (I-1, 1kg.7.3 test 29)', async () => {
+  it('offers direct editing and Reveal to party on an active document', async () => {
     await mountSelected(host)
     await run(() => open('doc_a'))
     await screen.findByRole('button', { name: 'Reveal to party' })
-    expect(screen.queryAllByRole('button', { name: /^Edit / })).toEqual([])
+    expect(screen.getByRole('button', { name: 'Edit Voice' })).toBeVisible()
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Export' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Close canvas' })).toBeInTheDocument()
