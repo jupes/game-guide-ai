@@ -29,18 +29,25 @@ the safe direction.
 `None` means *not entitled*, for every reason alike: no live session, a seat
 that is not accepted or is removed, an account that is nobody's, a grant that is
 dead or another campaign's. The route answers it with the one `inactive` (SEC-46).
+
+Streams use `TableStreamReads` to recheck a batch's standing, session
+generation and authorized pinned values in the same PostgreSQL statement.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import cast
+from itertools import groupby
+from operator import itemgetter
+from typing import Final, cast
 
 from pydantic import ValidationError
 
 from .campaign_store import aware
-from .db import TransactionalDatabase, UnitOfWork
+from .db import Database, TransactionalDatabase, UnitOfWork
 from .document_store import DocumentStore
 from .reveal_store import EMPTY_SLOT, RevealStore, SlotContent, TableView
 from .table_projection import build
@@ -91,7 +98,7 @@ class TableReads:
             slots = [self._slot(unit, view, TableSlotName.TABLE, view.table)]
             if view.own_slot:
                 slots.append(self._slot(unit, view, TableSlotName.MINE, view.mine or EMPTY_SLOT))
-        return _frames(view, slots)
+        return _frames(view.own_slot, view.audio, slots)
 
     def _slot(self, unit: UnitOfWork, view: TableView, name: TableSlotName, held: SlotContent) -> TableSlot:
         return TableSlot(slot=name, seq=held.seq, content=self._content(unit, view.campaign_id, held))
@@ -105,15 +112,109 @@ class TableReads:
         return build(pinned.type, pinned.data, held.mask)
 
 
-def _frames(view: TableView, slots: list[TableSlot]) -> TableSnapshot:
-    role = TableRole.PARTICIPANT if view.own_slot else TableRole.GUEST
+TABLE_STREAM_BATCH_MAX: Final = 20
+
+
+@dataclass(frozen=True)
+class TableStreamWatch:
+    """The server-derived standing to recheck for one admitted stream."""
+
+    campaign_id: str
+    session_id: str
+    generation: int
+    account_id: int | None = field(default=None, repr=False)
+    grant_id: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if (self.account_id is None) == (self.grant_id is None):
+            raise ValueError("a stream is watched for one principal")
+
+
+_STREAM_READ_SQL: Final = """
+WITH watched AS (
+    SELECT * FROM unnest(%(campaigns)s::text[], %(sessions)s::text[], %(generations)s::int[],
+                         %(accounts)s::bigint[], %(grants)s::text[])
+    WITH ORDINALITY AS w(campaign_id, session_id, generation, account_id, grant_id, ordinal)
+), eligible AS (
+    SELECT w.ordinal, s.id AS session_id, s.campaign_id, s.table_audio, p.id AS participant_id,
+           (w.account_id IS NOT NULL AND c.owner_id <> w.account_id AND p.confirmed_at IS NOT NULL) AS own_slot
+    FROM watched w
+    JOIN campaign.table_sessions s ON s.id = w.session_id AND s.campaign_id = w.campaign_id
+        AND s.state = 'live' AND s.expires_at > %(now)s AND s.link_generation = w.generation
+    JOIN campaign.campaigns c ON c.id = s.campaign_id
+    LEFT JOIN campaign.participants p ON p.campaign_id = s.campaign_id AND p.user_id = w.account_id
+        AND p.accepted_at IS NOT NULL AND p.removed_at IS NULL
+    LEFT JOIN campaign.table_credentials g ON g.id = w.grant_id AND g.session_id = s.id
+        AND g.link_generation = s.link_generation AND g.revoked_at IS NULL
+    WHERE c.owner_id = w.account_id OR p.id IS NOT NULL OR g.id IS NOT NULL
+)
+SELECT e.ordinal, e.own_slot, e.table_audio, audience.region, COALESCE(r.seq, 0), d.type, f.mask,
+       (SELECT jsonb_object_agg(key, v.data -> key) FROM unnest(f.mask) AS k(key) WHERE v.data ? key)
+FROM eligible e
+CROSS JOIN LATERAL (
+    SELECT 'table' AS region, NULL::text AS participant_id, 0 AS ordering
+    UNION ALL
+    SELECT 'mine', e.participant_id, 1 WHERE e.own_slot
+) audience
+LEFT JOIN campaign.reveal_slots r ON r.session_id = e.session_id AND r.campaign_id = e.campaign_id
+    AND r.participant_id IS NOT DISTINCT FROM audience.participant_id
+LEFT JOIN campaign.reveal_disclosures f ON f.id = r.disclosure_id AND f.campaign_id = e.campaign_id
+    AND f.session_id = e.session_id AND f.ended_at IS NULL
+LEFT JOIN campaign.documents d ON d.id = f.document_id AND d.campaign_id = e.campaign_id
+LEFT JOIN campaign.document_versions v ON v.document_id = d.id AND v.number = f.version_number
+    AND v.sealed_at IS NOT NULL
+ORDER BY e.ordinal, audience.ordering
+"""
+
+
+class TableStreamReads:
+    """Read current stream snapshots without taking a lock or a sync connection."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def snapshots(
+        self, watches: Sequence[TableStreamWatch], *, now: datetime
+    ) -> list[TableSnapshot | None]:
+        """Results align with the watches. A denied or expired watch is empty."""
+        if not watches:
+            return []
+        if len(watches) > TABLE_STREAM_BATCH_MAX:
+            raise ValueError("too many table streams to read in one batch")
+        values = {
+            "campaigns": [watch.campaign_id for watch in watches],
+            "sessions": [watch.session_id for watch in watches],
+            "generations": [watch.generation for watch in watches],
+            "accounts": [watch.account_id for watch in watches],
+            "grants": [watch.grant_id for watch in watches],
+            "now": aware(now, "a clock"),
+        }
+        async with self._db.async_connection() as connection:
+            rows = await (await connection.execute(_STREAM_READ_SQL, values)).fetchall()
+        snapshots: list[TableSnapshot | None] = [None] * len(watches)
+        for ordinal, group in groupby(rows, itemgetter(0)):
+            entries = list(group)
+            slots = [
+                TableSlot(
+                    slot=TableSlotName(region), seq=seq,
+                    content=None if doc_type is None or data is None else build(doc_type, data, mask),
+                )
+                for _, _, _, region, seq, doc_type, mask, data in entries
+            ]
+            _, own_slot, audio, *_ = entries[0]
+            snapshots[ordinal - 1] = _frames(own_slot, audio, slots)
+        return snapshots
+
+
+def _frames(own_slot: bool, audio: bool, slots: list[TableSlot]) -> TableSnapshot:
+    role = TableRole.PARTICIPANT if own_slot else TableRole.GUEST
 
     def assemble(shown: list[TableSlot]) -> TableSnapshot:
         return TableSnapshot.model_validate(
             {
                 "schema_version": WIRE_VERSION,
                 "frames": [
-                    TableSessionEvent(schema_version=WIRE_VERSION, event="session", audio=view.audio, role=role),
+                    TableSessionEvent(schema_version=WIRE_VERSION, event="session", audio=audio, role=role),
                     TableRevealSnapshotEvent(schema_version=WIRE_VERSION, event="snapshot", slots=shown),
                     TableReadyEvent(schema_version=WIRE_VERSION, event="ready"),
                 ],

@@ -32,6 +32,7 @@ from typing import Any
 
 import psycopg
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
 
@@ -53,10 +54,17 @@ from service.reveal_scope import Audience, ParticipantsAudience, TableAudience
 from service.reveal_store import InMemoryRevealStore
 from service.reveals import DisplayCommand, Reveals, slot_clear_for
 from service.session import SessionData, encode_session
+from service.table_admission import TableFull
 from service.table_reads import TableReads
 from service.table_session_store import SCREENS_PER_SESSION, InMemoryTableSessionStore, no_slots
 from service.table_sessions import TableSessions
-from service.workbench_api import CROSS_SITE_DETAIL, FORBIDDEN_ORIGIN_DETAIL, INACTIVE_DETAIL, api_routes
+from service.workbench_api import (
+    CROSS_SITE_DETAIL,
+    FORBIDDEN_ORIGIN_DETAIL,
+    INACTIVE_DETAIL,
+    api_routes,
+    install_workbench,
+)
 from service.workbench_contracts import Author, DocumentTypeId, TableSnapshot
 
 pytestmark = pytest.mark.real_auth
@@ -692,19 +700,79 @@ NGINX = SERVICE.parent / "ui" / "nginx.conf"
 
 
 def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
-    """`tests/test_proxy_contract.py` asks only for a location that begins with
-    `/table`. The three routes are named exactly — a bare `/table` would also
-    catch the table page (`1kg.7.4`) and `/table-sessions` — and each forwards
-    `Host` (the origin check compares `Origin` with it) and `X-Real-IP`."""
+    """Each table API has an exact location and forwards Host and X-Real-IP.
+
+    The /table document has its own location and is served by Nginx directly.
+    """
     conf = NGINX.read_text(encoding="utf-8")
     table_paths = sorted({path for path, _ in api_routes(app) if path.startswith("/table/")})
     assert table_paths == [LEAVE, MINT, SNAPSHOT]
-    blocks = dict(re.findall(r"location\s+(/table\S*)\s*\{([^}]*)\}", conf))
-    assert sorted(blocks) == table_paths, "each table route by its own name, and no bare /table"
+    blocks = dict(re.findall(r"location\s+=\s+(/table/\S+)\s*\{([^}]*)\}", conf))
+    # The client can already probe this exact path while the server stream is built.
+    assert sorted(blocks) == [*table_paths, "/table/stream"]
     for path, block in blocks.items():
         assert "proxy_set_header   Host $host;" in block, path
         assert "proxy_set_header   X-Real-IP $remote_addr;" in block, path
         assert "proxy_pass         http://service:8000;" in block, path
+    stream = blocks["/table/stream"]
+    assert re.search(r"proxy_buffering\s+off;", stream)
+    assert re.search(r"proxy_cache\s+off;", stream)
+    assert re.search(r"proxy_read_timeout\s+320s;", stream)
+
+
+def test_stream_is_off_by_default_and_opt_in_reuses_the_table_route_guards(world: _World) -> None:
+    campaign, _ = world.live()
+    path = f"/table/stream?campaign_id={campaign}"
+    assert path.split("?", 1)[0] not in {route for route, _ in api_routes(app)}
+
+    class Streams:
+        calls = []
+        result = "lease"
+
+        async def open(self, campaign_id, **arguments):
+            self.calls.append((campaign_id, arguments))
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+        async def bytes(self, lease):
+            assert lease == "lease"
+            yield b'event: inactive\ndata: {"schema_version":1,"event":"inactive"}\n\n'
+
+    streams = Streams()
+    streams.admission = streams
+    local = FastAPI()
+    install_workbench(local)
+    local.include_router(table_api.build_router(
+        appmod.require_session, lambda: world.auth, appmod._clear_session_cookie,
+        lambda: world.lifecycle, lambda: None, table_streams=lambda: streams,
+    ))
+    local.dependency_overrides[table_api.get_clock] = lambda: world.now[0]
+    client = TestClient(local, base_url="https://testserver")
+    cookie = {"cookie": f"{config.SESSION_COOKIE_NAME}={_account(GM_A)}"}
+
+    assert client.get(path, headers={**cookie, "sec-fetch-site": "cross-site"}).status_code == 403
+    assert client.get(path).status_code == 401
+    assert streams.calls == []
+    streamed = client.get(path, headers=cookie)
+    assert streamed.status_code == 200 and streamed.text.startswith("event: inactive")
+    assert streamed.headers["content-type"].startswith("text/event-stream")
+    assert streamed.headers["x-accel-buffering"] == "no"
+    assert streamed.headers["cache-control"] == "no-store"
+    assert streamed.headers["cross-origin-resource-policy"] == "same-origin"
+    assert streams.calls == [(campaign, {"account_id": GM_A, "grant_id": None, "now": world.now[0]})]
+
+    streams.result = None
+    refused = client.get(path, headers=cookie)
+    assert refused.status_code == 404 and refused.json() == INACTIVE
+    streams.result = TableFull()
+    full = client.get(path, headers=cookie)
+    assert full.status_code == 503 and full.headers["retry-after"] == "5"
+    assert full.json()["detail"]["message"] == "This table is full."
+    streams.result = psycopg.OperationalError("synthetic private database text")
+    unavailable = client.get(path, headers=cookie)
+    assert unavailable.status_code == 503 and "retry-after" not in unavailable.headers
+    assert "synthetic private database text" not in unavailable.text
 
 
 # ── The snapshot read (1kg.7.2 PR-2; ID-15, SEC-46, SEC-47, T-1, T-23) ───────

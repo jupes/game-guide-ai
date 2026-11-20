@@ -11,13 +11,10 @@
  *    the fragment it was loaded with gone, no new history entry and no focus
  *    move. The 503s are the one real-server state of the seat read: one Retry,
  *    both failure lines.
- * 2. The seat cards, through `page.route` on `/seats` and `/campaigns` only
- *    (precedent: `resilience.spec.ts`; the routed bodies are valid contract
- *    objects, so the real bundle's own parsing reads them): a live table is
- *    plain text and nothing in a seat card is a link or a button; an unconfirmed
- *    seat waits on its GM; the screen fits a 390px phone. The player's own view
- *    (no seat, E-1) needs a `player` account the stack does not seed, so it is
- *    jsdom's and Storybook's.
+ * 2. A confirmed player follows the live seat link on a narrow viewport and
+ *    reloads the table. The signed-in context stubs its authorized picture.
+ *    A separate signed-out context opens the same URL through the real proxy
+ *    and API guard, without the picture stub.
  *
  * A new file, not an edit to an existing spec. Both tests sign in as the SECOND
  * account: the per-account sign-in budget is 10 attempts per 300 s and is
@@ -25,7 +22,9 @@
  */
 
 import type { Page } from '@playwright/test'
+import type { TableSnapshot } from '../src/gm/contracts'
 import { expect, test } from './fixtures'
+import { BASE_URL } from './stack'
 
 const PHONE = { width: 390, height: 844 }
 
@@ -74,6 +73,35 @@ test('a signed-out /tavern shows Login, and signing in returns to /tavern, path 
 })
 
 const SCHEMA_VERSION = 1
+const LIVE_CAMPAIGN = `cmp_${'a'.repeat(22)}`
+const TABLE_PATH = `/table?campaign_id=${LIVE_CAMPAIGN}`
+const PRIVATE_HANDOUT = 'The key under the bell'
+
+function tableSnapshot(shared: string): TableSnapshot {
+  return {
+    schema_version: SCHEMA_VERSION,
+    frames: [
+      { schema_version: SCHEMA_VERSION, event: 'session', role: 'participant', audio: false },
+      {
+        schema_version: SCHEMA_VERSION,
+        event: 'snapshot',
+        slots: [
+          {
+            slot: 'table',
+            seq: 1,
+            content: { content_kind: 'document', type: 'npc', fields: [{ key: 'name', value: shared }] },
+          },
+          {
+            slot: 'mine',
+            seq: 1,
+            content: { content_kind: 'document', type: 'npc', fields: [{ key: 'name', value: PRIVATE_HANDOUT }] },
+          },
+        ],
+      },
+      { schema_version: SCHEMA_VERSION, event: 'ready' },
+    ],
+  }
+}
 
 function seat(id: string, name: string, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -94,9 +122,9 @@ function seat(id: string, name: string, over: Record<string, unknown> = {}): Rec
   }
 }
 
-test('Your seats: a live table is plain text, a seat waits on its GM, and nothing in a seat is a link or a button', async ({ page, accounts }) => {
+test('a confirmed live seat opens the mobile table, while the same link requires sign-in elsewhere', async ({ page, accounts, browser }) => {
   const seats = [
-    seat('cmp_e2es1', 'Gorath Table', { live: true, tone: 'Mystery' }),
+    seat(LIVE_CAMPAIGN, 'Gorath Table', { live: true, tone: 'Mystery' }),
     seat('cmp_e2es2', 'The Pale Orchard', { confirmed: false, live: true }),
     seat('cmp_e2es3', 'Lanterns at Low Tide', { last_played_at: '2026-09-04T12:00:00Z' }),
     seat('cmp_e2es4', 'The Last Ferry', { concluded: true }),
@@ -114,6 +142,7 @@ test('Your seats: a live table is plain text, a seat waits on its GM, and nothin
   const requests: string[] = []
   page.on('request', (request) => { requests.push(new URL(request.url()).pathname) })
 
+  await page.setViewportSize(PHONE)
   await page.goto('/tavern')
   await submitLogin(page, accounts[1])
   await expect(page).toHaveURL(/\/tavern$/)
@@ -124,13 +153,14 @@ test('Your seats: a live table is plain text, a seat waits on its GM, and nothin
     // Live first; then by when the table last met, else when the seat was taken; concluded last.
     'Gorath Table', 'Lanterns at Low Tide', 'The Pale Orchard', 'The Last Ferry',
   ])
-  // A confirmed seat at a live table: the words, never a way in (no table page exists).
   await expect(list.getByText('Live now')).toHaveCount(1)
   await expect(page.getByRole('group', { name: 'Gorath Table' }).getByText('Live now')).toBeVisible()
   await expect(page.getByRole('group', { name: 'The Pale Orchard' }).getByText('Waiting for your GM to confirm your seat')).toBeVisible()
   await expect(page.getByRole('group', { name: 'The Last Ferry' }).getByText('This table has concluded')).toBeVisible()
   await expect(list.getByRole('button')).toHaveCount(0)
-  await expect(list.getByRole('link')).toHaveCount(0)
+  const join = list.getByRole('link', { name: 'Join table Gorath Table' })
+  await expect(list.getByRole('link')).toHaveCount(1)
+  await expect(join).toHaveAttribute('href', TABLE_PATH)
 
   // Pressing the words goes nowhere and asks for nothing.
   const before = requests.length
@@ -138,9 +168,48 @@ test('Your seats: a live table is plain text, a seat waits on its GM, and nothin
   await expect(page).toHaveURL(/\/tavern$/)
   expect(requests.slice(before)).toEqual([])
   expect(requests.filter((path) => /^\/(table|join)/.test(path))).toEqual([])
-
-  // The same screen on a 390px phone.
-  await page.setViewportSize(PHONE)
-  await expect(list).toBeVisible()
   await expectNoPageOverflow(page)
+
+  let shared = 'The harbour almoner'
+  // The deterministic stack serves the built table and keeps realtime off.
+  // Stub the authorized picture only in this signed-in browser.
+  await page.route(
+    (url) => url.pathname === '/table/snapshot' && url.search === `?campaign_id=${LIVE_CAMPAIGN}`,
+    (route) => route.fulfill({ json: tableSnapshot(shared) }),
+  )
+  await join.click()
+  await expect(page).toHaveURL(new URL(TABLE_PATH, BASE_URL).href)
+  const projection = page.locator('#table-projections')
+  await expect(page.getByRole('heading', { name: 'Player table', level: 1 })).toBeVisible()
+  await expect(projection.getByRole('heading', { level: 2 })).toHaveText(['For you', 'Shared with the table'])
+  await expect(projection.getByText(shared)).toBeVisible()
+  await expect(projection.getByText(PRIVATE_HANDOUT)).toBeVisible()
+  await expect(page.getByText('Reconnecting… Live updates are delayed.')).toBeVisible()
+  await expectNoPageOverflow(page)
+  const reload = page.getByRole('button', { name: 'Reload table' })
+  await expect(reload).toBeVisible()
+  const target = await reload.boundingBox()
+  expect(target?.height).toBeGreaterThanOrEqual(44)
+  expect(target?.width).toBeGreaterThanOrEqual(44)
+
+  const previous = shared
+  shared = 'The ferryman'
+  await page.reload()
+  await expect(projection.getByText(shared)).toBeVisible()
+  await expect(projection.getByText(previous)).toHaveCount(0)
+
+  const signedOut = await browser.newContext({ baseURL: BASE_URL, viewport: PHONE, isMobile: true, hasTouch: true })
+  try {
+    const visitor = await signedOut.newPage()
+    const read = visitor.waitForResponse((response) => new URL(response.url()).pathname === '/table/snapshot')
+    const document = await visitor.goto(TABLE_PATH)
+    expect(document?.headers()['referrer-policy']).toBe('no-referrer')
+    expect(document?.headers()['cache-control']).toBe('no-store')
+    expect((await read).status()).toBe(401)
+    await expect(visitor.getByRole('link', { name: 'Sign in', exact: true })).toBeVisible()
+    await expect(visitor.locator('#table-projections')).toBeEmpty()
+    await expectNoPageOverflow(visitor)
+  } finally {
+    await signedOut.close()
+  }
 })

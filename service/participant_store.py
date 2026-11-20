@@ -94,6 +94,7 @@ from .campaign_store import (
     shared_rows,
 )
 from .db import InMemoryDatabase, UnitOfWork
+from .table_stream_events import CAMPAIGN_WAKEUP_CHANNEL
 from .workbench_contracts import check_stored_text
 
 ALIAS_MAX_CHARS = 40
@@ -586,6 +587,8 @@ class PostgresParticipantStore:
             "WHERE id = %s AND campaign_id = %s AND removed_at IS NULL RETURNING id",
             (now_or(now), participant_id, campaign_id),
         ).fetchone()
+        if changed is not None:
+            unit.notify(CAMPAIGN_WAKEUP_CHANNEL, campaign_id)
         return changed is not None
 
     def rename(
@@ -712,6 +715,8 @@ class PostgresParticipantStore:
             "AND accepted_at IS NOT NULL AND confirmed_at IS NULL RETURNING id",
             (now_or(now), participant_id, campaign_id),
         ).fetchone()
+        if changed is not None:
+            unit.notify(CAMPAIGN_WAKEUP_CHANNEL, campaign_id)
         return changed is not None
 
     def count_live(self, unit: UnitOfWork, campaign_id: str) -> int:
@@ -858,6 +863,7 @@ class InMemoryParticipantStore:
         self._participants.replace(
             fake(unit), participant_id, replace(found, removed_at=now_or(now))
         )
+        unit.notify(CAMPAIGN_WAKEUP_CHANNEL, campaign_id)
         return True
 
     def rename(
@@ -954,6 +960,7 @@ class InMemoryParticipantStore:
         if seat.confirmed_at is not None:
             return False
         self._participants.replace(fake(unit), participant_id, replace(seat, confirmed_at=now_or(now)))
+        unit.notify(CAMPAIGN_WAKEUP_CHANNEL, campaign_id)
         return True
 
     def count_live(self, unit: UnitOfWork, campaign_id: str) -> int:

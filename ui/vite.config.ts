@@ -11,7 +11,25 @@ const dirname = typeof __dirname !== 'undefined' ? __dirname : path.dirname(file
 
 // More info at: https://storybook.js.org/docs/next/writing-tests/integrations/vitest-addon
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), {
+    name: 'player-table-entry',
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const [path, query] = (request.url ?? '').split(/\?(.*)/s, 2)
+        if (path === '/table.html') {
+          response.writeHead(404).end()
+          return
+        }
+        if (path === '/table') request.url = query === undefined ? '/table.html' : `/table.html?${query}`
+        next()
+      })
+    },
+  }],
+  build: {
+    rolldownOptions: {
+      input: { app: path.resolve(dirname, 'index.html'), table: path.resolve(dirname, 'table.html') },
+    },
+  },
   server: {
     // Dev wiring: same-origin in the browser, no CORS changes to the service.
     // Keep in sync with nginx.conf (the compose-mode proxy) — every service
@@ -25,10 +43,10 @@ export default defineConfig({
       '/models': 'http://localhost:8000',
       '/campaigns': 'http://localhost:8000',
       '/seats': 'http://localhost:8000',
-      // The table API routes, /table/screen and /table/leave (1kg.2.3). This key
-      // proxies every dev path under /table while no table page exists;
-      // 1kg.7.4 narrows it when it adds one. nginx names the two exactly.
-      '/table': 'http://localhost:8000'
+      '^/table/screen(?:\\?|$)': 'http://localhost:8000',
+      '^/table/leave(?:\\?|$)': 'http://localhost:8000',
+      '^/table/snapshot(?:\\?|$)': 'http://localhost:8000',
+      '^/table/stream(?:\\?|$)': 'http://localhost:8000',
     }
   },
   test: {

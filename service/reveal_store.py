@@ -112,6 +112,7 @@ from .reveal_scope import (
     Targets,
 )
 from .table_session_store import _LIVE_GRANT, LIVE, ScreenGrant, TableSession, check_command_id
+from .table_stream_events import SESSION_WAKEUP_CHANNEL
 from .workbench_contracts import (
     MASK_MAX_KEYS,
     PRESENCE_MAX_PARTICIPANTS,
@@ -572,6 +573,7 @@ class _Writes(ABC):
         copies = [s for s in self._slots(unit, stale.session_id) if s.disclosure_id == stale.id]
         if copies:
             self._point(unit, sorted(s.id for s in copies), None, moment)
+            unit.notify(SESSION_WAKEUP_CHANNEL, stale.session_id)
         self._end(unit, [stale.id], reason, moment)
         return CopyChange(stale, _pids(copies), True, reason)
 
@@ -659,6 +661,7 @@ class _Writes(ABC):
         )
         self._insert(unit, fresh)
         self._point(unit, sorted(s.id for s in targeted), fresh.id, moment)
+        unit.notify(SESSION_WAKEUP_CHANNEL, session_id)
         return Written(fresh, kind, tuple(sorted(taken, key=lambda c: c.disclosure.id)), reconciled)
 
     def clear(self, unit: UnitOfWork, session_id: str, scope: SlotScope, *, now: datetime) -> tuple[CopyChange, ...]:
@@ -692,6 +695,7 @@ class _Writes(ABC):
             if last:
                 self._end(unit, [disclosure_id], scope.reason, moment)
             changes.append(CopyChange(live[disclosure_id], _pids(theirs), last, scope.reason))
+        unit.notify(SESSION_WAKEUP_CHANNEL, session_id)
         return tuple(changes)
 
 

@@ -25,15 +25,15 @@ afterEach(() => {
 })
 
 describe('TavernSeatCard (30c PR-2, C-9 to C-14)', () => {
-  it('C-9 is a non-interactive group named by the table, with nothing in it to press or follow', async () => {
+  it('C-9 is a non-interactive group with a dedicated link for a confirmed live seat', async () => {
     mount({ live: true })
     const group = screen.getByRole('group', { name: 'The Hollow Crown' })
     expect(group).not.toHaveAttribute('role', 'button')
     expect(group).not.toHaveAttribute('tabindex')
     expect(group.className).not.toContain('card--interactive')
     expect(within(group).queryAllByRole('button')).toHaveLength(0)
-    expect(within(group).queryAllByRole('link')).toHaveLength(0)
-    expect(group.querySelector('a')).toBeNull()
+    expect(within(group).getByRole('link', { name: 'Join table The Hollow Crown' }))
+      .toHaveAttribute('href', '/table?campaign_id=cmp_S1')
     await userEvent.click(group)
     await userEvent.click(screen.getByText('Live now'))
     expect(screen.getByRole('heading', { level: 2, name: 'The Hollow Crown' })).toBeInTheDocument()
@@ -52,6 +52,7 @@ describe('TavernSeatCard (30c PR-2, C-9 to C-14)', () => {
     expect(screen.getByText('Waiting for your GM to confirm your seat')).toBeInTheDocument()
     expect(screen.queryByText('Live now')).toBeNull()
     expect(screen.queryByText('Last played', { exact: false })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Join table/ })).toBeNull()
   })
 
   it('C-12 a concluded table says so, and is never live or waiting', () => {

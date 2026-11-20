@@ -141,3 +141,14 @@ PERMISSIONS_POLICY: Final[str] = "camera=(), microphone=(), geolocation=(), paym
 #: agent-forge-harness-5ir1. Sent by the same middleware and, byte for byte, by
 #: `ui/nginx.conf`; guarded by `tests/test_security_headers_contract.py`.
 STRICT_TRANSPORT_SECURITY: Final[str] = "max-age=31536000; includeSubDomains"
+
+#: The separate player table document contains no inline scripts or styles.
+TABLE_PAGE_HEADERS: Final[dict[str, str]] = {
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"
+    ),
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Cache-Control": "no-store",
+}
