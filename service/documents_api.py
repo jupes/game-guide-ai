@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -78,6 +78,7 @@ from pydantic import BaseModel, ValidationError
 import config
 
 from . import campaign_identity as ident
+from .asset_store import AssetRecord, read_campaign_asset
 from .campaign_store import CampaignStore, MissingParent, PostgresCampaignStore
 from .conversation_store import ConversationStore, PostgresConversationStore
 from .conversations_api import read_body
@@ -113,6 +114,8 @@ from .workbench_contracts import (
     DOC_TYPE_VERSION,
     HISTORY_PAGE_MAX_ITEMS,
     VERSION_NUMBER_MAX,
+    AssetKind,
+    AssetState,
     Author,
     CardResult,
     ConflictInfo,
@@ -169,6 +172,7 @@ class DocumentStores:
 
     campaigns: CampaignStore
     documents: DocumentStore
+    read_asset: Callable[[UnitOfWork, str, str, int], AssetRecord | None] = read_campaign_asset
 
 
 def get_document_stores() -> DocumentStores:
@@ -329,6 +333,22 @@ def _owned(stores: DocumentStores, unit: UnitOfWork, campaign_id: str, owner_id:
         not_found()
 
 
+def _check_portrait(
+    stores: DocumentStores,
+    unit: UnitOfWork,
+    campaign_id: str,
+    owner_id: int,
+    fields: Mapping[str, Any],
+) -> None:
+    portrait = fields.get("portrait")
+    if portrait is None:
+        return
+    asset_id = portrait.get("asset_id") if isinstance(portrait, Mapping) else None
+    asset = stores.read_asset(unit, campaign_id, asset_id, owner_id) if isinstance(asset_id, str) else None
+    if asset is None or asset.kind is not AssetKind.IMAGE or asset.state is not AssetState.READY:
+        raise _invalid("portrait")
+
+
 # ── The compositions: one transaction each ──────────────────────────────────
 
 
@@ -385,6 +405,11 @@ def create_document(
         with db.transaction() as unit:
             _owned(stores, unit, campaign_id, owner_id)
             unit.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
+            if data.get("portrait") is not None:
+                existing = stores.documents.created_by_command(unit, campaign_id, request.command_id)
+                if existing is not None:
+                    return to_document(existing)
+                _check_portrait(stores, unit, campaign_id, owner_id, data)
             made = stores.documents.create(
                 unit, campaign_id, doc_type=request.type, type_version=request.type_version, data=data,
                 author=Author.GM, command_id=request.command_id, now=now,
@@ -499,6 +524,7 @@ def patch_document(
             changes = effective_fields(writable(record), request.fields)
             if not changes:
                 return to_document(record)
+            _check_portrait(stores, unit, campaign_id, owner_id, changes)
             written = stores.documents.write_fields(
                 unit, campaign_id, document_id, fields=changes, author=Author.GM,
                 base_write_revision=request.base_write_revision, now=now,
@@ -583,6 +609,8 @@ def restore_document(
                 unit, campaign_id, document_id, version_number=version_number, now=now,
                 quota=ByteQuota(owner_id, config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX),
             )
+            if restored.data.get("portrait") != record.data.get("portrait"):
+                _check_portrait(stores, unit, campaign_id, owner_id, restored.data)
             return to_document(restored)
 
     return _guarded(work, missing="version_number", invalid_content_is_unsupported=True)

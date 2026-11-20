@@ -29,9 +29,11 @@ import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 from fastapi import HTTPException
+from fastapi.exceptions import RequestValidationError
 
 from service import campaign_identity as ident
 from service import migrations as mig
+from service.asset_store import Measured, PostgresAssetStore
 from service.audit_log import PostgresAuditLog
 from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore
 from service.db import CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
@@ -60,6 +62,7 @@ from service.documents_api import (
     restore_document,
     seal_document,
 )
+from service.jobs import PostgresJobQueue
 from service.table_session_store import PostgresTableSessionStore, TableSession, no_slots
 from service.workbench_api import NOT_FOUND_DETAIL
 from service.workbench_contracts import (
@@ -127,6 +130,68 @@ def _patch(db: Any, stores: DocumentStores, owner: int, document: str, base: int
         "schema_version": 1, "type": "npc", "type_version": 1, "base_write_revision": base, "fields": fields})
     return patch_document(db, stores, campaign_id=CAMPAIGN, document_id=document, owner_id=owner,
                           request=request, now=now)
+
+
+def test_portraits_require_a_ready_image_in_the_documents_campaign_and_keep_old_versions(dsn: str, owner: int) -> None:
+    db, stores = _database(dsn), _stores()
+    assets = PostgresAssetStore(PostgresJobQueue(db))
+
+    def reference(asset_id: str) -> dict[str, Any]:
+        return {"asset_id": asset_id, "media_type": "image", "alt": "Portrait of Mira"}
+
+    def upload(campaign: str, kind: str = "image", *, ready: bool = True) -> str:
+        media_type = "image/png" if kind == "image" else "audio/mpeg"
+        with db.transaction() as unit:
+            reserved = assets.create(
+                unit, campaign, owner_id=owner, kind=kind, media_type=media_type, size_bytes=120, now=NOW,
+                alt="Portrait" if kind == "image" else None,
+            )
+            if ready:
+                assets.start_processing(unit, campaign, reserved.id, owner_id=owner, now=NOW)
+                measurements = Measured(media_type, 120, width=10, height=12) if kind == "image" else (
+                    Measured(media_type, 120, duration_ms=2_000)
+                )
+                assets.mark_ready(unit, campaign, reserved.id, owner_id=owner, measured=measurements, now=NOW)
+        return reserved.id
+
+    try:
+        with db.transaction() as unit:
+            other = stores.campaigns.create(unit, owner_id=owner, name="Another campaign", now=NOW).id
+        first, second = upload(CAMPAIGN), upload(CAMPAIGN)
+        invalid = [upload(other), upload(CAMPAIGN, ready=False), upload(CAMPAIGN, "audio"), "ast_" + "x" * 22]
+        for asset_id in invalid:
+            with pytest.raises(RequestValidationError) as refused:
+                _create(db, stores, owner, {"name": "Mira", "portrait": reference(asset_id)})
+            assert refused.value.errors()[0]["loc"] == ("body", "portrait")
+
+        command = _command()
+        original = _create(db, stores, owner, {"name": "Mira", "portrait": reference(first)}, command_id=command)
+        replay = _create(db, stores, owner, {"name": "Other", "portrait": reference(invalid[0])}, command_id=command)
+        assert replay == original
+        for wrong in invalid:
+            with pytest.raises(RequestValidationError) as refused:
+                _patch(db, stores, owner, original.document_id, 1, {"portrait": reference(wrong)})
+            assert refused.value.errors()[0]["loc"] == ("body", "portrait")
+
+        seal_document(db, stores, campaign_id=CAMPAIGN, document_id=original.document_id, owner_id=owner, now=NOW)
+        changed = _patch(db, stores, owner, original.document_id, 1, {"portrait": reference(second)})
+        assert changed.version.number == 2 and changed.data["portrait"].asset_id == second
+        old = read_snapshot(
+            db, stores, campaign_id=CAMPAIGN, document_id=original.document_id, owner_id=owner, number=1,
+        )
+        assert old.data["portrait"].asset_id == first
+        with db.transaction() as unit:
+            assets.delete(unit, CAMPAIGN, first, owner_id=owner, now=NOW)
+        with pytest.raises(RequestValidationError) as refused:
+            restore_document(
+                db, stores, campaign_id=CAMPAIGN, document_id=original.document_id, owner_id=owner,
+                version_number=1, now=NOW,
+            )
+        assert refused.value.errors()[0]["loc"] == ("body", "portrait")
+        still = _patch(db, stores, owner, original.document_id, changed.write_revision, {"voice": "calm"})
+        assert still.data["portrait"].asset_id == second
+    finally:
+        db.close()
 
 
 def _waiting(dsn: str, waiters: int) -> bool:
