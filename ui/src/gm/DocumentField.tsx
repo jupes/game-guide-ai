@@ -291,7 +291,7 @@ function ValueView({
         <img
           // X-10, MS-7: built from two ids. An `AssetRef` never carries a URL,
           // so nothing a model could emit can become a request off this origin.
-          src={assetPath(campaignId, asset.asset_id)}
+          src={assetPath(campaignId, asset.asset_id, 'thumb')}
           alt={trimWire(asset.alt) === '' ? `${label} of ${documentName}` : asset.alt}
           width={asset.width ?? undefined}
           height={asset.height ?? undefined}

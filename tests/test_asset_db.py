@@ -1376,6 +1376,8 @@ def test_the_sweep_fails_a_stuck_row_timed_out_releases_and_deletes(
     record = _in_state(world, campaign, state)
     jobs.put(record.tmp_key)
     jobs.put(record.object_key)
+    thumbnail = f"{record.object_key}/thumb"
+    jobs.put(thumbnail)
     assert world.usage(campaign) == (1000, 1)
     jobs.run(T0 + bound - timedelta(seconds=1))
     assert world.rows()[record.id].state == state, "not due yet"
@@ -1384,7 +1386,7 @@ def test_the_sweep_fails_a_stuck_row_timed_out_releases_and_deletes(
     assert (swept.state, swept.failure) == ("failed", AssetFailure.TIMED_OUT)
     assert world.usage(campaign) == (0, 0)
     assert jobs.keys() == set()
-    assert sorted(jobs.objects.deleted()) == sorted([record.tmp_key, record.object_key])
+    assert sorted(jobs.objects.deleted()) == sorted([record.tmp_key, record.object_key, thumbnail])
 
 
 def test_the_sweep_leaves_a_ready_a_deleted_a_missing_and_a_fresh_row_alone(world: World) -> None:

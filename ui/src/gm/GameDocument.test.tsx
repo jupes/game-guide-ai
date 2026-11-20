@@ -458,7 +458,7 @@ describe('nothing leaves the page', () => {
       for (const name of ['src', 'href', 'srcset', 'poster', 'data']) {
         const value = element.getAttribute(name)
         if (value === null) continue
-        expect(value, `${id}: ${name}=${value}`).toMatch(/^\/campaigns\/[^/]+\/assets\/[^/?#]+$|^#/)
+        expect(value, `${id}: ${name}=${value}`).toMatch(/^\/campaigns\/[^/]+\/assets\/[^/?#]+\?rendition=thumb$|^#/)
       }
     }
   })
@@ -495,7 +495,7 @@ describe('nothing leaves the page', () => {
     show()
     expect(screen.getByRole('img', { name: /grey-robed woman/ })).toHaveAttribute(
       'src',
-      '/campaigns/camp_vault_harbour/assets/ast_ondrey',
+      '/campaigns/camp_vault_harbour/assets/ast_ondrey?rendition=thumb',
     )
   })
 

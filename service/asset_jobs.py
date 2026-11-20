@@ -316,10 +316,7 @@ class _Handlers:
             lambda store: store.list_objects(prefix, older_than=older_than, start_after=start_after, limit=limit),
         )
 
-    def delete(self, job: Job, context: JobContext) -> None:
-        asset_id = _asset_id(job.payload)
-        object_key = _payload_key(job.payload, "object_key", OBJECT_KEY_PATTERN)
-        tmp_key = _payload_key(job.payload, "tmp_key", TMP_KEY_PATTERN)
+    def _delete_asset_objects(self, context: JobContext, object_key: str, tmp_key: str) -> None:
         self._delete_objects(context, tmp_key)
         derivatives = object_key + "/"
         cursor: str | None = None
@@ -332,6 +329,12 @@ class _Handlers:
                 break
             cursor = page.cursor
         self._delete_objects(context, object_key)
+
+    def delete(self, job: Job, context: JobContext) -> None:
+        asset_id = _asset_id(job.payload)
+        object_key = _payload_key(job.payload, "object_key", OBJECT_KEY_PATTERN)
+        tmp_key = _payload_key(job.payload, "tmp_key", TMP_KEY_PATTERN)
+        self._delete_asset_objects(context, object_key, tmp_key)
         _in_time(context)
         with self.db.transaction() as unit:
             self.system.purge(unit, asset_id)
@@ -344,7 +347,7 @@ class _Handlers:
         if seen is None:
             return
         if seen.state == _FAILED:
-            self._delete_objects(context, seen.tmp_key, seen.object_key)
+            self._delete_asset_objects(context, seen.object_key, seen.tmp_key)
             return
         bound = _BOUNDS.get(seen.state)
         if bound is None or self.clock() < seen.state_changed_at + bound:
@@ -359,7 +362,7 @@ class _Handlers:
                 unit, asset_id, state=seen.state, state_changed_at=seen.state_changed_at, now=self.clock()
             )
         if won:
-            self._delete_objects(context, seen.tmp_key, seen.object_key)
+            self._delete_asset_objects(context, seen.object_key, seen.tmp_key)
 
     def reconcile(self, job: Job, context: JobContext) -> None:
         after = _cursor(job.payload)

@@ -78,6 +78,12 @@ STORE_THREADS = 6
 
 TMP_PREFIX = "tmp/"
 ASSETS_PREFIX = "assets/"
+THUMBNAIL_NAME = "thumb"
+THUMBNAIL_TYPE = "image/webp"
+THUMBNAIL_MAX_BYTES = CHUNK_BYTES
+WAVEFORM_NAME = "waveform"
+WAVEFORM_TYPE = "application/json"
+WAVEFORM_MAX_BYTES = 1024
 #: The two key shapes a row holds, as the media migration's CHECKs spell them. One rule spelled
 #: twice drifts, so `service/tests/test_media_objects.py` holds the migration's
 #: text to these.
@@ -194,6 +200,10 @@ def parent_key(key: str) -> str:
     if _DERIVATIVE.fullmatch(checked):
         return checked.rsplit("/", 1)[0]
     return checked
+
+
+def asset_rendition_keys(key: str) -> tuple[str, ...]:
+    return (f"{key}/{THUMBNAIL_NAME}", f"{key}/{WAVEFORM_NAME}")
 
 
 def _check_ceiling(max_bytes: object) -> int:

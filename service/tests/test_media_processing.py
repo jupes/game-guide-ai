@@ -211,7 +211,10 @@ def test_every_child_is_started_behind_the_limiting_launcher(monkeypatch: pytest
     source.write_bytes(b"")
     mp.process(AssetKind.IMAGE, "image/png", source, tmp_path)
     mp.process(AssetKind.AUDIO, "audio/mpeg", source, tmp_path)
-    children = [["LIMITED", sys.executable], ["LIMITED", "ffprobe"], ["LIMITED", "ffmpeg"], ["LIMITED", "ffprobe"]]
+    children = [
+        ["LIMITED", sys.executable], ["LIMITED", "ffprobe"], ["LIMITED", "ffmpeg"], ["LIMITED", "ffprobe"],
+        ["LIMITED", "ffmpeg"],
+    ]
     assert [argv[:2] for argv in started] == children
 
 
@@ -229,7 +232,8 @@ def test_audio_duration_comes_from_the_encoded_bytes(
     def run(argv: list[str], deadline: float) -> subprocess.CompletedProcess[bytes]:
         deadlines.append(deadline)
         if argv[0] == "ffmpeg":
-            target.write_bytes(b"normalized")
+            output = Path(argv[-1])
+            output.write_bytes(b"normalized" if output == target else bytes(128))
             return subprocess.CompletedProcess(argv, 0, b"")
         assert argv[0] == "ffprobe"
         encoded = argv[-1] == str(target)
@@ -244,7 +248,8 @@ def test_audio_duration_comes_from_the_encoded_bytes(
     else:
         made = mp.process(AssetKind.AUDIO, "audio/ogg", source, tmp_path)
         assert made.duration_ms == expected and made.path == target
-    assert len(deadlines) == 3 and len(set(deadlines)) == 1
+    assert len(deadlines) == (3 if isinstance(expected, AssetFailure) else 4)
+    assert len(set(deadlines)) == 1
 
 
 @pytest.mark.skipif(os.name != "posix" and not os.environ.get("CI"), reason="RLIMIT_AS is POSIX; CI runs Linux")

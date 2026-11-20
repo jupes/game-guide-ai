@@ -52,6 +52,9 @@ from service.campaign_store import InMemoryCampaignStore
 from service.db import InMemoryDatabase
 from service.jobs import InMemoryJobQueue
 from service.media_objects import (
+    THUMBNAIL_MAX_BYTES,
+    THUMBNAIL_NAME,
+    WAVEFORM_NAME,
     InMemoryObjectStore,
     MediaSettings,
     ObjectPage,
@@ -512,13 +515,63 @@ def test_a_png_is_re_encoded_as_png_without_a_single_ancillary_chunk(client: Tes
     assert (body["state"], body["width"], body["height"], body["media_type"]) == ("ready", 40, 30, "image/png")
     row = world.row(asset)
     served = world.objects.read(row.object_key)
-    assert world.objects.keys() == [row.object_key], "the tmp/ object is gone"
+    assert world.objects.keys() == [row.object_key, f"{row.object_key}/{THUMBNAIL_NAME}"], "the tmp/ object is gone"
     assert set(png_chunk_types(served)) <= {b"IHDR", b"IDAT", b"IEND"}
     assert CANARY_TITLE.encode() not in served
     with Image.open(io.BytesIO(served)) as out:
         assert (out.format, out.mode, out.size) == ("PNG", "RGBA", (40, 30)), "alpha kept"
     assert body["size_bytes"] == len(served) == row.size_bytes
     assert world.reserved(campaign) == (len(served), 1), "the real size replaced the declared one"
+
+
+def test_thumbnail_is_bounded_and_has_the_same_owner_and_ready_gate(
+    client: TestClient, world: World
+) -> None:
+    campaign = world.campaign()
+    source = image_bytes("PNG", (720, 360), mode="RGBA")
+    asset = _create(client, campaign, size=len(source)).json()["asset_id"]
+    path = f"/campaigns/{campaign}/assets/{asset}?rendition=thumb"
+    assert client.get(path).json() == NOT_FOUND
+    assert _put(client, campaign, asset, source, "image/png").status_code == 200
+    thumbnail = client.get(path)
+    assert thumbnail.status_code == 200
+    assert thumbnail.headers["content-type"] == "image/webp"
+    assert thumbnail.headers["cache-control"] == "no-store"
+    assert len(thumbnail.content) < THUMBNAIL_MAX_BYTES
+    with Image.open(io.BytesIO(thumbnail.content)) as out:
+        assert (out.size, out.mode) == ((320, 160), "RGBA")
+        assert {"exif", "icc_profile", "xmp"}.isdisjoint(out.info)
+    _as(GM_B)
+    assert client.get(path).json() == NOT_FOUND
+    _as(GM_A)
+    row = world.row(asset)
+    world.objects.delete_object(f"{row.object_key}/{THUMBNAIL_NAME}")
+    legacy = client.get(path)
+    assert legacy.headers["content-type"] == "image/png"
+    assert legacy.content == world.objects.read(row.object_key)
+
+
+def test_a_derivative_store_failure_leaves_no_bytes_and_can_retry(
+    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = world.campaign()
+    asset = _create(client, campaign).json()["asset_id"]
+    put = world.objects.put_stream
+    failed = False
+
+    def fail_once(key: str, chunks: Iterable[bytes], *, max_bytes: int) -> int:
+        nonlocal failed
+        if key.endswith(f"/{THUMBNAIL_NAME}") and not failed:
+            failed = True
+            raise ObjectStoreUnavailable()
+        return put(key, chunks, max_bytes=max_bytes)
+
+    monkeypatch.setattr(world.objects, "put_stream", fail_once)
+    source = image_bytes("PNG")
+    assert _put(client, campaign, asset, source, "image/png").status_code == 503
+    assert world.row(asset).state == "uploading" and world.objects.keys() == []
+    assert _put(client, campaign, asset, source, "image/png").status_code == 200
+    assert client.get(f"/campaigns/{campaign}/assets/{asset}?rendition=thumb").headers["content-type"] == "image/webp"
 
 
 def test_a_jpeg_loses_its_exif_gps_icc_and_hidden_thumbnail(client: TestClient, world: World) -> None:
@@ -981,6 +1034,20 @@ def test_a_vbr_upload_with_no_length_header_reports_the_served_duration(
     duration = mp.probe_verdict(after.stdout)
     assert 9900 <= duration <= 10_200
     assert answer.json()["duration_ms"] == duration
+
+    wave_path = f"/campaigns/{answer.json()['campaign_id']}/assets/{asset}?rendition=waveform"
+    waveform = client.get(wave_path)
+    assert (waveform.status_code, waveform.headers["content-type"]) == (200, "application/json")
+    assert waveform.headers["cache-control"] == "no-store"
+    body = waveform.json()
+    assert body["schema_version"] == 1
+    assert len(body["peaks"]) == 46 and all(0 <= peak <= 1 for peak in body["peaks"])
+    assert max(body["peaks"][:5]) > 0.1 and body["peaks"][-10:] == [0] * 10
+    _as(GM_B)
+    assert client.get(wave_path).json() == NOT_FOUND
+    _as(GM_A)
+    world.objects.delete_object(f"{world.row(asset).object_key}/{WAVEFORM_NAME}")
+    assert client.get(wave_path).json() == NOT_FOUND, "older cues can use fallback peaks"
 
 
 def test_audio_past_ten_minutes_is_too_long_and_video_is_unsupported(

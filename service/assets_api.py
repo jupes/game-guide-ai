@@ -90,7 +90,15 @@ from .asset_store import AssetRecord, AssetStore, IllegalTransition, Measured, Q
 from .campaign_store import MissingParent
 from .conversations_api import read_body
 from .db import TransactionalDatabase
-from .media_objects import ObjectStore, ObjectStoreError, ObjectTooLarge, via_store
+from .media_objects import (
+    THUMBNAIL_MAX_BYTES,
+    WAVEFORM_MAX_BYTES,
+    ObjectStore,
+    ObjectStoreError,
+    ObjectTooLarge,
+    asset_rendition_keys,
+    via_store,
+)
 from .session import SessionData
 from .workbench_api import SessionDependency, WorkbenchRoute, not_found, workbench_router
 from .workbench_contracts import (
@@ -369,7 +377,20 @@ class Upload:
                 )
             except ObjectTooLarge:
                 return AssetFailure.TOO_LARGE
+            if made.thumbnail is not None:
+                self._save_rendition(record, made.thumbnail, THUMBNAIL_MAX_BYTES)
+            if made.waveform is not None:
+                self._save_rendition(record, made.waveform, WAVEFORM_MAX_BYTES)
         return Measured(made.media_type, size, made.width, made.height, made.duration_ms)
+
+    def _save_rendition(self, record: AssetRecord, path: Path, cap: int) -> None:
+        try:
+            via_store(self.runtime.objects, lambda store: store.put_stream(
+                f"{record.object_key}/{path.name}", processing.file_chunks(path), max_bytes=cap,
+            ))
+        except ObjectTooLarge:
+            # The original passed its cap. Omit a rendition that exceeds its own.
+            return
 
     async def _delete(self, *keys: str) -> None:
         """Idempotent; a store that cannot delete now leaves the objects to the
@@ -392,13 +413,13 @@ class Upload:
         try:
             failed = await run_in_threadpool(_guarded, self._transition("mark_failed", failure=failure))
         finally:
-            await self._delete(record.tmp_key, record.object_key)
+            await self._delete(record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
         return answer(failed)
 
     async def _back_to_uploading(self, record: AssetRecord) -> None:
         # The next request can acquire the key as soon as this transaction
         # commits. Clean this request's bytes while it still owns the claim.
-        await self._delete(record.tmp_key, record.object_key)
+        await self._delete(record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
         await run_in_threadpool(_guarded, self._transition("return_to_uploading"))
 
     async def _ready(self, record: AssetRecord, measured: Measured) -> JSONResponse:
@@ -409,11 +430,11 @@ class Upload:
             # for a possibly committed ready record or the processing sweep.
             await self._delete(record.tmp_key)
             if refused.status_code in (404, 409):
-                await self._delete(record.object_key)
+                await self._delete(record.object_key, *asset_rendition_keys(record.object_key))
             raise
         await self._delete(record.tmp_key)
         if finished.state is not AssetState.READY:
-            await self._delete(record.object_key)
+            await self._delete(record.object_key, *asset_rendition_keys(record.object_key))
         return answer(finished)
 
 

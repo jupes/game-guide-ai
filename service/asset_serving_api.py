@@ -64,7 +64,18 @@ from .audit_log import ActorKind, AuditAction, AuditLog, Decision, ObjectKind, P
 from .campaign_store import MissingParent
 from .db import TransactionalDatabase
 from .job_driver import JobDriver, run_after_response
-from .media_objects import ObjectMissing, ObjectStoreError, StoreBusy
+from .media_objects import (
+    THUMBNAIL_MAX_BYTES,
+    THUMBNAIL_NAME,
+    THUMBNAIL_TYPE,
+    WAVEFORM_MAX_BYTES,
+    WAVEFORM_NAME,
+    WAVEFORM_TYPE,
+    ObjectMissing,
+    ObjectStoreError,
+    StoreBusy,
+    via_store,
+)
 from .session import SessionData
 from .workbench_api import SessionDependency, not_found, workbench_router
 from .workbench_contracts import ErrorBody, ErrorCode, ErrorInfo
@@ -179,19 +190,33 @@ def build_router(
         ready = await run_in_threadpool(
             resolve, live_db, live.assets, campaign_id=campaign_id, asset_id=asset_id, owner_id=user.user_id
         )
-        try:
-            window = media_serving.byte_window(
-                request.headers.get("range"), request.headers.get("if-range"), ready.size_bytes
-            )
-        except media_serving.RangeNotSatisfiable:
-            return Response(status_code=416, headers=media_serving.unsatisfiable_headers(ready.size_bytes))
+        key, media_type, size = ready.object_key, ready.media_type, ready.size_bytes
+        rendition = request.query_params.get("rendition")
         failure: HTTPException | None = None
         gone = False
         try:
-            return await media_serving.serve(
-                live.objects, key=ready.object_key, media_type=ready.media_type, size=ready.size_bytes,
-                window=window,
+            if rendition is not None:
+                if rendition == THUMBNAIL_NAME and media_type.startswith("image/"):
+                    derived_type, cap = THUMBNAIL_TYPE, THUMBNAIL_MAX_BYTES
+                elif rendition == WAVEFORM_NAME and media_type.startswith("audio/"):
+                    derived_type, cap = WAVEFORM_TYPE, WAVEFORM_MAX_BYTES
+                else:
+                    not_found()
+                derivative_key = f"{key}/{rendition}"
+                preview = await run_in_threadpool(
+                    lambda: via_store(live.objects, lambda store: store.stat_object(derivative_key))
+                )
+                if preview is not None and 0 < preview.size <= cap:
+                    key, media_type, size = derivative_key, derived_type, preview.size
+                elif rendition == WAVEFORM_NAME:
+                    not_found()
+                # A ready image created before thumbnails were added still has a safe original.
+            window = media_serving.byte_window(
+                request.headers.get("range"), request.headers.get("if-range"), size
             )
+            return await media_serving.serve(live.objects, key=key, media_type=media_type, size=size, window=window)
+        except media_serving.RangeNotSatisfiable:
+            return Response(status_code=416, headers=media_serving.unsatisfiable_headers(size))
         except StoreBusy:
             failure = _busy()
         except ObjectMissing:
