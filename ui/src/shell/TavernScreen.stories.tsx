@@ -258,15 +258,18 @@ export const PlayerNoSeatsDark = dark(PlayerNoSeats)
 export const PhonePlayerNoSeats = onPhone(PlayerNoSeats)
 export const PhonePlayerNoSeatsDark = onPhone(PlayerNoSeats, 'dark')
 
-/** ID-17, ID-23, ID-24: a live table as plain text, a seat waiting on its GM, a quiet one and a concluded one. */
+/** A confirmed live seat links to the table. The other seat cards are informational. */
 export const PlayerSeats = playerState(() => page(SEATS), async (canvas) => {
   await expect(await canvas.findByRole('heading', { name: 'Gorath\u2019s Table', level: 2 })).toBeVisible()
   await expect(canvas.getByText('Live now')).toBeVisible()
   await expect(canvas.getByText('Waiting for your GM to confirm your seat')).toBeVisible()
   await expect(canvas.getByText(/^Last played 4 September/)).toBeVisible()
   await expect(canvas.getByText('This table has concluded')).toBeVisible()
-  // Nothing in a seat card is a link or a button: no table page exists yet.
-  await expect(canvas.queryAllByRole('link')).toHaveLength(0)
+  const links = canvas.getAllByRole('link')
+  await expect(links).toHaveLength(1)
+  await expect(canvas.getByRole('link', { name: 'Join table Gorath’s Table' })).toHaveAttribute(
+    'href', '/table?campaign_id=cmp_s1',
+  )
   await expectTouchTargets(canvas, PLAYER_HEADER)
 })
 export const PlayerSeatsDark = dark(PlayerSeats)

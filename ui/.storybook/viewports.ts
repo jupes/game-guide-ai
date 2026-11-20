@@ -92,7 +92,9 @@ export async function expectNoPageOverflow(): Promise<void> {
 
 /** Horizontal scrollers by design: what passes their edge is scrolled to, not
  * lost. Every other box that clips is checked. */
-const INTENDED_SCROLLERS = ['.app-header__channels', '.aether-markdown pre', '.aether-markdown table'] as const
+const INTENDED_SCROLLERS = [
+  '.app-header__channels', '.gm-tool-rail__tools', '.aether-markdown pre', '.aether-markdown table',
+] as const
 
 /** Controls that draw their own text: their DOM children (a select's options,
  * a textarea's value) are not laid out where they sit. */
@@ -250,8 +252,8 @@ export async function expectWorkspaceFits(canvasElement: HTMLElement): Promise<v
   })
   await expect(clipped).toEqual(WORKSPACE_CLIPS.map((selector) => ({ selector, clipped: 0 })))
 
-  const composerBox = canvasElement.querySelector('.chat-pane__composer')
-  if (composerBox === null) throw new Error('no .chat-pane__composer')
+  const composerBox = canvasElement.querySelector('.chat-pane__composer, .gm-composer')
+  if (composerBox === null) throw new Error('No visible composer box')
   const canvas = within(canvasElement)
   const controls: ReadonlyArray<readonly [string, Element]> = [
     ['composer box', composerBox],

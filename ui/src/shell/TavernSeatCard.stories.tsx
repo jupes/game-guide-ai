@@ -2,8 +2,7 @@
  * TavernSeatCard -- one of the caller's own seats, in each of its four
  * standings, in both themes and on a phone (agent-forge-harness-30c, PR-2).
  * Every story passes axe (`test: 'error'`); the phone stories also pass
- * `expectNoPageOverflow`. A seat card has nothing to press, so there are no
- * touch targets to measure: each story asserts there is no button or link.
+ * `expectNoPageOverflow`. A confirmed live seat offers a join link.
  */
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, within } from 'storybook/test'
@@ -60,7 +59,7 @@ async function expectNothingToPress(canvas: ReturnType<typeof within>): Promise<
   await expect(canvas.queryAllByRole('link')).toHaveLength(0)
 }
 
-/** ID-17: a confirmed seat at a live table is plain text, never a link. */
+/** The confirmed seat can open the player table. */
 export const Live: Story = {
   args: { seat: { ...base, live: true } },
   play: async ({ canvasElement }) => {
@@ -68,7 +67,9 @@ export const Live: Story = {
     await expect(canvas.getByRole('group', { name: 'Gorath’s Table' })).toBeVisible()
     await expect(canvas.getByText('Live now')).toBeVisible()
     await expect(canvas.getByText('Playing as Brannoc')).toBeVisible()
-    await expectNothingToPress(canvas)
+    const join = canvas.getByRole('link', { name: 'Join table Gorath’s Table' })
+    await expect(join).toHaveAttribute('href', '/table?campaign_id=cmp_1')
+    await expect(join.getBoundingClientRect().height).toBeGreaterThanOrEqual(44)
   },
 }
 export const LiveDark = dark(Live)

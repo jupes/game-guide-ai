@@ -196,7 +196,7 @@ async function openCanvas(canvasElement: HTMLElement): Promise<ReturnType<typeof
 async function expectComposerOnScreen(canvasElement: HTMLElement): Promise<void> {
   // The thread loads after the shell renders: wait for its newest turn before measuring it.
   await within(canvasElement).findByText('Question number 40 about the harbour')
-  const composer = box(canvasElement, '.chat-pane__composer')
+  const composer = box(canvasElement, '.gm-composer')
   await expect(composer.top).toBeGreaterThanOrEqual(0)
   await expect(composer.bottom).toBeLessThanOrEqual(window.innerHeight + 1)
   const transcript = canvasElement.querySelector('.chat-pane__exchanges')
@@ -388,7 +388,7 @@ export const Medium812x375Chat: Story = {
     await expectViewport('landscape812')
     const canvas = await openCanvas(canvasElement)
     await userEvent.click(canvas.getByRole('button', { name: 'Chat' }))
-    const composer = box(canvasElement, '.chat-pane__composer')
+    const composer = box(canvasElement, '.gm-composer')
     await expect(composer.top).toBeGreaterThanOrEqual(0)
     await expect(composer.bottom).toBeLessThanOrEqual(window.innerHeight + 1)
     await expectNoPageOverflow()
@@ -557,10 +557,14 @@ export const Phone375Library: Story = {
     await expect(panel.left).toBe(0)
     await expect(panel.width).toBe(375)
     await expect(canvasElement.querySelector('main')).toHaveAttribute('inert')
-    await expect(canvas.getByRole('button', { name: 'Back' })).toBeVisible()
+    const back = canvas.getByRole('button', { name: 'Back' })
+    await expect(back).toBeVisible()
+    await expect(region.scrollWidth).toBe(region.clientWidth)
     await expectNoPageOverflow()
-    await expectWorkspaceFits(canvasElement)
     await expectTouchTargets(canvas, ['Back'])
+    await userEvent.click(back)
+    await waitFor(() => expect(canvas.queryByRole('region', { name: 'Campaign Library' })).toBeNull())
+    await expectWorkspaceFits(canvasElement)
   },
 }
 export const Phone375LibraryDark = dark(Phone375Library, 'phone375')
