@@ -80,9 +80,59 @@ def test_every_minted_id_carries_at_least_sixteen_bytes(minted: list[str]) -> No
     """SEC-4's floor is 128 bits. Decoded rather than counted, so a generator
     that padded a short value out to the right length would fail."""
     for identifier in minted:
-        body = identifier.removeprefix(store.CONVERSATION_PREFIX)
-        decoded = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
-        assert len(decoded) >= store.CONVERSATION_ID_BYTES == 16
+        assert len(_decoded_id(identifier)) >= store.CONVERSATION_ID_BYTES == 16
+
+
+def _decoded_id(identifier: str) -> bytes:
+    body = identifier.removeprefix(store.CONVERSATION_PREFIX)
+    return base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+
+
+_BYTE_SAMPLE = 128
+_MIN_DISTINCT_BYTES = 16
+
+
+def _assert_byte_diversity(ids: list[str]) -> None:
+    decoded = [_decoded_id(identifier) for identifier in ids[:_BYTE_SAMPLE]]
+    assert len(decoded) == _BYTE_SAMPLE
+    for offset in range(store.CONVERSATION_ID_BYTES):
+        distinct = len({value[offset] for value in decoded})
+        assert distinct >= _MIN_DISTINCT_BYTES, f"byte {offset} has only {distinct} distinct values"
+
+
+def test_each_minted_byte_varies(minted: list[str]) -> None:
+    """A counter embedded anywhere in the payload can leave entire bytes nearly fixed.
+
+    For one byte, failing means all 128 draws fit in some subset of 15 of 256
+    values. A particular subset has probability (15 / 256)**128. There are
+    C(256, 15) subsets, and a union bound over 16 byte positions gives
+    16 * C(256, 15) * (15 / 256)**128, below 1e-6 per run.
+    """
+    _assert_byte_diversity(minted)
+
+
+def test_minted_byte_diversity_false_failure_bound() -> None:
+    # Evaluate the union bound with integer arithmetic so small probabilities
+    # do not round to zero. 256 and 16 are the byte alphabet and payload width.
+    width = store.CONVERSATION_ID_BYTES
+    subset = _MIN_DISTINCT_BYTES - 1
+    assert width * math.comb(256, subset) * subset**_BYTE_SAMPLE * 10**6 < 256**_BYTE_SAMPLE
+
+
+@pytest.mark.parametrize("layout", ["little-endian", "strided", "random-with-counter-tail"])
+def test_byte_diversity_catches_counter_layouts(layout: str) -> None:
+    random_bytes = random.Random(32)
+    ids = []
+    for i in range(_BYTE_SAMPLE):
+        if layout == "little-endian":
+            payload = i.to_bytes(16, "little")
+        elif layout == "strided":
+            payload = (i << 110).to_bytes(16, "big")
+        else:
+            payload = random_bytes.randbytes(8) + i.to_bytes(8, "big")
+        ids.append(store.CONVERSATION_PREFIX + base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii"))
+    with pytest.raises(AssertionError, match="distinct values"):
+        _assert_byte_diversity(ids)
 
 
 #: The body alphabet `secrets.token_urlsafe` draws from (`ID_SHAPE` above pins
