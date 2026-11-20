@@ -42,6 +42,7 @@ import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
+import config
 from service import asset_jobs, asset_store
 from service import migrations as mig
 from service.asset_jobs import (
@@ -57,6 +58,7 @@ from service.asset_store import (
     DELETE_JOB,
     MISSING,
     SWEEP_JOB,
+    AccountMediaQuotaExceeded,
     AssetRow,
     AssetRowRefused,
     IllegalTransition,
@@ -445,6 +447,24 @@ def test_a_quota_refusal_leaves_nothing_and_the_transaction_goes_on(
     assert set(rows) == set(before[0]) | {elsewhere.id} and kept.id in rows
     assert len(jobs) == len(before[1]) + 1
     assert world.usage(campaign) == (1000, 1)
+
+
+def test_account_quota_is_released_when_an_upload_stops_and_checked_when_it_grows(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX", 1500)
+    first, second = _campaign(world), _campaign(world)
+    held = _create(world, first, size=1000)
+    pending = _create(world, second, size=500)
+    _act(world, second, pending.id, "start_processing")
+    failed = _act(world, second, pending.id, "mark_ready", size=501)
+    assert failed.failure is AssetFailure.QUOTA_EXCEEDED
+    assert world.usage(first) == (1000, 1) and world.usage(second) == (0, 0)
+    _act(world, first, held.id, "start_processing")
+    with pytest.raises(AccountMediaQuotaExceeded):
+        _create(world, second, size=501)
+    assert _act(world, first, held.id, "mark_ready", size=998).state is AssetState.READY
+    assert _create(world, second, size=502).state is AssetState.UPLOADING
 
 
 def test_an_archived_missing_or_foreign_campaign_is_missing(world: World) -> None:
@@ -1808,6 +1828,28 @@ def test_race_two_creates_that_together_pass_the_quota_leave_exactly_one(
     assert isinstance(lost, QuotaExceeded), lost
     assert set(patient.rows()) == {won.id}  # type: ignore[attr-defined]
     assert patient.usage(campaign) == (1000, 1)
+
+
+@needs_db
+@pytest.mark.parametrize(("limit", "cap"), [
+    ("WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX", 1001),
+    ("WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX", 2),
+])
+def test_race_between_campaigns_reserves_the_last_account_space_once(
+    patient: World, monkeypatch: pytest.MonkeyPatch, limit: str, cap: int,
+) -> None:
+    monkeypatch.setattr(config, limit, cap)
+    existing, first_campaign, second_campaign = (_campaign(patient) for _ in range(3))
+    _create(patient, existing, size=1000)
+    first = _Open(patient.db, _create_in(patient, first_campaign, size_bytes=1))
+    second = _Waiter(patient.db, _create_in(patient, second_campaign, size_bytes=1))
+    try:
+        assert patient.dsn and _someone_waits_on_a_lock(patient.dsn), "the other campaign must wait on this account"
+    finally:
+        first.release()
+    assert isinstance(second.outcome(), AccountMediaQuotaExceeded)
+    assert patient.usage(first_campaign) == (1, 1)
+    assert patient.usage(second_campaign) == (0, 0)
 
 
 @needs_db

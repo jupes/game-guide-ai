@@ -444,6 +444,12 @@ WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_CAMPAIGNS_PER_ACCOU
 #: honest campaigns are text-light.
 WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", 268_435_456)
 
+# Across all of one owner's campaigns, including archived campaigns and
+# uploads whose original bytes are still reserved. Defaults allow two full
+# per-campaign media quotas. Each thumbnail and waveform has a separate size bound.
+WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX", 1_000_000_000)
+WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX", 1000)
+
 # --- GM tools (agent-forge-harness-1kg.4.1) -----------------------------------
 
 # The GM tools this deployment runs, as comma-separated registry ids ("npc,loot").

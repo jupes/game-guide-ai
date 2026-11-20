@@ -43,6 +43,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from PIL import Image, ImageCms
 
+import config
 from service import app as appmod
 from service import assets_api
 from service import media_processing as mp
@@ -483,6 +484,25 @@ def test_a_full_quota_is_cap_reached_and_writes_nothing(
     assert refused.status_code == 409
     assert refused.json()["detail"]["code"] == "cap_reached"
     assert world.reserved(campaign) == (1000, 1) and len(world.rows()) == 1
+
+
+@pytest.mark.parametrize("limit", ["WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX", "WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX"])
+def test_an_account_limit_counts_other_campaigns_before_reading_bytes(
+    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch, limit: str,
+) -> None:
+    monkeypatch.setattr(config, limit, 1)
+    first, second = world.campaign(), world.campaign()
+    reserved = _create(client, first, size=1, command="cmd-create-000000001")
+    assert reserved.status_code == 201
+    assert _create(client, first, size=1, command="cmd-create-000000001").json() == reserved.json()
+    refused = _create(client, second, size=1)
+    assert (refused.status_code, refused.json()["detail"]["code"]) == (409, "account_limit_reached")
+    assert world.reserved(second) == (0, 0) and len(world.rows()) == 1
+    assert world.objects.handed == {}, "an account refusal made no write to staging"
+
+    other = world.campaign(GM_B)
+    _as(GM_B)
+    assert _create(client, other, size=1).status_code == 201
 
 
 def test_the_path_campaign_is_authoritative_and_checked_before_the_body(client: TestClient, world: World) -> None:

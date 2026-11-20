@@ -86,7 +86,7 @@ from starlette.types import Scope
 
 from . import campaign_identity as ident
 from . import media_processing as processing
-from .asset_store import AssetRecord, AssetStore, IllegalTransition, Measured, QuotaExceeded
+from .asset_store import AccountMediaQuotaExceeded, AssetRecord, AssetStore, IllegalTransition, Measured, QuotaExceeded
 from .campaign_store import MissingParent
 from .conversations_api import read_body
 from .db import TransactionalDatabase
@@ -124,6 +124,7 @@ UPLOAD_TYPES: tuple[str, ...] = tuple(media for kind in AssetKind for media in M
 UNAVAILABLE_MESSAGE = "Media is briefly unavailable. Try again."
 BUSY_MESSAGE = "Media is busy. Try again shortly."
 QUOTA_MESSAGE = "This campaign has no room for that file."
+ACCOUNT_QUOTA_MESSAGE = "Your account has no room for that file."
 CONFLICT_MESSAGE = "That file can't take bytes now."
 LENGTH_MESSAGE = "Send the file's length."
 TYPE_MESSAGE = "That isn't the type this file was declared as."
@@ -204,6 +205,8 @@ def _guarded[T](work: Callable[[], T]) -> T:
         return work()
     except MissingParent:
         gone = True
+    except AccountMediaQuotaExceeded:
+        failure = _refusal(409, ErrorCode.ACCOUNT_LIMIT_REACHED, ACCOUNT_QUOTA_MESSAGE)
     except QuotaExceeded:
         failure = _refusal(409, ErrorCode.CAP_REACHED, QUOTA_MESSAGE)
     except IllegalTransition:
