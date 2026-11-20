@@ -28,6 +28,7 @@ import { UrlNavigation } from './shell/UrlNavigation'
 import { startScreen } from './shell/routes'
 import { readCampaignRestore } from './shell/workspaceFragment'
 import * as api from './api'
+import { buildWebVitalPoint, transmitMetricPoints } from './metrics/metrics'
 
 function campaignBody(id: string) {
   return {
@@ -55,6 +56,17 @@ function bodyId(body: string | null): string {
 type Reply = { status: number; body?: unknown } | 'network'
 interface Call { url: string; method: string; body: string | null; headers: Headers; signal: AbortSignal | null; reply: (r: Reply) => void }
 type Route = (call: Call) => Reply | 'defer'
+
+function isUiMetricsPost(call: Call): boolean {
+  return call.method === 'POST' && call.url === '/metrics/ui'
+}
+
+// Force the same fetch fallback a background metrics flush can use during a switch.
+function sendUiMetricsDuringSwitch(): Promise<void> {
+  return transmitMetricPoints([buildWebVitalPoint('TTFB', 12, { environment: 'test' })], {
+    navigator: { sendBeacon: () => false },
+  })
+}
 
 /** LeftNavCampaign.test.tsx:50-66, plus the request headers (Critic 48). */
 function stubServer(route: Route) {
@@ -95,6 +107,7 @@ const defaultRoute: Route = ({ method, url, body }) => {
   if (method === 'POST' && url === '/chat') {
     return { status: 200, body: { answer: 'ok', sources: [], answerable: true, conversation_id: bodyId(body) } }
   }
+  if (method === 'POST' && url === '/metrics/ui') return { status: 200 }
   return { status: 404, body: {} }
 }
 
@@ -396,13 +409,15 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     expect(live.raw.conversationId).toBeNull()
 
     const send = server.calls.length
+    await sendUiMetricsDuringSwitch()
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
     // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
     // anywhere after the click, so the requests are found by method and url, never by index.
     const sent = server.calls.slice(send)
-    const createAt = sent.findIndex((c) => c.method === 'POST')
+    expect(sent.some(isUiMetricsPost)).toBe(true)
+    const createAt = sent.findIndex((c) => c.method === 'POST' && !isUiMetricsPost(c))
     const chatAt = sent.findIndex((c) => c.url === '/chat')
     const create = sent[createAt]
     const chat = sent[chatAt]
@@ -427,7 +442,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
       // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
       const isWorkbenchRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session|tool-availability)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead).toBe(true)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead || isUiMetricsPost(call)).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -824,13 +839,15 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     const rel = server.calls.length
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     const send = server.calls.length
+    await sendUiMetricsDuringSwitch()
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
     // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
     // anywhere after the click, so the requests are found by method and url, never by index.
     const sent = server.calls.slice(send)
-    const createAt = sent.findIndex((c) => c.method === 'POST')
+    expect(sent.some(isUiMetricsPost)).toBe(true)
+    const createAt = sent.findIndex((c) => c.method === 'POST' && !isUiMetricsPost(c))
     const chatAt = sent.findIndex((c) => c.url === '/chat')
     const create = sent[createAt]
     const chat = sent[chatAt]
@@ -851,7 +868,7 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
       // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
       const isWorkbenchRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session|tool-availability)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead).toBe(true)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead || isUiMetricsPost(call)).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })
