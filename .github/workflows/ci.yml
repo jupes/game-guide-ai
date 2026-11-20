@@ -43,8 +43,45 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Classify the proposed merge
+        id: scope
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            python3 scripts/ci/pr_job_scope.py >> "$GITHUB_OUTPUT"
+          else
+            echo "scope=full" >> "$GITHUB_OUTPUT"
+          fi
+
+  docs-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      # This check reads the threat model and its cross-references without a Beads connection.
+      - name: Threat model cross-references
+        working-directory: docs/forge/tools/live-session-assistant
+        run: bun threatmodel.ts
+
   python-tests:
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.scope != 'docs' && needs.changes.outputs.scope != 'ui'
     # The job normally takes 10-12 min. A slow apt mirror or runner used to
     # cancel it with no test failing (agent-forge-harness-ky89). The PostgreSQL
     # integration suite used to run here too; it is now the parallel
@@ -127,6 +164,8 @@ jobs:
   # job needs no ffmpeg, so it carries none of the apt caching above.
   python-db-tests:
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.scope != 'docs' && needs.changes.outputs.scope != 'ui'
     timeout-minutes: 20
     # A real PostgreSQL, for the tests whose whole subject is behaviour no fake
     # reproduces: the atomic single-use invite guarantee (row locks), what the
@@ -197,6 +236,8 @@ jobs:
 
   ui-tests:
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.scope != 'docs' && needs.changes.outputs.scope != 'python'
     timeout-minutes: 25
     defaults:
       run:
@@ -204,13 +245,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
-      # The Live Session Assistant threat model's cross-references: every cited
-      # id defined, threats and obligations naming each other, every rule a
-      # control, every Medium residual a risk the owner answers. It reads that
-      # one record; the full checkdocs.ts also wants the Beads tracker.
-      - name: Threat model cross-references
-        working-directory: docs/forge/tools/live-session-assistant
-        run: bun threatmodel.ts
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Install Chromium (storybook browser test project)
@@ -231,13 +265,12 @@ jobs:
   # Browser-level release tracer. This builds and starts the production Nginx
   # UI plus a deterministic FastAPI service, then records TTFB/FCP/LCP/CLS.
   #
-  # No `needs:` (agent-forge-harness-k768): this job downloads no artifact from
-  # python-tests, python-db-tests or ui-tests — it builds and starts its own
-  # stack from the checked-out source — so it can run in parallel with them
-  # instead of waiting on both to finish first. `deploy` below still gates on
-  # every test job's own result, ui-e2e included.
+  # The browser tests build their own stack and run alongside the unit tests
+  # after path classification. Service-only PRs still run them.
   ui-e2e:
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.scope != 'docs'
     timeout-minutes: 30
     defaults:
       run:
@@ -265,6 +298,8 @@ jobs:
   # once EVAL_DATABASE_URL points at a reachable, ingested pgvector instance.
   retrieval-metrics:
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.scope != 'docs' && needs.changes.outputs.scope != 'ui'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -316,6 +351,8 @@ jobs:
   # It is the only job that needs both toolchains, which is why it is its own job.
   contract-parity:
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.scope != 'docs'
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -337,7 +374,7 @@ jobs:
   deploy:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [python-tests, python-db-tests, ui-tests, ui-e2e, contract-parity, retrieval-metrics]
+    needs: [python-tests, python-db-tests, ui-tests, ui-e2e, contract-parity, retrieval-metrics, docs-check]
     # DEPLOY_TARGET gates the JOB, not a step inside it. Previously an
     # unconfigured repo ran the job, printed a "No-op" summary and exited 0 — a
     # green check for deploying nothing, which is exactly how a merge came to be
@@ -361,6 +398,7 @@ jobs:
       && github.event_name != 'pull_request'
       && github.ref == 'refs/heads/master'
       && vars.DEPLOY_TARGET != ''
+      && needs.docs-check.result == 'success'
       && needs.python-tests.result == 'success'
       && needs.python-db-tests.result == 'success'
       && needs.ui-tests.result == 'success'

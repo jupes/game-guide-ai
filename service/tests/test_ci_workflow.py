@@ -211,6 +211,33 @@ def test_ci_runs_e2e_on_pull_requests_and_never_deploys_them():
     assert "github.event_name != 'pull_request'" in deploy_job
 
 
+def test_ci_scope_skips_only_the_expected_pull_request_jobs():
+    jobs = _jobs()
+    scan = jobs["changes"]
+    assert "if: github.event_name == 'pull_request'" in scan
+    assert "fetch-depth: 2" in scan and "persist-credentials: false" in scan
+    assert 'if [ "$GITHUB_EVENT_NAME" = pull_request ]; then' in scan
+    assert 'echo "scope=full" >> "$GITHUB_OUTPUT"' in scan
+    excluded = {
+        "python-tests": {"docs", "ui"},
+        "python-db-tests": {"docs", "ui"},
+        "ui-tests": {"docs", "python"},
+        "ui-e2e": {"docs"},
+        "retrieval-metrics": {"docs", "ui"},
+        "contract-parity": {"docs"},
+    }
+    for name, excluded_scopes in excluded.items():
+        assert re.search(r"^ {4}needs: changes$", jobs[name], re.M), name
+        conditional = re.findall(r"^ {4}if: (.+)$", jobs[name], re.M)
+        assert len(conditional) == 1
+        assert set(conditional[0].split(" && ")) == {
+            f"needs.changes.outputs.scope != '{scope}'" for scope in excluded_scopes
+        }
+    assert not re.search(r"^ {4}if: ", jobs["docs-check"], re.M)
+    assert "bun threatmodel.ts" in jobs["docs-check"]
+    assert "needs.docs-check.result == 'success'" in _deploy_gates()
+
+
 def test_ci_deploys_only_from_master():
     """`workflow_dispatch` takes any ref, so `gh workflow run ci.yml --ref <branch>`
     reaches the deploy job with that branch's SHA. The WIF trust condition

@@ -2,8 +2,8 @@
 
 GitHub Actions, defined in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml),
 runs on pull requests targeting `master`, every push to `master` (the default
-branch is `master`, not `main`), and manual dispatch. Pull requests run every
-quality gate but never deploy.
+branch is `master`, not `main`), and manual dispatch. Pull requests never deploy.
+Master pushes and manual runs execute the full set of checks.
 
 When a newer commit starts CI for a pull request, it cancels that pull
 request's older run. A running `master` push or manual dispatch stays active
@@ -11,12 +11,14 @@ when a newer run queues.
 
 ```text
 pull request / push to master
+   ├─ changes             classifies the proposed merge on a pull request
+   ├─ docs-check          checks threat model cross-references
    ├─ python-tests        ruff · mypy · pytest (service, ingestion, repo guards) ─┐
    ├─ python-db-tests     pytest against a real PostgreSQL service ──────────────┤
    ├─ ui-tests            typecheck · lint · vitest ───────────────────────────┤
    ├─ contract-parity     Pydantic vs Zod, differential fuzz                   │
    ├─ ui-e2e              production Compose + perf budgets                    │
-   │                      (no `needs:` — runs in parallel with the above)      │
+   │                      (runs alongside the other checks)                   │
    └─ retrieval-metrics   eval_golden vs live corpus DB → regression gate      │
           │                    (skips loudly until secrets are configured)     │
           ▼                                                                    ▼
@@ -33,10 +35,17 @@ jobs that start together, because the second needs nothing the first produces
 draw a slow package mirror, and a cache hit skips that download entirely;
 `apt-get` still re-fetches the signed package lists and verifies the cached
 `.deb` against them, so a poisoned cache entry cannot install an unverified
-package. `ui-e2e` carries no `needs:` either: it builds and starts its own
-Compose stack rather than consuming an artifact from any other job, so nothing
-stops it starting immediately. `deploy` is unaffected by either change — it
-still needs every test job's own result, `python-db-tests` included.
+package. `ui-e2e` builds its own Compose stack and runs alongside the unit
+and integration suites once `changes` has reported.
+
+On pull requests, `changes` compares the proposed merge with its base.
+
+- Documentation-only changes run the documentation check.
+- UI-only changes skip the two Python test jobs and the retrieval evaluation.
+- Python-only changes under `service/`, `tests/`, or `ingestion/`, or in
+  `config.py`, skip the UI unit suite. Browser E2E and contract parity still run.
+- Workflow, shared contract, dependency manifest, lockfile, Dockerfile, mixed,
+  and unrecognized changes run every quality gate. An unavailable diff does too.
 
 ## Contract parity
 
