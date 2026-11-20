@@ -15,7 +15,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import * as api from '../api'
 import { CampaignSchema, type Campaign } from '../gm/contracts'
 import { AppNavProvider, useAppNav, type AppNavState, type ChatMode } from './AppNav'
-import { CurrentUserProvider, useCurrentUser, type CurrentUserContextValue } from './currentUser'
+import { CurrentUserContext, CurrentUserProvider, STUB, useCurrentUser, type CurrentUserContextValue } from './currentUser'
 import {
   CampaignProvider, canUseCampaigns, useCampaign, useCampaignDocument, type CampaignContextValue,
   type CampaignDocumentValue, type SeatReadOutcome, type SwitchGuard,
@@ -154,6 +154,30 @@ async function switchAccount(signal: ReturnType<typeof channels>, email: string,
   await signal.receive({ v: 1, kind: 'identity-changed' })
   await waitFor(() => expect([live.user.user.id, live.user.user.role]).toEqual([email, role]))
 }
+
+it('enables campaign actions when the provider first mounts for a signed-in GM', async () => {
+  const server = stubServer()
+  const current: CurrentUserContextValue = {
+    user: { ...STUB, id: ADA, role: 'dm' }, authStatus: 'authenticated',
+    retryAuthCheck: vi.fn(), signIn: vi.fn(), setDisplayName: vi.fn(), setAvatarTone: vi.fn(),
+  }
+  window.history.replaceState(null, '', '/workspace#campaign=cmp_A')
+  render(
+    <AppNavProvider initialScreen="workspace" initialMode="gm">
+      <CurrentUserContext.Provider value={current}>
+        <CampaignProvider fetchImpl={server.fetchImpl} restore={{ campaignId: 'cmp_A', conversationId: null }}>
+          <Probe />
+        </CampaignProvider>
+      </CurrentUserContext.Provider>
+    </AppNavProvider>,
+  )
+  await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+  expect(live.c.enabled).toBe(true)
+  await loaded()
+  expect(server.lines()).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns'])
+  expect(await run(() => live.c.clearCampaign())).toBe('switched')
+  expect(live.c.selection.kind).toBe('none')
+})
 
 beforeEach(() => {
   rendered.length = 0
@@ -656,6 +680,25 @@ describe('identity transitions', () => {
 
 describe('the cross-tab identity signal', () => {
   const MESSAGE = { v: 1, kind: 'identity-changed' }
+
+  it('ignores a signal while the initial authentication check is pending', async () => {
+    const signal = channels()
+    const initial = deferred<api.AuthResult>()
+    const me = vi.spyOn(api, 'getMe').mockReturnValue(initial.promise)
+    render(
+      <AppNavProvider initialScreen="workspace" initialMode="gm">
+        <CurrentUserProvider identityChannelFactory={signal.factory}><Probe /></CurrentUserProvider>
+      </AppNavProvider>,
+    )
+    expect(signal.opened).toHaveLength(1)
+    expect(live.user.authStatus).toBe('checking')
+    await signal.receive(MESSAGE)
+    expect(me).toHaveBeenCalledTimes(1)
+    await act(async () => { initial.resolve({ kind: 'ok', user: { email: ADA, role: 'dm' } }) })
+    expect(live.user.authStatus).toBe('authenticated')
+    await signal.receive(MESSAGE)
+    expect(me).toHaveBeenCalledTimes(2)
+  })
 
   it('posts exactly the bare message after sign-in, a sign-out the server accepted and the first 401 (T1-17)', async () => {
     const { signal } = await mount()
