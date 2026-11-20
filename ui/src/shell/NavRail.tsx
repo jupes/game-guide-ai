@@ -44,6 +44,10 @@ export interface NavRailProps {
   libraryControls?: string
   /** The shell falls back to this button when the control that opened the panel is gone. */
   libraryButtonRef?: React.RefObject<HTMLButtonElement | null>
+  onToggleParticipants?: (opener: HTMLElement) => void
+  participantsExpanded?: boolean
+  participantsControls?: string
+  participantsButtonRef?: React.RefObject<HTMLButtonElement | null>
   /** The shell makes the rail inert behind the drawer and the loss-guard dialog. */
   inert?: boolean
 }
@@ -57,6 +61,10 @@ export function NavRail({
   libraryExpanded = false,
   libraryControls,
   libraryButtonRef,
+  onToggleParticipants,
+  participantsExpanded = false,
+  participantsControls,
+  participantsButtonRef,
   inert,
 }: NavRailProps): React.JSX.Element {
   return (
@@ -88,6 +96,20 @@ export function NavRail({
           <span className="material-symbols-rounded" aria-hidden="true">
             collections_bookmark
           </span>
+        </button>
+      )}
+      {onToggleParticipants !== undefined && (
+        <button
+          ref={participantsButtonRef}
+          type="button"
+          className="nav-rail__button"
+          aria-label="Participants"
+          title="Participants"
+          aria-expanded={participantsExpanded}
+          aria-controls={participantsControls}
+          onClick={(event) => onToggleParticipants(event.currentTarget)}
+        >
+          <span className="material-symbols-rounded" aria-hidden="true">group</span>
         </button>
       )}
     </nav>

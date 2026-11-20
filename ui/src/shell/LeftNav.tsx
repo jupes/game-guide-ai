@@ -21,6 +21,7 @@ import type { Conversation } from './conversationStore'
 import { modesForRole, accentClass } from './modes'
 import { useCampaign } from './campaignContext'
 import { LibraryNavGroup } from './LibraryNavGroup'
+import { PARTICIPANTS_PANEL_ID, useLibraryPanel } from './libraryPanel'
 import { useCanvasMounted, useWorkbenchActive } from './canvasContext'
 import { useCampaignThreads } from './campaignThreads'
 import { PendingButton, useRetrying } from './CampaignPicker'
@@ -61,6 +62,7 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
   // The Campaign Library group is the Workbench's, so it needs a canvas to open into (a bare LeftNav has none).
   const workbenchActive = useWorkbenchActive()
   const canvasMounted = useCanvasMounted()
+  const { participantsOpen, toggleParticipants } = useLibraryPanel()
   const workbench = workbenchActive && canvasMounted
   const campaignGm = mode === 'gm' && selection.kind !== 'none'
   const [renameState, setRenameState] = React.useState<{
@@ -183,6 +185,23 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
 
       {/* 1kg.6.4: a GM's way to the Campaign Library, whose panel holds the lists. */}
       {workbench && <LibraryNavGroup onNavigate={onNavigate} onOpenLibrary={onOpenLibrary} />}
+      {workbench && (
+        <div role="group" aria-label="Campaign settings" className="left-nav__campaign-settings">
+          <Button
+            variant="text"
+            icon="group"
+            aria-expanded={participantsOpen}
+            aria-controls={participantsOpen ? PARTICIPANTS_PANEL_ID : undefined}
+            onClick={(event) => {
+              if (!participantsOpen) onOpenLibrary?.()
+              toggleParticipants(event.currentTarget)
+              onNavigate?.()
+            }}
+          >
+            Participants
+          </Button>
+        </div>
+      )}
 
       {settings}
 

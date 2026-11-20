@@ -65,11 +65,12 @@ import { CampaignLibraryPanel } from './CampaignLibraryPanel'
 import { ChatPane } from './ChatPane'
 import { wrapTab } from './focusTrap'
 import { LeftNav } from './LeftNav'
-import { LIBRARY_PANEL_ID, LibraryPanelProvider, useLibraryPanel } from './libraryPanel'
+import { LIBRARY_PANEL_ID, PARTICIPANTS_PANEL_ID, LibraryPanelProvider, useLibraryPanel } from './libraryPanel'
 import { LossGuardHost } from './LossGuardDialog'
 import { ModelCatalogProvider } from './ModelCatalogContext'
 import { NavRail } from './NavRail'
 import { NavSettings } from './NavSettings'
+import { ParticipantsPanel } from './ParticipantsPanel'
 import { RevealAnnouncer } from './RevealAnnouncer'
 import { RevealProvider, useRevealSheetOpen, useReveals } from './revealContext'
 import { TableSessionProvider } from './tableSession'
@@ -106,14 +107,15 @@ export function WorkspaceShell(): React.JSX.Element {
   // copy held here.
   const mainRef = React.useRef<HTMLElement>(null)
   const railLibraryRef = React.useRef<HTMLButtonElement>(null)
+  const railParticipantsRef = React.useRef<HTMLButtonElement>(null)
   return (
     <ModelCatalogProvider>
       <TableSessionProvider>
         <RevealProvider>
           <CanvasProvider>
             {/* Focus falls back to the rail's Campaign Library button, then <main>, when the control that opened the panel is gone. */}
-            <LibraryPanelProvider fallback={{ rail: railLibraryRef, main: mainRef }}>
-              <WorkspaceShellBody mainRef={mainRef} railLibraryRef={railLibraryRef} />
+            <LibraryPanelProvider fallback={{ rail: railLibraryRef, participantsRail: railParticipantsRef, main: mainRef }}>
+              <WorkspaceShellBody mainRef={mainRef} railLibraryRef={railLibraryRef} railParticipantsRef={railParticipantsRef} />
             </LibraryPanelProvider>
           </CanvasProvider>
         </RevealProvider>
@@ -125,9 +127,10 @@ export function WorkspaceShell(): React.JSX.Element {
 interface WorkspaceShellBodyProps {
   mainRef: React.RefObject<HTMLElement | null>
   railLibraryRef: React.RefObject<HTMLButtonElement | null>
+  railParticipantsRef: React.RefObject<HTMLButtonElement | null>
 }
 
-function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps): React.JSX.Element {
+function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: WorkspaceShellBodyProps): React.JSX.Element {
   const layout = useShellLayout()
   const workbench = useWorkbenchActive()
   const reveals = useReveals()
@@ -135,7 +138,8 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
   const { setView, titleRef, chatRegionRef, setDrawerOpener } = useCanvasActions()
   const library = useLibraryPanel()
   const libraryOpen = library.open
-  const { closeLibrary, toggleLibrary } = library
+  const { participantsOpen, closeLibrary, toggleLibrary, toggleParticipants } = library
+  const panelOpen = libraryOpen || participantsOpen
   const shown = canvasShown(workbench, doc)
   const presentation: NavPresentation = NAV_PRESENTATION[layout][shown ? 'canvas' : 'plain']
   const hasDrawer = presentation !== 'sidebar'
@@ -144,7 +148,8 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
   // The reveal sheet is modal too (1kg.7.3): the chrome and the body go `inert` while it is open for the open document.
   const sheetOpen = useRevealSheetOpen()
   const [railCustomising, setRailCustomising] = React.useState(false)
-  const modal = guardDialog !== null || sheetOpen || railCustomising
+  const [participantsDialogOpen, setParticipantsDialogOpen] = React.useState(false)
+  const modal = guardDialog !== null || sheetOpen || railCustomising || participantsDialogOpen
   const chatVisible = !(single && shown && view === 'canvas')
   const canvasVisible = shown && (!single || view === 'canvas')
 
@@ -335,6 +340,10 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
             libraryExpanded={libraryOpen}
             libraryControls={LIBRARY_PANEL_ID}
             libraryButtonRef={railLibraryRef}
+            onToggleParticipants={workbench ? toggleParticipants : undefined}
+            participantsExpanded={participantsOpen}
+            participantsControls={participantsOpen ? PARTICIPANTS_PANEL_ID : undefined}
+            participantsButtonRef={railParticipantsRef}
             inert={drawerOpen}
           />
         )}
@@ -378,7 +387,7 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
           ref={mainRef}
           className="workspace-shell__main"
           tabIndex={-1}
-          inert={drawerOpen || (layout === 'narrow' && libraryOpen)}
+          inert={drawerOpen || (layout === 'narrow' && panelOpen)}
           data-canvas={shown || undefined}
         >
           <div className="workbench" data-canvas={shown || undefined} data-view={view}>
@@ -388,7 +397,7 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
               ref={chatColumnRef}
               className="workbench__chat"
               data-concealed={!chatVisible || undefined}
-              onPointerDown={libraryOpen ? () => closeLibrary({ returnFocus: false }) : undefined}
+              onPointerDown={panelOpen ? () => closeLibrary({ returnFocus: false }) : undefined}
             >
               {chat}
             </div>
@@ -401,6 +410,9 @@ function WorkspaceShellBody({ mainRef, railLibraryRef }: WorkspaceShellBodyProps
         </main>
 
         {libraryOpen && <CampaignLibraryPanel layout={layout} inert={drawerOpen} />}
+        {participantsOpen && (
+          <ParticipantsPanel layout={layout} inert={drawerOpen} onDialogOpenChange={setParticipantsDialogOpen} />
+        )}
       </div>
 
       {workbench && <WorkbenchAnnouncer />}

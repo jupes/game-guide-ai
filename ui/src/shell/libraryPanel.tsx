@@ -29,9 +29,11 @@ export type { LibraryCategoryId }
 
 export const LIBRARY_PANEL_ID = 'workbench-library-panel'
 export const LIBRARY_HEADING_ID = 'workbench-library-heading'
+export const PARTICIPANTS_PANEL_ID = 'workbench-participants-panel'
 
 export interface LibraryPanelState {
   readonly open: boolean
+  readonly participantsOpen: boolean
   /** The tab shown while open, and the one the next open starts on. */
   readonly category: LibraryCategoryId
 }
@@ -43,20 +45,23 @@ export interface LibraryPanelActions {
   toggleLibrary(opener: HTMLElement | null): void
   closeLibrary(how: { readonly returnFocus: boolean }): void
   setCategory(category: LibraryCategoryId): void
+  toggleParticipants(opener: HTMLElement): void
 }
 
-interface Stored {
-  readonly scopeKey: string
-  readonly category: LibraryCategoryId
-}
+type Stored = { readonly scopeKey: string } & (
+  | { readonly kind: 'library'; readonly category: LibraryCategoryId }
+  | { readonly kind: 'participants' }
+)
 
 const INERT: LibraryPanelState & LibraryPanelActions = {
   open: false,
+  participantsOpen: false,
   category: 'npcs',
   openLibrary: () => {},
   toggleLibrary: () => {},
   closeLibrary: () => {},
   setCategory: () => {},
+  toggleParticipants: () => {},
 }
 
 const LibraryPanelContext = React.createContext<(LibraryPanelState & LibraryPanelActions) | null>(null)
@@ -66,6 +71,7 @@ export interface LibraryPanelProviderProps {
   /** Where focus lands when the opener is gone or hidden: the rail's Campaign Library button, then `<main>`. */
   fallback?: {
     readonly rail: React.RefObject<HTMLElement | null>
+    readonly participantsRail?: React.RefObject<HTMLElement | null>
     readonly main: React.RefObject<HTMLElement | null>
   }
 }
@@ -90,15 +96,17 @@ export function LibraryPanelProvider({ children, fallback }: LibraryPanelProvide
   // A switch, a clear, an identity change, or leaving the GM channel closes the panel in this very render,
   // and nothing reopens it on the way back (I-7).
   if (stored !== null && (!active || stored.scopeKey !== scopeKey)) setStored(null)
-  const open = stored !== null && active && stored.scopeKey === scopeKey
-  const category = stored?.category ?? last
+  const panel = active && stored?.scopeKey === scopeKey ? stored : null
+  const open = panel?.kind === 'library'
+  const participantsOpen = panel?.kind === 'participants'
+  const category = panel?.kind === 'library' ? panel.category : last
 
   const openLibrary = React.useCallback(
     (next: LibraryCategoryId, opener: HTMLElement | null): void => {
       if (!active || scopeKey === null) return
       if (opener !== null) openerRef.current = opener
       setLast(next)
-      setStored({ scopeKey, category: next })
+      setStored({ scopeKey, kind: 'library', category: next })
     },
     [active, scopeKey],
   )
@@ -116,32 +124,43 @@ export function LibraryPanelProvider({ children, fallback }: LibraryPanelProvide
     [open, last, closeLibrary, openLibrary],
   )
 
+  const toggleParticipants = React.useCallback((opener: HTMLElement): void => {
+    if (!active || scopeKey === null) return
+    if (participantsOpen) closeLibrary({ returnFocus: true })
+    else {
+      openerRef.current = opener
+      setStored({ scopeKey, kind: 'participants' })
+    }
+  }, [active, closeLibrary, participantsOpen, scopeKey])
+
   const setCategory = React.useCallback((next: LibraryCategoryId): void => {
     setLast(next)
-    setStored((now) => (now === null ? now : { ...now, category: next }))
+    setStored((now) => (now?.kind === 'library' ? { ...now, category: next } : now))
   }, [])
 
   // Focus returns once the panel has left the DOM, so a control it was covering is reachable again.
-  const wasOpen = React.useRef(false)
+  const previousPanel = React.useRef<Stored['kind'] | null>(null)
+  const kind = panel?.kind ?? null
   const rail = fallback?.rail
+  const participantsRail = fallback?.participantsRail
   const main = fallback?.main
   React.useLayoutEffect(() => {
-    const was = wasOpen.current
-    wasOpen.current = open
-    if (!was || open) return
+    const previous = previousPanel.current
+    previousPanel.current = kind
+    if (previous === null || kind !== null) return
     const wants = returnFocusRef.current
     returnFocusRef.current = false
     if (!wants) return
     const opener = openerRef.current
-    const railButton = rail?.current
+    const railButton = previous === 'participants' ? participantsRail?.current : rail?.current
     if (canTakeFocus(opener)) opener.focus()
     else if (canTakeFocus(railButton)) railButton.focus()
     else main?.current?.focus()
-  }, [open, rail, main])
+  }, [kind, rail, participantsRail, main])
 
   const value = React.useMemo(
-    () => ({ open, category, openLibrary, toggleLibrary, closeLibrary, setCategory }),
-    [open, category, openLibrary, toggleLibrary, closeLibrary, setCategory],
+    () => ({ open, participantsOpen, category, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory }),
+    [open, participantsOpen, category, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory],
   )
   return <LibraryPanelContext.Provider value={value}>{children}</LibraryPanelContext.Provider>
 }

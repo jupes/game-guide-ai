@@ -13,6 +13,8 @@ export interface TextFieldProps {
   placeholder?: string
   variant?: 'filled' | 'outlined'
   type?: string
+  autoComplete?: string
+  maxLength?: number
   /** Material Symbols Rounded ligature name shown at the start of the field. */
   leadingIcon?: string
   trailingIcon?: string
@@ -69,6 +71,8 @@ export function TextField({
   placeholder,
   variant = 'outlined',
   type = 'text',
+  autoComplete,
+  maxLength,
   leadingIcon,
   trailingIcon,
   supportingText,
@@ -185,6 +189,7 @@ export function TextField({
             id={controlId}
             ref={setControlRef}
             rows={rows}
+            maxLength={maxLength}
             value={value}
             onChange={onChange}
             onKeyDown={onKeyDown}
@@ -211,6 +216,8 @@ export function TextField({
             id={controlId}
             ref={setControlRef}
             type={type}
+            autoComplete={autoComplete}
+            maxLength={maxLength}
             value={value}
             onChange={onChange}
             onKeyDown={onKeyDown}

@@ -28,11 +28,16 @@ import {
   CONTRACT_VERSION,
   ConversationCreateRequestSchema,
   ConversationPatchRequestSchema,
+  ErrorBodySchema,
   parseConversation,
   parseConversationPage,
   PlayerSeatPageSchema,
   PlayerSeatSchema,
+  SeatCreateRequestSchema,
+  SeatOfferRequestSchema,
   SeatPageSchema,
+  SeatRemoveRequestSchema,
+  SeatSchema,
   type Campaign,
   type Seat,
   type Conversation,
@@ -390,4 +395,71 @@ export async function listCampaignSeats(campaignId: string, fetchImpl: typeof fe
   if (!res.ok) return { kind: 'failed' }
   const page = SeatPageSchema.safeParse(await bodyOf(res))
   return page.success ? { kind: 'ok', items: page.data.items } : { kind: 'failed' }
+}
+
+export type SeatWriteFailure = {
+  readonly kind: 'invalid' | 'alias_taken' | 'reauth_failed' | 'throttled' | 'unauthorized' | 'unavailable' | 'failed'
+}
+type SeatWriteResult = { readonly kind: 'ok'; readonly response: Response } | SeatWriteFailure
+
+async function writeSeat(
+  fetchImpl: typeof fetch,
+  campaignId: string,
+  target: { id: string; action: 'offer' | 'confirm' | 'remove' } | null,
+  body: unknown,
+): Promise<SeatWriteResult> {
+  if (!isOpaqueId(campaignId) || (target !== null && !isOpaqueId(target.id))) return { kind: 'unavailable' }
+  const base = `/campaigns/${encodeURIComponent(campaignId)}/participants`
+  const path = target === null ? base : `${base}/${encodeURIComponent(target.id)}/${target.action}`
+  const response = await sendJson(fetchImpl, path, 'POST', body)
+  if (response === null) return { kind: 'failed' }
+  if (response.ok) return { kind: 'ok', response }
+  if (response.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (response.status === UNPROCESSABLE) return { kind: 'invalid' }
+  if (response.status === 429) return { kind: 'throttled' }
+  if (response.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (response.status === FORBIDDEN || response.status === 409) {
+    const parsed = ErrorBodySchema.safeParse(await bodyOf(response))
+    const code = parsed.success ? parsed.data.detail.code : null
+    if (code === 'reauth_failed') return { kind: 'reauth_failed' }
+    if (code === 'alias_taken') return { kind: 'alias_taken' }
+    if (response.status === FORBIDDEN) return { kind: 'unavailable' }
+  }
+  return { kind: 'failed' }
+}
+
+async function readWrittenSeat(
+  result: SeatWriteResult,
+  participantId?: string,
+): Promise<{ readonly kind: 'ok'; readonly seat: Seat } | SeatWriteFailure> {
+  if (result.kind !== 'ok') return result
+  const seat = SeatSchema.safeParse(await bodyOf(result.response))
+  return seat.success && (participantId === undefined || seat.data.participant_id === participantId)
+    ? { kind: 'ok', seat: seat.data }
+    : { kind: 'failed' }
+}
+
+export async function createCampaignSeat(campaignId: string, alias: string, fetchImpl: typeof fetch = fetch) {
+  const body = SeatCreateRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, alias })
+  if (!body.success) return { kind: 'invalid' } as const
+  return readWrittenSeat(await writeSeat(fetchImpl, campaignId, null, body.data))
+}
+
+export async function offerCampaignSeat(campaignId: string, id: string, email: string, fetchImpl: typeof fetch = fetch) {
+  const body = SeatOfferRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, email })
+  if (!body.success) return { kind: 'invalid' } as const
+  return writeSeat(fetchImpl, campaignId, { id, action: 'offer' }, body.data)
+}
+
+export async function confirmCampaignSeat(campaignId: string, id: string, fetchImpl: typeof fetch = fetch) {
+  return readWrittenSeat(await writeSeat(fetchImpl, campaignId, { id, action: 'confirm' }, {}), id)
+}
+
+export async function removeCampaignSeat(campaignId: string, id: string, password: string, fetchImpl: typeof fetch = fetch) {
+  const body = SeatRemoveRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, password })
+  if (!body.success) return { kind: 'invalid' } as const
+  return writeSeat(fetchImpl, campaignId, { id, action: 'remove' }, body.data)
 }

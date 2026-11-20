@@ -253,6 +253,33 @@ export async function getCharacterSheetLink(
   return { kind: 'ok', link: link.data }
 }
 
+/** Link an unassigned sheet to a seat, or unlink the sheet selected by the GM. */
+export async function setCharacterSheetLink(
+  campaignId: string,
+  documentId: string,
+  participantId: string | null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LifecycleResult | { kind: 'link_taken' }> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId) || (participantId !== null && !isOpaqueId(participantId))) {
+    return { kind: 'unavailable' }
+  }
+  const suffix = participantId === null ? '/unlink' : `/link/${encodeURIComponent(participantId)}`
+  const res = await send(fetchImpl, documentPath(campaignId, documentId) + suffix, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (res.status === TOO_MANY_REQUESTS) return { kind: 'throttled' }
+  if (res.status === CONFLICT && (await errorCode(res)) === 'link_taken') return { kind: 'link_taken' }
+  return res.ok ? { kind: 'ok' } : { kind: 'failed' }
+}
+
 /** `GET /campaigns/{cid}/documents/{did}/versions?limit=20[&cursor=…]`, newest first. */
 export async function getDocumentHistory(
   campaignId: string,
