@@ -35,8 +35,8 @@ audio cap is `AUDIO_MAX_BYTES` and `AMBIENCE_MAX_MS`, never a one-shot's: an
 upload has no cue kind (AUDIO-26; `1kg.8.5` checks `CUE_MAX_MS`).
 
 **No connection is held while bytes move** (requirement 3.8, SEC-35). The
-request is several short transactions — read the asset; `processing`;
-`ready` or `failed` — each committed before the next byte moves; the
+request is several short transactions. The accepted PUT claims `processing`
+before it can write the temporary key, then ends in `ready` or `failed`. The
 streaming, the copy to the scratch directory and the processed write run in a
 worker thread with no connection open, every store call through `via_store`.
 
@@ -265,6 +265,9 @@ class Upload:
         declared = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if declared != record.declared_media_type:
             raise _refusal(415, ErrorCode.VALIDATION_FAILED, TYPE_MESSAGE, field="content-type")
+        # The tmp key is shared by retries of this intent. Only the request
+        # that wins the database transition may touch it.
+        record = await run_in_threadpool(_guarded, self._transition("start_processing"))
         refused: AssetFailure | None = None
         try:
             await anyio.to_thread.run_sync(self._receive, request, record, length)
@@ -275,15 +278,10 @@ class Upload:
         except ClientDisconnect:
             refused = AssetFailure.UNREADABLE
         except ObjectStoreError:
+            await self._back_to_uploading(record)
             raise _unavailable() from None
         if refused is not None:
             return await self._failed(record, refused)
-        try:
-            await run_in_threadpool(_guarded, self._transition("start_processing"))
-        except HTTPException:
-            # A tombstone or the sweep won while the bytes arrived.
-            await self._delete(record.tmp_key)
-            raise
         if not await processing.GATE.acquire(processing.QUEUE_BOUND_S):
             await self._back_to_uploading(record)
             raise _busy()
@@ -398,17 +396,20 @@ class Upload:
         return answer(failed)
 
     async def _back_to_uploading(self, record: AssetRecord) -> None:
-        try:
-            await run_in_threadpool(_guarded, self._transition("return_to_uploading"))
-        finally:
-            await self._delete(record.tmp_key)
+        # The next request can acquire the key as soon as this transaction
+        # commits. Clean this request's bytes while it still owns the claim.
+        await self._delete(record.tmp_key, record.object_key)
+        await run_in_threadpool(_guarded, self._transition("return_to_uploading"))
 
     async def _ready(self, record: AssetRecord, measured: Measured) -> JSONResponse:
         try:
             finished = await run_in_threadpool(_guarded, self._transition("mark_ready", measured=measured))
-        except HTTPException:
-            # The sweep or a tombstone won: nothing will ever name this object.
-            await self._delete(record.object_key, record.tmp_key)
+        except HTTPException as refused:
+            # If the DB failed to acknowledge the write, leave the original
+            # for a possibly committed ready record or the processing sweep.
+            await self._delete(record.tmp_key)
+            if refused.status_code in (404, 409):
+                await self._delete(record.object_key)
             raise
         await self._delete(record.tmp_key)
         if finished.state is not AssetState.READY:

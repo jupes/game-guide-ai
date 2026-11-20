@@ -30,9 +30,11 @@ import subprocess
 import sys
 import zlib
 from collections.abc import Callable, Iterable, Iterator, MutableMapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from typing import Any, cast
 
 import pytest
@@ -781,6 +783,38 @@ def test_bytes_for_an_asset_that_is_no_longer_uploading_is_409_for_its_owner(cli
     assert first.status_code == 200
     again = _put(client, campaign, asset, image_bytes("PNG"), "image/png")
     assert (again.status_code, again.json()["detail"]["code"]) == (409, "conflict")
+
+
+def test_a_concurrent_retry_cannot_touch_the_winners_temporary_bytes(
+    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = world.campaign()
+    asset = _create(client, campaign).json()["asset_id"]
+    writing = Event()
+    resume = Event()
+    temporary = world.row(asset).tmp_key
+    put = world.objects.put_stream
+
+    def pause(key: str, chunks: Iterable[bytes], *, max_bytes: int) -> int:
+        if key == temporary:
+            assert not writing.is_set(), "only the winning request may reach the temporary key"
+            writing.set()
+            assert resume.wait(8)
+        return put(key, chunks, max_bytes=max_bytes)
+
+    monkeypatch.setattr(world.objects, "put_stream", pause)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        first = worker.submit(_put, client, campaign, asset, image_bytes("PNG", (24, 16)), "image/png")
+        try:
+            assert writing.wait(8)
+            duplicate = _put(client, campaign, asset, image_bytes("PNG", (42, 42)), "image/png")
+            assert duplicate.status_code == 409
+            assert world.row(asset).state == "processing"
+        finally:
+            resume.set()
+        answer = first.result(timeout=15)
+    assert answer.status_code == 200
+    assert (answer.json()["width"], answer.json()["height"]) == (24, 16)
 
 
 def test_a_final_transition_that_loses_deletes_what_processing_wrote(
