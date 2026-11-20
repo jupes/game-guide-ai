@@ -584,6 +584,19 @@ describe('pendingWork — a Try again in flight is a run, not the failure it ret
     expect(lane(then(lost, attemptTwo()))).toMatchObject({ state: 'checking' })
   })
 
+  it('clears checking when a lost run reports a failure and the GM retries it', () => {
+    const failedAfterChecking = run(
+      start(), answer(), { type: 'lost', invocationId: A }, answer(A, failed(RETRYABLE)),
+    )
+    expect(failedAfterChecking.entries.get(A)?.lost).toBe(true)
+    expect(intentFor(failedAfterChecking, A, 'try-again')).toEqual({ type: 'start', request: toolRequest() })
+
+    const next = then(failedAfterChecking, start(A, {}, RETRIED_AT))
+    expect(next.entries.get(A)).toMatchObject({ lost: false, awaiting: true })
+    expect(lane(next)).toMatchObject({ state: 'working', actions: ['cancel'] })
+    expect(overdue(next, RETRIED_AT + LOST_AFTER_MS + 1)).toEqual([A])
+  })
+
   it('can be cancelled, and the cancel holds across the attempt it started until that attempt ends', () => {
     const asked = then(retrying(), { type: 'cancel-requested', invocationId: A })
     expect(asked.entries.get(A)?.cancelling).toBe(true)
