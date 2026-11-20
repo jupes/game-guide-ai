@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
 from _pg import connect, needs_db
+from psycopg import sql
 from test_reveal_db import _campaign, _clear, _command, _document, _parts, _pg_world, _seat, _session, _write
 from test_reveal_db import dsn as dsn
 
@@ -17,6 +18,7 @@ from service import campaign_identity as ident
 from service.db import Database, PoolSettings
 from service.reveal_scope import DocumentCopies, EndReason, TableTarget
 from service.table_reads import TableReads, TableStreamReads, TableStreamWatch
+from service.table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 from service.workbench_contracts import TableRevealSnapshotEvent
 
 
@@ -212,3 +214,83 @@ def test_empty_and_oversized_batches_do_not_acquire_a_connection() -> None:
         TableStreamWatch(campaign, session, 1)
     with pytest.raises(ValueError, match="one principal"):
         replace(watch, grant_id=ident.new_id(ident.TABLE_CREDENTIAL))
+
+
+@needs_db
+def test_every_listener_receives_only_opaque_wakeups_after_commit(dsn: str) -> None:
+    world = _pg_world(dsn, fill=True)
+    campaign = _campaign(world)
+    doc = _document(world, campaign)
+    player = _seat(world, campaign, "accepted", world.players[0])
+    now = datetime.now(UTC)
+    channels = [SESSION_WAKEUP_CHANNEL, CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL]
+
+    with connect(dsn) as first, connect(dsn) as second:
+        listeners = (first, second)
+        for listener in listeners:
+            for channel in channels:
+                listener.execute(sql.SQL("LISTEN {}").format(sql.Identifier(channel)))
+
+        def received(expected):
+            for listener in listeners:
+                got = [(n.channel, n.payload) for n in listener.notifies(timeout=2, stop_after=len(expected))]
+                assert got == expected
+
+        def quiet():
+            for listener in listeners:
+                assert list(listener.notifies(timeout=0.1)) == []
+
+        with world.db.transaction() as unit:
+            session = world.sessions.start(
+                unit, campaign, owner_id=world.owner, expires_at=now + timedelta(hours=2),
+                command_id=_command(), now=now,
+            )
+            quiet()
+        received([(SESSION_WAKEUP_CHANNEL, session.id)])
+
+        params = {
+            "campaign_id": campaign,
+            "session_id": session.id,
+            "document_id": doc,
+            "version": 1,
+            "targets": TableTarget(),
+            "command_id": _command(),
+            "mask": ("name",),
+            "now": now,
+        }
+        with pytest.raises(RuntimeError, match="roll back"):
+            with world.db.transaction() as unit:
+                world.reveals.write(unit, **params)
+                quiet()
+                raise RuntimeError("roll back")
+        quiet()
+        with world.db.transaction() as unit:
+            world.reveals.write(unit, **params)
+        received([(SESSION_WAKEUP_CHANNEL, session.id)])
+        scope = DocumentCopies(doc, EndReason.GM_STOP)
+        assert _clear(world, session.id, scope)
+        received([(SESSION_WAKEUP_CHANNEL, session.id)])
+        assert not _clear(world, session.id, scope)
+        quiet()
+
+        with world.db.transaction() as unit:
+            assert world.participants.confirm(unit, campaign, player)
+        received([(CAMPAIGN_WAKEUP_CHANNEL, campaign)])
+        with world.db.transaction() as unit:
+            assert world.participants.remove(unit, campaign, player)
+        received([(CAMPAIGN_WAKEUP_CHANNEL, campaign)])
+        with world.db.transaction() as unit:
+            screen, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+            assert world.sessions.revoke_screen(unit, campaign, screen.id, owner_id=world.owner)
+        received([(CREDENTIAL_WAKEUP_CHANNEL, screen.id)])
+
+        with world.db.transaction() as unit:
+            screen, secret = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+            assert world.sessions.leave(unit, ident.digest(secret), now=datetime.now(UTC))
+        received([(CREDENTIAL_WAKEUP_CHANNEL, screen.id)])
+        with world.db.transaction() as unit:
+            assert world.sessions.rotate(unit, campaign, session.id, owner_id=world.owner, command_id=_command())
+        received([(SESSION_WAKEUP_CHANNEL, session.id)])
+        with world.db.transaction() as unit:
+            assert world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
+        received([(SESSION_WAKEUP_CHANNEL, session.id)])

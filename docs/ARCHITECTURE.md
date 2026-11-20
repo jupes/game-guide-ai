@@ -683,7 +683,8 @@ per disclosure a move or a replacement took copies from). A **Stop** never
 takes the campaign lock, is never refused for state, always advances the epoch,
 writes one `reveal.stopped` per disclosure it took copies from (or one naming
 its document), and commits before it reads the picture. Neither advances
-`authz_revision`, enqueues a job or notifies. Deadlock victims are retried
+`authz_revision` or enqueues a job. Each slot mutation queues a wakeup carrying
+only its session ID, for delivery after commit. Deadlock victims are retried
 three times, then busy; the races are proved against PostgreSQL in
 `tests/test_reveal_db.py`. The GM's routes are `service/reveals_api.py`
 (below); the table's sanitized projection is `1kg.7.2` PR-2's.
@@ -785,8 +786,11 @@ retries the stream.
 account or screen grant, and current set of entitled slots in one statement
 on the async database pool. It reads only masked values of the approved
 sealed version and uses the same projection builder as the polling snapshot.
-The stream endpoint, PostgreSQL fanout and connection admission are server
-work under the same bead.
+Reveal, Stop, Start, End and Rotate publish the session ID on commit.
+Seat confirmation and removal publish the campaign ID. A screen revoke or
+departure publishes the grant ID. Listeners use these opaque wakeups to
+re-read current state. The HTTP stream, listening task and connection
+admission are server work under the same bead.
 
 ### Who may see what: the decision point and the principals
 

@@ -106,6 +106,7 @@ from .campaign_store import (
 )
 from .db import AdvisoryLock, InMemoryDatabase, InMemoryTransaction, UnitOfWork
 from .reveal_scope import NARROWED, EndReason, EverySlot, SlotScope
+from .table_stream_events import CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 
 #: The three states of `campaign.table_sessions.state`, as 0004's CHECK has them.
 LIVE = "live"
@@ -534,7 +535,9 @@ class PostgresTableSessionStore:
         ).fetchone()
         if row is None:
             self._refuse_start(unit, campaign_id, owner_id, command_id)
-        return _session(row)
+        session = _session(row)
+        unit.notify(SESSION_WAKEUP_CHANNEL, session.id)
+        return session
 
     def _refuse_start(
         self, unit: UnitOfWork, campaign_id: str, owner_id: int, command_id: str
@@ -711,6 +714,7 @@ class PostgresTableSessionStore:
             f"WHERE id = %s RETURNING {_S_COLUMNS}",
             (state, ended_at, held.id),
         ).fetchone()
+        unit.notify(SESSION_WAKEUP_CHANNEL, held.id)
         return Closing(_session(row), state, revoked)
 
     def end(
@@ -763,6 +767,7 @@ class PostgresTableSessionStore:
             f"WHERE id = %s RETURNING {_S_COLUMNS}",
             (command_id, session_id),
         ).fetchone()
+        unit.notify(SESSION_WAKEUP_CHANNEL, session_id)
         return Closing(_session(row), ROTATED, revoked)
 
     def expire(
@@ -894,7 +899,12 @@ class PostgresTableSessionStore:
             "RETURNING g.session_id, g.revoked_at",
             (moment, screen_id, campaign_id, owner_id),
         ).fetchone()
-        return None if row is None else (row[0], row[1] == moment)
+        if row is None:
+            return None
+        changed = row[1] == moment
+        if changed:
+            unit.notify(CREDENTIAL_WAKEUP_CHANNEL, screen_id)
+        return row[0], changed
 
     def leave(self, unit: UnitOfWork, digest: str, *, now: datetime) -> LiveScreen | None:
         moment = aware(now, "a clock")
@@ -905,7 +915,10 @@ class PostgresTableSessionStore:
             f"RETURNING g.id, g.session_id, s.campaign_id, g.link_generation",
             (moment, digest, moment),
         ).fetchone()
-        return None if row is None else LiveScreen(row[0], row[1], row[2], int(row[3]))
+        if row is None:
+            return None
+        unit.notify(CREDENTIAL_WAKEUP_CHANNEL, row[0])
+        return LiveScreen(row[0], row[1], row[2], int(row[3]))
 
     def liveness(self, unit: UnitOfWork, session_ids: Collection[str]) -> dict[str, Liveness]:
         wanted = sorted(set(session_ids))
@@ -987,6 +1000,7 @@ class InMemoryTableSessionStore:
             start_command_id=command_id,
         )
         self._sessions.add(twin, session.id, session)
+        unit.notify(SESSION_WAKEUP_CHANNEL, session.id)
         return session
 
     def get(self, unit: UnitOfWork, session_id: str) -> TableSession | None:
@@ -1112,6 +1126,7 @@ class InMemoryTableSessionStore:
         narrowed = self._advance(unit, held, audio=True, clears=_closing_scope(state), now=moment)
         revoked = self._revoke_every_grant(unit, held.id, moment)
         closed = self._write(unit, replace(narrowed, state=state, ended_at=ended_at))
+        unit.notify(SESSION_WAKEUP_CHANNEL, held.id)
         return Closing(closed, state, revoked)
 
     def end(
@@ -1166,6 +1181,7 @@ class InMemoryTableSessionStore:
                 rotate_command_id=command_id,
             ),
         )
+        unit.notify(SESSION_WAKEUP_CHANNEL, session_id)
         return Closing(rotated, ROTATED, revoked)
 
     def expire(
@@ -1287,8 +1303,11 @@ class InMemoryTableSessionStore:
         if grant.revoked_at is not None:
             # PostgreSQL's COALESCE keeps the first revocation's time, and the
             # caller compares it with its own clock: the same answer here.
-            return grant.session_id, grant.revoked_at == moment
-        self._grants.replace(twin, grant.id, replace(grant, revoked_at=moment))
+            if grant.revoked_at != moment:
+                return grant.session_id, False
+        else:
+            self._grants.replace(twin, grant.id, replace(grant, revoked_at=moment))
+        unit.notify(CREDENTIAL_WAKEUP_CHANNEL, grant.id)
         return grant.session_id, True
 
     def leave(self, unit: UnitOfWork, digest: str, *, now: datetime) -> LiveScreen | None:
@@ -1299,6 +1318,7 @@ class InMemoryTableSessionStore:
             return None
         grant = self._grants.visible(twin)[live.grant_id]
         self._grants.replace(twin, grant.id, replace(grant, revoked_at=moment))
+        unit.notify(CREDENTIAL_WAKEUP_CHANNEL, grant.id)
         return live
 
     def liveness(self, unit: UnitOfWork, session_ids: Collection[str]) -> dict[str, Liveness]:
