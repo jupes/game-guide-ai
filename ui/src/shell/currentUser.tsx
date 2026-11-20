@@ -27,6 +27,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as React from 'react'
+import { clearGoogleOutcome } from './googleOutcome'
 import { revealSignOutNotice } from './revealSignOut'
 import { deriveInitials, type AvatarTone } from '../ds/Avatar'
 import {
@@ -205,6 +206,9 @@ export function CurrentUserProvider(
 
   const transition = useCallback((user: AuthUser | null, status: AuthStatus) => {
     const state = live.current
+    if (state.user !== null && (status === 'unauthenticated' || (user !== null && state.user.email !== user.email))) {
+      clearGoogleOutcome()
+    }
     state.generation += 1
     state.status = status
     state.user = user
@@ -305,6 +309,7 @@ export function CurrentUserProvider(
     // session the user believes they ended.
     const ok = await apiLogout()
     if (!ok) return false
+    clearGoogleOutcome()
     transition(null, 'unauthenticated')
     live.current.broadcast?.post()
     return true

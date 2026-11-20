@@ -7,6 +7,7 @@ import {
   STUB,
 } from './currentUser'
 import * as api from '../api'
+import { getGoogleOutcome, setGoogleOutcome } from './googleOutcome'
 import { revealSignOutNotice } from './revealSignOut'
 
 // ── 02t.6 — useCurrentUser provider guard (matches useTheme's pattern) ─────────
@@ -135,16 +136,18 @@ describe('session check', () => {
   })
 
   it('signOut calls the logout endpoint and reverts to unauthenticated', async () => {
-    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
+    vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
     const logoutSpy = vi.spyOn(api, 'logout').mockResolvedValue(true)
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
-    act(() => result.current.signIn({ email: 'ada@example.com', role: 'dm' }))
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+    setGoogleOutcome({ search: '?google=linked', pathname: '/profile' })
     await act(async () => {
       await result.current.user.signOut()
     })
     expect(logoutSpy).toHaveBeenCalledTimes(1)
     expect(result.current.authStatus).toBe('unauthenticated')
     expect(result.current.user.id).toBe('guest')
+    expect(getGoogleOutcome()).toBeNull()
   })
 
   it('a FAILED logout keeps the user signed in (the cookie is still live)', async () => {

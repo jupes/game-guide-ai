@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { StrictMode, type ReactNode } from 'react'
 import * as api from '../api'
 import { ThemeProvider } from '../ds/theme'
 import { AppNavContext } from './AppNav'
@@ -20,7 +20,7 @@ import { GoogleSignInButton } from './GoogleSignInButton'
 import { Login } from './Login'
 import { Signup } from './Signup'
 import { ProfilePage } from './ProfilePage'
-import { clearGoogleOutcome, setGoogleOutcome } from './googleOutcome'
+import { clearGoogleOutcome, getGoogleOutcome, setGoogleOutcome } from './googleOutcome'
 import { AppRoot } from '../AppRoot'
 
 function userState(): CurrentUserContextValue {
@@ -157,6 +157,19 @@ describe('Login', () => {
     expect(screen.getByRole('alert')).toHaveTextContent("We couldn't sign you in with Google. Please try again.")
     expect(container.querySelector('img')).toBeNull()
   })
+
+  it('keeps a notice readable until leaving the screen and shows it only once', async () => {
+    googleOn(false)
+    setGoogleOutcome({ search: '?google=cancelled', pathname: '/' })
+    const { unmount } = render(<StrictMode>{shell(<Login />)}</StrictMode>)
+    expect(screen.getByRole('alert')).toHaveTextContent('Google sign-in was cancelled.')
+    expect(getGoogleOutcome()).toBeNull()
+    await waitFor(() => expect(api.googleAvailable).toHaveBeenCalled())
+    unmount()
+
+    render(shell(<Login />))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
 })
 
 describe('Signup (invite in hand)', () => {
@@ -290,8 +303,10 @@ describe('ProfilePage', () => {
 
     clearGoogleOutcome()
     setGoogleOutcome({ search: '?google=failed', pathname: '/' })
-    render(shell(<ProfilePage />))
+    const third = render(shell(<ProfilePage />))
     expect(screen.queryByRole('alert')).toBeNull()
+    expect(getGoogleOutcome()?.code).toBe('failed')
+    third.unmount()
   })
 })
 
