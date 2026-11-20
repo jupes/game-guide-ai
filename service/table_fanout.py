@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -54,6 +54,9 @@ def _reconnect() -> TableReconnectEvent:
 
 def _encode(frame: TableEvent) -> bytes:
     return f"event: {frame.event}\ndata: {frame.model_dump_json()}\n\n".encode()
+
+
+RECONNECT_FRAME: Final = _encode(_reconnect())
 
 
 def _picture(snapshot: TableSnapshot) -> tuple[TableSessionEvent, TableRevealSnapshotEvent]:
@@ -142,10 +145,14 @@ class TableFanout:
         self._closed = False
         self.listening = False
 
-    async def stream(self, watch: TableStreamWatch) -> AsyncIterator[bytes]:
+    @property
+    def stream_count(self) -> int:
+        return sum(not viewer.closed for viewer in self._viewers)
+
+    async def stream(self, watch: TableStreamWatch) -> AsyncGenerator[bytes]:
         """Yield one fresh snapshot and subsequent frames for the exact watch."""
         if self._closed or len(self._viewers) >= TABLE_STREAM_BATCH_MAX:
-            yield _encode(_reconnect())
+            yield RECONNECT_FRAME
             return
         loop = asyncio.get_running_loop()
         viewer = _Viewer(watch)
@@ -172,7 +179,7 @@ class TableFanout:
                 if viewer.checked_at is None or loop.time() - viewer.checked_at >= _FRESH_FOR_S:
                     break
                 yield _encode(frame)
-            yield _encode(_reconnect())
+            yield RECONNECT_FRAME
         finally:
             self._viewers.discard(viewer)
             self._dirty.discard(viewer)

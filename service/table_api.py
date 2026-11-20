@@ -84,7 +84,7 @@ from typing import Any, cast
 
 import psycopg
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.types import Message, Receive, Scope, Send
@@ -96,9 +96,11 @@ from . import ratelimit
 from .auth_store import AuthStore
 from .campaign_store import MissingParent, ScreenLimit
 from .session import SessionData
+from .table_admission import TableFull
 from .table_reads import TableReads
 from .table_session_store import LiveScreen
 from .table_sessions import BackendUnavailable, Inactive, TableSessions
+from .table_streams import TableStreams
 from .workbench_api import WorkbenchRoute, cross_site, inactive, mark_write_throttle, origin_check, spend_write
 from .workbench_contracts import (
     CONTRACT_VERSION,
@@ -320,6 +322,8 @@ def build_router(
     clear_session_cookie: Callable[[Response], None],
     lifecycle: Callable[[], TableSessions | None],
     table_reads: Callable[[], TableReads | None],
+    *,
+    table_streams: Callable[[], TableStreams | None] | None = None,
 ) -> APIRouter:
     """The table router, given the application's session check (called
     directly, never declared), its auth store getter, its account-cookie
@@ -466,6 +470,46 @@ def build_router(
             _throttle(request)
             inactive()
         return JSONResponse(found.model_dump(mode="json"))
+
+    if table_streams is not None:
+
+        @router.get("/table/stream")
+        async def stream(
+            request: Request,
+            campaign_id: str | None = None,
+            principal: Principal = Depends(table_principal),
+            streams: TableStreams | None = Depends(table_streams),
+            now: datetime = Depends(get_clock),
+        ) -> StreamingResponse:
+            if campaign_id is None or not ident.is_id(ident.CAMPAIGN, campaign_id):
+                inactive()
+            _spend_read(principal)
+            if streams is None:
+                raise _unavailable()
+            screen, account = principal.screen, principal.account
+            failure: StarletteHTTPException | None = None
+            try:
+                lease = await streams.admission.open(
+                    campaign_id,
+                    account_id=None if account is None else account.user_id,
+                    grant_id=None if screen is None else screen.grant_id,
+                    now=now,
+                )
+            except TableFull:
+                failure = _refusal(
+                    503, ErrorCode.BACKEND_UNAVAILABLE, "This table is full.", retryable=True, retry_after_s=5,
+                )
+            except psycopg.Error as exc:
+                log.warning("table stream admission unavailable (%s)", exc.sqlstate or "none")
+                failure = _unavailable()
+            else:
+                if lease is None:
+                    _throttle(request)
+                    inactive()
+                return StreamingResponse(
+                    streams.bytes(lease), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"},
+                )
+            raise failure
 
     return router
 

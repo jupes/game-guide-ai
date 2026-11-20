@@ -18,6 +18,7 @@ from test_reveal_db import dsn as dsn
 from service import campaign_identity as ident
 from service.db import Database, PoolSettings
 from service.reveal_scope import DocumentCopies, EndReason, TableTarget
+from service.table_admission import LEASE_EXPIRY, TABLE_STREAM_LIMIT, StreamLease, TableAdmission, TableFull
 from service.table_fanout import TableFanout, listen_table_wakeups
 from service.table_reads import TableReads, TableStreamReads, TableStreamWatch
 from service.table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
@@ -359,5 +360,106 @@ def test_two_instances_deliver_reveal_stop_and_end_without_leaking_a_private_fra
             await b.close()
             await db_a.aclose()
             await db_b.aclose()
+
+    asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
+
+
+@needs_db
+def test_distributed_admission_caps_different_tables_even_under_concurrent_requests(dsn: str) -> None:
+    world = _pg_world(dsn)
+    owners = (world.owner, world.other_owner, world.players[0], world.players[1])
+    offers = []
+    for owner in owners:
+        campaign = _campaign(world, owner=owner)
+        session = _session(world, campaign, owner=owner)
+        offers.append((campaign, owner, None))
+        for _ in range(4):
+            with world.db.transaction() as unit:
+                grant, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=owner)
+            offers.append((campaign, None, grant.id))
+
+    async def scenario() -> None:
+        dbs = [Database(dsn, PoolSettings(sync_max=0, async_max=3)) for _ in range(2)]
+        instances = [TableAdmission(db) for db in dbs]
+        try:
+            now = datetime.now(UTC)
+            replies = await asyncio.gather(*[
+                instances[i % 2].open(campaign, account_id=account, grant_id=grant, now=now)
+                for i, (campaign, account, grant) in enumerate(offers)
+            ], return_exceptions=True)
+            assert sum(isinstance(reply, StreamLease) for reply in replies) == TABLE_STREAM_LIMIT == 16
+            assert sum(isinstance(reply, TableFull) for reply in replies) == len(offers) - TABLE_STREAM_LIMIT
+            with connect(dsn) as conn:
+                assert conn.execute("SELECT count(*) FROM campaign.table_stream_connections").fetchone() == (16,)
+            accepted = next(i for i, reply in enumerate(replies) if isinstance(reply, StreamLease))
+            lease = replies[accepted]
+            assert isinstance(lease, StreamLease)
+            await instances[1 - accepted % 2].release(lease)
+            denied = next(i for i, reply in enumerate(replies) if isinstance(reply, TableFull))
+            campaign, account, grant = offers[denied]
+            with pytest.raises(TableFull):
+                await instances[denied % 2].open(campaign, account_id=account, grant_id=grant, now=now)
+            await instances[accepted % 2].release(lease)
+            assert await instances[denied % 2].open(campaign, account_id=account, grant_id=grant, now=now) is not None
+        finally:
+            for db in dbs:
+                await db.aclose()
+
+    asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
+
+
+@needs_db
+def test_admission_rechecks_identity_and_enforces_principal_session_and_lease_limits(dsn: str) -> None:
+    world = _pg_world(dsn, fill=True)
+    campaign = _campaign(world)
+    foreign = _campaign(world, owner=world.other_owner)
+    session = _session(world, campaign)
+    _session(world, foreign, owner=world.other_owner)
+    _seat(world, campaign, "accepted", world.players[0])
+    _seat(world, campaign, "offered", world.players[1])
+    screens = []
+    for _ in range(4):
+        with world.db.transaction() as unit:
+            grant, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+            screens.append(grant.id)
+
+    async def scenario() -> None:
+        db = Database(dsn, PoolSettings(sync_max=0, async_max=2))
+        admission = TableAdmission(db)
+        now = datetime.now(UTC)
+
+        async def admit(*, account=None, grant=None, at=now):
+            return await admission.open(campaign, account_id=account, grant_id=grant, now=at)
+
+        try:
+            assert await admit(account=world.players[1]) is None
+            assert await admit(account=world.other_owner) is None
+            assert await admission.open(foreign, account_id=None, grant_id=screens[0], now=now) is None
+            owner = await admit(account=world.owner)
+            assert owner is not None and owner.watch.session_id == session.id
+            accepted = await admit(account=world.players[0])
+            assert accepted is not None
+            for _ in range(2):
+                assert await admit(account=world.players[0]) is not None
+            with pytest.raises(TableFull):
+                await admit(account=world.players[0])
+            for screen_id in (*screens, screens[0], screens[0], screens[1], screens[1]):
+                assert await admit(grant=screen_id) is not None
+            with pytest.raises(TableFull):
+                await admit(grant=screens[2])
+            assert await admission.renew(owner, now=now + timedelta(seconds=15))
+            fresh = now + LEASE_EXPIRY
+            assert not await admission.renew(accepted, now=fresh)
+            new = await admit(grant=screens[3], at=fresh)
+            assert new is not None and new.id != accepted.id
+            await admission.release(accepted)
+            assert await admission.renew(new, now=fresh)
+            assert await admission.renew(owner, now=fresh)
+            assert await admit(account=world.owner, at=session.expires_at) is None
+            with world.db.transaction() as unit:
+                assert world.sessions.revoke_screen(unit, campaign, screens[3], owner_id=world.owner)
+            assert await admit(grant=screens[3], at=fresh) is None
+        finally:
+            await db.aclose()
 
     asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)

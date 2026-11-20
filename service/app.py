@@ -134,6 +134,7 @@ from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .table_reads import TableReads
 from .table_sessions import TableSessions
+from .table_streams import TableStreams, build_table_streams
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
 from .usage_ledger import UsageDayReader
 from .workbench_api import gm_session, install_workbench, reauth_failed
@@ -408,6 +409,8 @@ def _build_stores(db: Database) -> None:
     # The table's read side (1kg.7.2 PR-2): the one module through which a table
     # route reaches stored text (T-23), over the same rows.
     _state["table_reads"] = TableReads(db, reveal_rows, PostgresDocumentStore())
+    if config.TABLE_STREAMS_ENABLED:
+        _state["table_streams"] = build_table_streams(db)
     runner.register(EXPIRE_KIND, table_sessions.expire_handler())
     runner.register(
         DIVIDER_KIND, SessionDividers(db, sessions=sessions, store=PostgresSessionDividerStore()).handler()
@@ -500,10 +503,15 @@ async def lifespan(app: FastAPI):
     # checked, so nothing may write to it. `recover_database` looks again later.
     if _state["migrations"] != "unavailable":
         _build_stores(db)
-    yield
-    _state.clear()
-    await db.aclose()
-    del app.state.metrics_sink
+    try:
+        yield
+    finally:
+        streams = _state.get("table_streams")
+        if streams is not None:
+            await streams.close()
+        _state.clear()
+        await db.aclose()
+        del app.state.metrics_sink
 
 
 # /docs, /redoc and /openapi.json exist only for a local run that asks for them
@@ -1096,7 +1104,7 @@ def _authorize_conversation(
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, str | bool]:
+def healthz() -> dict[str, object]:
     # `migrations` (1kg.1.5) is a field of its own: `status` and `ready` are what
     # both Compose health checks assert, and neither changes meaning. It says
     # `current`, `ahead` (an older build on a newer schema, mid-rollout),
@@ -1104,11 +1112,15 @@ def healthz() -> dict[str, str | bool]:
     # database came back with a schema this build refuses) or `unchecked` (a
     # process that never ran the startup path, like the E2E stub) — and never a
     # version.
-    return {
+    status: dict[str, object] = {
         "status": "ok",
         "ready": "rag" in _state,
         "migrations": str(_state.get("migrations", "unchecked")),
     }
+    streams = _state.get("table_streams")
+    if streams is not None:
+        status["realtime"] = streams.health()
+    return status
 
 
 @app.get("/models")
@@ -1895,6 +1907,12 @@ def get_table_reads() -> TableReads | None:
     return _state.get("table_reads")
 
 
+def get_table_streams() -> TableStreams | None:
+    if "table_streams" not in _state:
+        recover_database()
+    return _state.get("table_streams")
+
+
 def start_gate(caller: SessionData) -> None:
     """The one check point for starting a live table (1kg.2.3, L-19; owner
     decision D-3: running a live table is Paid, joining one is Free).
@@ -2016,7 +2034,8 @@ app.include_router(
 app.include_router(table_session_api.build_router(WORKBENCH_GM, get_table_sessions, _job_driver, start_gate))
 app.include_router(
     table_api.build_router(
-        require_session, get_auth_store, _clear_session_cookie, get_table_sessions, get_table_reads
+        require_session, get_auth_store, _clear_session_cookie, get_table_sessions, get_table_reads,
+        table_streams=get_table_streams if config.TABLE_STREAMS_ENABLED else None,
     )
 )
 app.include_router(reveals_api.build_router(WORKBENCH_GM, get_reveals))

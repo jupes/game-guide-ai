@@ -793,8 +793,13 @@ re-read current state. Each active `TableFanout` owns one dedicated
 PostgreSQL listener and also batches authorized reads every two seconds.
 It sends only changed slots, with a bounded queue. Missing state, lost
 access, and a queue that could otherwise delay a Stop all end that stream.
-Heartbeats require a recent successful read. The HTTP route and distributed
-connection admission remain under this bead.
+Heartbeats require a recent successful read. Admission uses one of 16 shared
+PostgreSQL permits. Each session allows 12 streams and each account or screen
+allows three. A 15-second renewal keeps an open stream's permit live for up to
+45 seconds. The HTTP route and listener default to off. Local testing can set
+`WORKBENCH_TABLE_STREAMS_ENABLED=1`. Production activation depends on fitting
+the async pool and dedicated listener in the overlapping-revision connection
+budget.
 
 ### Who may see what: the decision point and the principals
 

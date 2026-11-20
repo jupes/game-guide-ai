@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import psycopg
 import pytest
 
-from service import table_fanout
+from service import table_fanout, table_streams
+from service.table_admission import StreamLease
 from service.table_fanout import TableFanout, _Viewer
 from service.table_reads import TableStreamWatch, _frames
+from service.table_streams import TableStreams
 from service.workbench_contracts import TableSlot, TableSlotName
 
 WATCH = TableStreamWatch("cmp_test", "ses_test", 1, account_id=1)
@@ -96,5 +99,43 @@ def test_planned_reconnect_and_shutdown_do_not_leave_workers_running() -> None:
         await fanout.close()
         received = [frame async for frame in fanout.stream(WATCH)]
         assert len(received) == 1 and received[0].startswith(b"event: reconnect")
+
+    asyncio.run(scenario())
+
+
+def test_the_http_stream_releases_its_lease_if_renewal_fails_or_client_leaves(monkeypatch) -> None:
+    monkeypatch.setattr(table_streams, "LEASE_HEARTBEAT_S", 0)
+    lease = StreamLease(uuid4(), WATCH)
+
+    class Admission:
+        available = True
+        released = 0
+
+        async def renew(self, seen, *, now):
+            assert seen == lease
+            if not self.available:
+                raise psycopg.OperationalError("synthetic renewal failure")
+            return True
+
+        async def release(self, seen):
+            assert seen == lease
+            self.released += 1
+
+    class Fanout:
+        async def stream(self, watch):
+            assert watch == lease.watch
+            while True:
+                yield b": heartbeat\n\n"
+
+    async def scenario():
+        admission = Admission()
+        streams = TableStreams(admission, Fanout())
+        connection = streams.bytes(lease)
+        assert await anext(connection) == b": heartbeat\n\n"
+        await connection.aclose()
+        assert admission.released == 1
+        admission.available = False
+        assert [frame async for frame in streams.bytes(lease)] == [table_fanout.RECONNECT_FRAME]
+        assert admission.released == 2
 
     asyncio.run(scenario())

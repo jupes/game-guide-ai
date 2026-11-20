@@ -421,6 +421,7 @@ REVEAL_STOP_RATE_LIMIT_WINDOW_S: float = _float("REVEAL_STOP_RATE_LIMIT_WINDOW_S
 # polls every few seconds stays far below it. Per instance, like the others.
 TABLE_READ_RATE_LIMIT_PER_PRINCIPAL: int = _int("TABLE_READ_RATE_LIMIT_PER_PRINCIPAL", 120)
 TABLE_READ_RATE_LIMIT_WINDOW_S: float = _float("TABLE_READ_RATE_LIMIT_WINDOW_S", 60.0)
+TABLE_STREAMS_ENABLED: bool = _bool("WORKBENCH_TABLE_STREAMS_ENABLED", False)
 
 # --- Per-account storage caps (agent-forge-harness-531x, PR-B) --------------
 # The write throttle above bounds RATE; these bound STORAGE itself, so a
