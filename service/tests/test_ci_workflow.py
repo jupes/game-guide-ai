@@ -188,6 +188,14 @@ def _deploy_gates() -> list[str]:
     return gates
 
 
+def test_only_pull_requests_cancel_an_older_running_workflow():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    concurrency = workflow.split("\nconcurrency:\n", 1)[1].split("\njobs:", 1)[0]
+    settings = dict(re.findall(r"^ {2}([\w-]+):\s*(.+?)\s*(?:#.*)?$", concurrency, flags=re.M))
+    assert settings["group"] == "ci-${{ github.ref }}"
+    assert settings["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+
+
 def test_ci_runs_e2e_on_pull_requests_and_never_deploys_them():
     workflow = WORKFLOW.read_text(encoding="utf-8")
 

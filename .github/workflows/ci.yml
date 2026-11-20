@@ -39,7 +39,8 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: false # never cancel a run that may be mid-deploy
+  # Keep a running push or manual deploy alive when another run is queued.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   python-tests:
