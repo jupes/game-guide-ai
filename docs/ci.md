@@ -190,3 +190,20 @@ PYTHONUTF8=1 uv run --with "psycopg[binary]" --with openai \
 uv run python scripts/ci/eval_gate.py \
     --baseline <committed> --fresh ingestion/eval_results.json
 ```
+
+### Mobile table with two services
+
+Set `DATABASE_URL` to a local PostgreSQL 17 URI for a role that can create a
+temporary database. Install the UI dependencies and Playwright Chromium,
+then run from the repository root.
+
+```bash
+(cd ui && bun run build)
+uv run --frozen --extra dev python tests/run_table_stream_browser.py
+```
+
+The profile creates a temporary database, starts two loopback FastAPI
+services, and opens player and shared-screen Chromium contexts at 320 and
+390 pixels. It checks reconnect, slot visibility, GM Stop and End through
+the real API. The runner stops both services and drops only its temporary
+database. Playwright writes failure traces to `ui/e2e-results/table-stream`.
