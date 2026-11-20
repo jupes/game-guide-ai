@@ -825,6 +825,14 @@ check, keeps archived documents, and treats unreadable classes as GM-only.
 Connection failures raise `PolicyUnavailable` with a fixed message. The API
 guard maps driver errors to a retryable 503.
 
+`service/principals.py` resolves standing from a server-authenticated account
+or an already-resolved screen grant. Each call reads one PostgreSQL snapshot
+in a short transaction. It re-reads the grant, session, seat, and campaign
+revisions so a committed End, Rotate, or Remove takes effect on the next
+call. The GM query checks ownership before the decision point verifies the
+same owner again. A connection failure anywhere in the transaction raises
+`PolicyUnavailable`.
+
 `decide_table` follows the threat model's 15.2: a live screen grant decides
 alone (`SCREEN`, or `inactive` for another campaign's); then no account is
 401; then one live, unexpired session; then the owner (`OWNER_VIEWER`, a table
