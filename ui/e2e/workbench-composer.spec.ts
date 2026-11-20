@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { CAMPAIGN_ID, DOCUMENT, DOCUMENT_ID, DOCUMENT_TITLE, HISTORY, installWorkbenchRoutes } from './workbenchStubs'
-import { DocumentHistoryPageSchema, DocumentVersionSchema, TOOL_IDS, type AssetRef, type FieldPatchRequest, type ToolInvocationRequest } from '../src/gm/contracts'
+import { DocumentHistoryPageSchema, DocumentVersionSchema, TOOL_IDS, type AssetRef, type FieldPatchRequest, type TableSession, type ToolInvocationRequest } from '../src/gm/contracts'
 import { cardResult, documentResult, toolInvocation } from '../src/gm/laneFixtures'
 
 const THREAD = 'cnv_e2eWorkbenchThread00000001'
@@ -30,6 +30,44 @@ async function prepWorkbench(page: Page): Promise<void> {
   await page.route('**/metrics/ui', (route) => route.fulfill({ status: 204 }))
   await page.route((url) => url.pathname === `/conversations/${THREAD}`, (route) => route.fulfill({ json: thread }))
 }
+
+test('a GM can start and end the live table from the phone workspace', async ({ page }) => {
+  await prepWorkbench(page)
+  const id = 'ses_e2ePhoneTableSession00001'
+  let table: TableSession | null = null
+  const actions: string[] = []
+  await page.route((url) => url.pathname === `/conversations/${THREAD}/timeline`, (route) => route.fulfill({ json: {
+    schema_version: 1, conversation_id: THREAD, next_cursor: null, items: [],
+  } }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/tool-availability`,
+    (route) => route.fulfill({ json: Object.fromEntries(TOOL_IDS.map((toolId) => [toolId, null])) }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/table-session`, (route) => {
+    if (route.request().method() === 'POST') {
+      const request = route.request().postDataJSON()
+      actions.push(request.action)
+      if (request.action === 'start') {
+        table = {
+          schema_version: 1, state: 'live', session_id: id, campaign_id: CAMPAIGN_ID,
+          gen: 1, audio_epoch: 0, reveal_epoch: 0, audio: false, screens: [],
+          started_at: new Date().toISOString(), ends_at: new Date(Date.now() + 3600_000).toISOString(), ended_at: null,
+        }
+      } else {
+        expect(request).toMatchObject({ action: 'end', session_id: id })
+        if (table === null) throw new Error('Only a started session can be ended')
+        table = { ...table, state: 'ended', ended_at: new Date().toISOString(), reveal_epoch: 1 }
+      }
+    }
+    return route.fulfill({ json: { schema_version: 1, session: table } })
+  })
+  await page.goto(WORKSPACE)
+  const controls = page.getByRole('group', { name: 'Table session', exact: true })
+  await controls.getByRole('button', { name: 'Start session' }).click()
+  await expect(controls.getByText('Live', { exact: true })).toBeVisible()
+  await controls.getByRole('button', { name: 'End session' }).click()
+  await expect(controls.getByRole('button', { name: 'Start session' })).toBeVisible()
+  expect(actions).toEqual(['start', 'end'])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
 
 test('a phone keeps the GM draft, runs from Send, and restores the result after reload', async ({ page }) => {
   await prepWorkbench(page)

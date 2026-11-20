@@ -296,3 +296,6 @@
     transition: none;
   }
 }
+.workspace-shell__session {
+  padding: var(--aether-space-2) var(--aether-space-4);
+}
