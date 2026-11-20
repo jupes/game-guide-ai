@@ -54,3 +54,20 @@
   inline-size: 100%;
   min-inline-size: 0;
 }
+
+.participants-panel__seats h4 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.participants-panel__members {
+  padding: 0;
+  list-style: none;
+}
+
+.participants-panel__members li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+}

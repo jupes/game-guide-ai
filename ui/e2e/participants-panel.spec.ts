@@ -1,12 +1,13 @@
 import { expect, test } from './fixtures'
 import { CAMPAIGN_ID, installWorkbenchRoutes } from './workbenchStubs'
-import { SeatSchema, type Seat, type SeatStatus } from '../src/gm/contracts'
+import { SeatSchema, type Group, type Seat, type SeatStatus } from '../src/gm/contracts'
 
 const CAMPAIGN = `/campaigns/${CAMPAIGN_ID}`
 const SEATS = `${CAMPAIGN}/participants`
 const SHEET = 'doc_e2eCharacterSheet00000001'
 const PERSON = 'prt_e2eParticipants000000001'
 const CREATED = 'prt_e2eParticipants000000002'
+const GROUP = 'grp_e2eParticipants000000001'
 const NOW = '2026-09-16T19:20:11Z'
 
 function seat(id: string, alias: string, status: SeatStatus, address: string | null = null): Seat {
@@ -30,6 +31,8 @@ test('on a phone a GM can recover an offer, confirm a participant, manage a char
   let link: string | null = null
   let failRead = true
   let offers = 0
+  let group: Group | null = null
+  const createGroupKeys: string[] = []
   const writes: string[] = []
   await page.route((url) => url.pathname.startsWith(SEATS), (route) => {
     const path = new URL(route.request().url()).pathname
@@ -85,6 +88,30 @@ test('on a phone a GM can recover an offer, confirm a participant, manage a char
     }
     writes.push(path)
     link = path.endsWith('/unlink') ? null : PERSON
+    return route.fulfill({ status: 204 })
+  })
+  const groups = `${CAMPAIGN}/groups`
+  await page.route((url) => url.pathname.startsWith(groups), (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === 'GET') {
+      return route.fulfill({ json: { schema_version: 1, items: group === null ? [] : [group], next_cursor: null } })
+    }
+    if (path === groups) {
+      const body = request.postDataJSON()
+      createGroupKeys.push(body.command_id)
+      if (group !== null) return route.fulfill({ status: 201, json: group })
+      group = { schema_version: 1, group_id: GROUP, name: body.name, member_ids: [], created_at: NOW, updated_at: NOW }
+      return route.fulfill({ status: 503, json: {} })
+    }
+    if (group === null) return route.fulfill({ status: 404, json: {} })
+    if (request.method() === 'PATCH') {
+      group = { ...group, name: request.postDataJSON().name }
+      return route.fulfill({ json: group })
+    }
+    if (path.endsWith(`/members/${CREATED}`)) group = { ...group, member_ids: [CREATED] }
+    else if (path.endsWith(`/members/${CREATED}/remove`)) group = { ...group, member_ids: [] }
+    else if (path.endsWith(`/${GROUP}/remove`)) group = null
     return route.fulfill({ status: 204 })
   })
 
@@ -147,6 +174,36 @@ test('on a phone a GM can recover an offer, confirm a participant, manage a char
   await expect(panel.getByRole('heading', { name: 'Ada Marsh' })).toBeHidden()
   await expect(heading).toBeFocused()
   await expect(panel.getByRole('heading', { name: 'Bren' })).toBeVisible()
+  await panel.getByRole('button', { name: 'Groups', exact: true }).click()
+  await panel.getByRole('button', { name: 'New group' }).click()
+  const createGroup = page.getByRole('dialog', { name: 'New group' })
+  const name = createGroup.getByRole('textbox', { name: 'Group name' })
+  await expect(name).toBeFocused()
+  await name.fill('Scouts')
+  await name.press('Enter')
+  await expect(createGroup.getByRole('alert')).toContainText('Try again')
+  await createGroup.getByRole('button', { name: 'Save group' }).click()
+  await expect(panel.getByRole('heading', { name: 'Scouts' })).toHaveCount(1)
+  expect(createGroupKeys).toHaveLength(2)
+  expect(createGroupKeys[1]).toBe(createGroupKeys[0])
+
+  await panel.getByRole('button', { name: 'Rename group Scouts' }).click()
+  const renameGroup = page.getByRole('dialog', { name: 'Rename Scouts' })
+  await renameGroup.getByRole('textbox', { name: 'Group name' }).fill('Pathfinders')
+  await renameGroup.getByRole('button', { name: 'Save group' }).click()
+  await panel.getByRole('button', { name: 'Add member to Pathfinders' }).click()
+  const addMember = page.getByRole('dialog', { name: 'Add a member to Pathfinders' })
+  await addMember.getByRole('combobox', { name: 'Participant' }).selectOption({ label: 'Bren' })
+  await addMember.getByRole('button', { name: 'Add member' }).click()
+  await expect(panel.getByRole('list', { name: 'Members of Pathfinders' })).toContainText('Bren (unconfirmed)')
+  await panel.getByRole('button', { name: 'Remove Bren from Pathfinders' }).click()
+  const removeMember = page.getByRole('dialog', { name: 'Remove Bren from Pathfinders' })
+  await expect(removeMember.getByRole('button', { name: 'Cancel' })).toBeFocused()
+  await removeMember.getByRole('button', { name: 'Remove', exact: true }).click()
+  await expect(panel.getByText('No members yet.')).toBeVisible()
+  await panel.getByRole('button', { name: 'Remove group Pathfinders' }).click()
+  await page.getByRole('dialog', { name: 'Remove Pathfinders' }).getByRole('button', { name: 'Remove', exact: true }).click()
+  await expect(panel.getByText('No groups yet.')).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await panel.getByRole('button', { name: 'Back' }).click()
   await expect(panel).toBeHidden()

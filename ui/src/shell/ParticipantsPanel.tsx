@@ -8,6 +8,7 @@ import type { Seat, SeatStatus } from '../gm/contracts'
 import { PARTICIPANTS_PANEL_ID, useLibraryPanel } from './libraryPanel'
 import { ParticipantSeatDialog, type SeatAction, type SeatChange } from './ParticipantSeatDialog'
 import { CharacterSheetLinks } from './CharacterSheetLinks'
+import { GroupsPanel } from './GroupsPanel'
 import { useReveals } from './revealContext'
 import type { ShellLayout } from './breakpoints'
 import './CampaignLibraryPanel.css'
@@ -60,6 +61,7 @@ function ParticipantsPanelBody({
   const [revision, reload] = React.useReducer((count: number) => count + 1, 0)
   const [selected, setSelected] = React.useState<SeatAction | null>(null)
   const [showSheets, setShowSheets] = React.useState(false)
+  const [showGroups, setShowGroups] = React.useState(false)
   const [announcement, setAnnouncement] = React.useState('')
   const lifetime = React.useRef<AbortController | null>(null)
 
@@ -204,6 +206,13 @@ function ParticipantsPanelBody({
               Character sheets
             </Button>
             {showSheets && <CharacterSheetLinks campaignId={campaignId} seats={seats} fetchImpl={fetchForPanel} />}
+            <Button variant="outlined" aria-expanded={showGroups} onClick={() => setShowGroups((open) => !open)}>
+              Groups
+            </Button>
+            {showGroups && (
+              <GroupsPanel campaignId={campaignId} seats={seats} fetchImpl={fetchForPanel}
+                onDialogOpenChange={onDialogOpenChange} />
+            )}
           </>
         )}
         <p role="status" className="library-panel__sr-only">{announcement}</p>
