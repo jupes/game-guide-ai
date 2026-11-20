@@ -390,6 +390,12 @@ class ParticipantStore(Protocol):
         not an error."""
         ...  # pragma: no cover - structural type
 
+    def rename(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, alias: str
+    ) -> tuple[Participant, bool] | None:
+        """Return the active seat and whether its label changed, or None. May raise AliasTaken."""
+        ...  # pragma: no cover - structural type
+
     def offer(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int
     ) -> Participant:
@@ -581,6 +587,32 @@ class PostgresParticipantStore:
             (now_or(now), participant_id, campaign_id),
         ).fetchone()
         return changed is not None
+
+    def rename(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, alias: str
+    ) -> tuple[Participant, bool] | None:
+        named = check_alias(alias)
+        seat = self.hold(unit, participant_id, campaign_id=campaign_id)
+        if seat is None or not seat.is_active:
+            return None
+        if seat.alias == named:
+            return seat, False
+        conn = pg(unit).conn
+        row = None
+        try:
+            # Keep a conflicting index write inside a savepoint and withhold
+            # the driver's constraint detail, which can contain the name.
+            with conn.transaction():
+                row = conn.execute(
+                    f"UPDATE campaign.participants SET alias = %s, alias_key = %s "
+                    f"WHERE id = %s AND campaign_id = %s AND removed_at IS NULL RETURNING {_P_COLUMNS}",
+                    (named, alias_key(named), participant_id, campaign_id),
+                ).fetchone()
+        except psycopg.errors.UniqueViolation:
+            pass
+        if row is None:
+            raise AliasTaken("that campaign already has an active participant with this alias")
+        return _participant(row), True
 
     def offer(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int
@@ -827,6 +859,25 @@ class InMemoryParticipantStore:
             fake(unit), participant_id, replace(found, removed_at=now_or(now))
         )
         return True
+
+    def rename(
+        self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, alias: str
+    ) -> tuple[Participant, bool] | None:
+        named = check_alias(alias)
+        seat = self.hold(unit, participant_id, campaign_id=campaign_id)
+        if seat is None or not seat.is_active:
+            return None
+        if seat.alias == named:
+            return seat, False
+        key = alias_key(named)
+        if any(
+            p.id != participant_id and alias_key(p.alias) == key
+            for p in self.list_for_campaign(unit, campaign_id)
+        ):
+            raise AliasTaken("that campaign already has an active participant with this alias")
+        updated = replace(seat, alias=named)
+        self._participants.replace(fake(unit), participant_id, updated)
+        return updated, True
 
     def offer(
         self, unit: UnitOfWork, campaign_id: str, participant_id: str, *, user_id: int

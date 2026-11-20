@@ -39,6 +39,16 @@ test('on a phone a GM can recover an offer, confirm a participant, manage a char
     }
     writes.push(path)
     const body = route.request().postDataJSON()
+    if (route.request().method() === 'PATCH') {
+      if (seats.some((item) => item.participant_id !== PERSON && item.alias === body.alias)) {
+        return route.fulfill({
+          status: 409, json: { detail: { code: 'alias_taken', message: 'Display name already in use.', retryable: false } },
+        })
+      }
+      const updated = { ...seats[0], alias: body.alias }
+      seats = [updated, ...seats.slice(1)]
+      return route.fulfill({ json: updated })
+    }
     if (path === SEATS) {
       const newSeat = seat(CREATED, body.alias, 'open')
       seats = [...seats, newSeat]
@@ -112,11 +122,21 @@ test('on a phone a GM can recover an offer, confirm a participant, manage a char
   await panel.getByRole('combobox', { name: 'Link to participant', exact: true }).selectOption({ label: 'Ada' })
   await panel.getByRole('button', { name: 'Link sheet', exact: true }).click()
   await expect(panel.getByText('Linked to Ada.')).toBeVisible()
+  await panel.getByRole('button', { name: 'Rename Ada' }).click()
+  const rename = page.getByRole('dialog', { name: 'Rename Ada' })
+  const displayName = rename.getByRole('textbox', { name: 'Display name' })
+  await expect(displayName).toHaveValue('Ada')
+  await displayName.fill('Bren')
+  await rename.getByRole('button', { name: 'Save name' }).click()
+  await expect(rename.getByRole('alert')).toContainText('already uses that display name')
+  await displayName.fill('Ada Marsh')
+  await rename.getByRole('button', { name: 'Save name' }).click()
+  await expect(panel.getByText('Linked to Ada Marsh.')).toBeVisible()
   await panel.getByRole('button', { name: 'Unlink sheet' }).click()
   await expect(panel.getByText('Character sheet unlinked.')).toBeVisible()
 
-  await panel.getByRole('button', { name: 'Remove Ada' }).click()
-  const remove = page.getByRole('dialog', { name: 'Remove Ada' })
+  await panel.getByRole('button', { name: 'Remove Ada Marsh' }).click()
+  const remove = page.getByRole('dialog', { name: 'Remove Ada Marsh' })
   const password = remove.getByLabel('Your password')
   await password.fill('wrong-test-password')
   await remove.getByRole('button', { name: 'Remove seat' }).click()
@@ -124,7 +144,7 @@ test('on a phone a GM can recover an offer, confirm a participant, manage a char
   await expect(password).toHaveValue('')
   await password.fill('test-only-password')
   await remove.getByRole('button', { name: 'Remove seat' }).click()
-  await expect(panel.getByRole('heading', { name: 'Ada' })).toBeHidden()
+  await expect(panel.getByRole('heading', { name: 'Ada Marsh' })).toBeHidden()
   await expect(heading).toBeFocused()
   await expect(panel.getByRole('heading', { name: 'Bren' })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)

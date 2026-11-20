@@ -405,13 +405,14 @@ type SeatWriteResult = { readonly kind: 'ok'; readonly response: Response } | Se
 async function writeSeat(
   fetchImpl: typeof fetch,
   campaignId: string,
-  target: { id: string; action: 'offer' | 'confirm' | 'remove' } | null,
+  target: { id: string; action: 'offer' | 'confirm' | 'remove' | 'rename' } | null,
   body: unknown,
 ): Promise<SeatWriteResult> {
   if (!isOpaqueId(campaignId) || (target !== null && !isOpaqueId(target.id))) return { kind: 'unavailable' }
   const base = `/campaigns/${encodeURIComponent(campaignId)}/participants`
-  const path = target === null ? base : `${base}/${encodeURIComponent(target.id)}/${target.action}`
-  const response = await sendJson(fetchImpl, path, 'POST', body)
+  const seatPath = target === null ? base : `${base}/${encodeURIComponent(target.id)}`
+  const path = target === null || target.action === 'rename' ? seatPath : `${seatPath}/${target.action}`
+  const response = await sendJson(fetchImpl, path, target?.action === 'rename' ? 'PATCH' : 'POST', body)
   if (response === null) return { kind: 'failed' }
   if (response.ok) return { kind: 'ok', response }
   if (response.status === UNAUTHORIZED) {
@@ -452,6 +453,12 @@ export async function offerCampaignSeat(campaignId: string, id: string, email: s
   const body = SeatOfferRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, email })
   if (!body.success) return { kind: 'invalid' } as const
   return writeSeat(fetchImpl, campaignId, { id, action: 'offer' }, body.data)
+}
+
+export async function renameCampaignSeat(campaignId: string, id: string, alias: string, fetchImpl: typeof fetch = fetch) {
+  const body = SeatCreateRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, alias })
+  if (!body.success) return { kind: 'invalid' } as const
+  return readWrittenSeat(await writeSeat(fetchImpl, campaignId, { id, action: 'rename' }, body.data), id)
 }
 
 export async function confirmCampaignSeat(campaignId: string, id: string, fetchImpl: typeof fetch = fetch) {

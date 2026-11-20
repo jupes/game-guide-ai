@@ -1011,6 +1011,7 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/campaigns/{campaign_id}"), ("PATCH", "/campaigns/{campaign_id}"),
     ("POST", "/campaigns/{campaign_id}/conclude"), ("POST", "/campaigns/{campaign_id}/reopen"),
     ("GET", "/campaigns/{campaign_id}/participants"), ("POST", "/campaigns/{campaign_id}/participants"),
+    ("PATCH", "/campaigns/{campaign_id}/participants/{participant_id}"),
     ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/offer"),
     ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/confirm"),
     ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/remove"),

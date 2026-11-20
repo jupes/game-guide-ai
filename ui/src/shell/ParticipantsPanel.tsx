@@ -122,9 +122,9 @@ function ParticipantsPanelBody({
         setSeats((current) => current?.filter((seat) => seat.participant_id !== change.removedId) ?? null)
         void refreshReveals()
       }
-      const confirmed = change.confirmed
-      if (confirmed !== undefined) {
-        setSeats((current) => current?.map((seat) => seat.participant_id === confirmed.participant_id ? confirmed : seat) ?? null)
+      const updated = change.updated
+      if (updated !== undefined) {
+        setSeats((current) => current?.map((seat) => seat.participant_id === updated.participant_id ? updated : seat) ?? null)
         void refreshReveals()
       }
     }
@@ -191,6 +191,8 @@ function ParticipantsPanelBody({
                         <Button variant="text" aria-label={`Confirm ${seat.alias}`}
                           onClick={(event) => open({ kind: 'confirm', seat }, event.currentTarget)}>Confirm</Button>
                       )}
+                      <Button variant="text" aria-label={`Rename ${seat.alias}`}
+                        onClick={(event) => open({ kind: 'rename', seat }, event.currentTarget)}>Rename</Button>
                       <Button variant="text" aria-label={`Remove ${seat.alias}`}
                         onClick={(event) => open({ kind: 'remove', seat }, event.currentTarget)}>Remove</Button>
                     </div>

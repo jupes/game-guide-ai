@@ -13,17 +13,18 @@ import {
   createCampaignSeat,
   offerCampaignSeat,
   removeCampaignSeat,
+  renameCampaignSeat,
   type SeatWriteFailure,
 } from './campaignApi'
 import { LibraryDialog } from './LibraryDialog'
 
 export type SeatAction =
   | { kind: 'add' }
-  | { kind: 'offer' | 'confirm' | 'remove'; seat: Seat }
+  | { kind: 'offer' | 'confirm' | 'remove' | 'rename'; seat: Seat }
 
 export interface SeatChange {
   message: string
-  confirmed?: Seat
+  updated?: Seat
   removedId?: string
 }
 
@@ -46,7 +47,7 @@ export function ParticipantSeatDialog({
   returnFocus: () => void
   onClose: (change?: SeatChange) => void
 }): React.JSX.Element {
-  const [alias, setAlias] = React.useState('')
+  const [alias, setAlias] = React.useState(() => action.kind === 'rename' ? action.seat.alias : '')
   const [address, setAddress] = React.useState('')
   const [password, setPassword] = React.useState('')
   const [made, setMade] = React.useState<Seat | null>(null)
@@ -57,12 +58,13 @@ export function ParticipantSeatDialog({
   const isOffer = action.kind === 'add' || action.kind === 'offer'
   const heading = action.kind === 'add' ? 'Offer a seat'
     : action.kind === 'offer' ? `Offer a seat for ${action.seat.alias}`
-      : action.kind === 'confirm' ? `Confirm ${action.seat.alias}` : `Remove ${action.seat.alias}`
+      : action.kind === 'confirm' ? `Confirm ${action.seat.alias}`
+        : action.kind === 'rename' ? `Rename ${action.seat.alias}` : `Remove ${action.seat.alias}`
   const description = action.kind === 'confirm'
     ? 'Confirm that you know who accepted this seat. They can then receive private views you share with them.'
     : action.kind === 'remove'
       ? 'Removing this seat withdraws the offer or removes table access and stops any private view for this player. Their character sheet stays in the campaign.'
-      : 'The player can see this offer when they sign in with this email address.'
+      : isOffer ? 'The player can see this offer when they sign in with this email address.' : undefined
 
   function showFailure(result: SeatWriteFailure): void {
     setError(WRITE_ERRORS[result.kind])
@@ -109,7 +111,12 @@ export function ParticipantSeatDialog({
     try {
       if (action.kind === 'confirm') {
         const result = await confirmCampaignSeat(campaignId, action.seat.participant_id, fetchImpl)
-        if (result.kind === 'ok') onClose({ message: 'Participant confirmed.', confirmed: result.seat })
+        if (result.kind === 'ok') onClose({ message: 'Participant confirmed.', updated: result.seat })
+        else showFailure(result)
+      } else if (action.kind === 'rename') {
+        const result = await renameCampaignSeat(campaignId, action.seat.participant_id, alias.trim(), fetchImpl)
+        if (result.kind === 'ok') onClose({ message: 'Display name updated.', updated: result.seat })
+        else if (result.kind === 'invalid') setError('Enter a display name of 1 to 40 characters.')
         else showFailure(result)
       } else if (action.kind === 'remove') {
         if (password.length === 0) {
@@ -139,13 +146,13 @@ export function ParticipantSeatDialog({
       fieldRef={field}
       cancelLabel="Cancel"
       confirmLabel={busy ? 'Saving…' : action.kind === 'remove' ? 'Remove seat'
-        : action.kind === 'confirm' ? 'Confirm seat' : 'Send offer'}
+        : action.kind === 'confirm' ? 'Confirm seat' : action.kind === 'rename' ? 'Save name' : 'Send offer'}
       error={error}
       returnFocus={returnFocus}
       onConfirm={() => void submit()}
       onCancel={() => onClose()}
     >
-      {action.kind === 'add' && (
+      {(action.kind === 'add' || action.kind === 'rename') && (
         <TextField
           label="Display name"
           ref={field}
