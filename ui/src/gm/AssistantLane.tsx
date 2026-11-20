@@ -56,6 +56,7 @@ import {
 } from './laneState'
 import type { ArmedSuggestion, LaneActionId, LaneTimer, LaneView } from './laneState'
 import type { ToolAvailability } from './registry'
+import { assetPath } from './documentFields'
 import './AssistantLane.css'
 
 export interface AssistantLaneProps {
@@ -77,6 +78,7 @@ export interface AssistantLaneProps {
   availability?: Readonly<Partial<Record<ToolId, ToolAvailability>>>
   /** RAIL-8: the timeline entry a suggestion cites as its source. */
   sourceEntryId?: string | null
+  campaignId?: string
   /** The lane's kicker. @default 'Aetheril · Assistant' */
   author?: string
   /** Material Symbols Rounded ligature, decorative. @default 'castle' */
@@ -135,9 +137,11 @@ function useStillWorking(waitingFor: string | null, timer: LaneTimer): boolean {
 function ResultBody({
   result,
   onOpenDocument,
+  campaignId,
 }: {
   result: ToolResult
   onOpenDocument: (link: DocumentLink) => void
+  campaignId?: string
 }): React.JSX.Element {
   switch (result.result_kind) {
     case 'card':
@@ -147,10 +151,23 @@ function ResultBody({
         ? <p className="assistant-lane__placeholder">{LANE_COPY.newerVersion}</p>
         : <AssistantDocumentLink link={result.document} onOpen={onOpenDocument} />
     case 'media':
-      // RAIL-24, X-8: a kind this bead does not own is neutral and never a
-      // guess at another card. The media card and its audio cue are 1kg.8.4's.
-      return <p className="assistant-lane__placeholder">{LANE_COPY.unsupportedResult}</p>
+      return campaignId === undefined
+        ? <p className="assistant-lane__placeholder">{LANE_COPY.unsupportedResult}</p>
+        : <MediaPreview src={assetPath(campaignId, result.asset.asset_id)} alt={result.asset.alt} />
   }
+}
+
+function MediaPreview({ src, alt }: { src: string; alt: string }): React.JSX.Element {
+  const [open, setOpen] = React.useState(false)
+  const [unavailable, setUnavailable] = React.useState(false)
+  return (
+    <details className="assistant-lane__media" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>{open ? 'Collapse image' : 'Expand image'}</summary>
+      {open && (unavailable
+        ? <p className="assistant-lane__placeholder">This image is unavailable.</p>
+        : <img src={src} alt={alt} onError={() => setUnavailable(true)} />)}
+    </details>
+  )
 }
 
 export function AssistantLane({
@@ -159,6 +176,7 @@ export function AssistantLane({
   lost = false,
   availability,
   sourceEntryId = null,
+  campaignId,
   author = LANE_COPY.author,
   icon = 'castle',
   onOpenDocument,
@@ -290,7 +308,7 @@ export function AssistantLane({
       {view.state === 'done' && (
         <div className="assistant-lane__body">
           {view.result.prose.trim() !== '' && <AssistantText source={view.result.prose} />}
-          <ResultBody result={view.result} onOpenDocument={onOpenDocument} />
+          <ResultBody result={view.result} onOpenDocument={onOpenDocument} campaignId={campaignId} />
         </div>
       )}
 

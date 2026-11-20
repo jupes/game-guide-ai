@@ -288,7 +288,7 @@ export function normaliseLane(invocation: ToolInvocation | null, options: LaneOp
     case 'working': {
       // RAIL-21: a working entry the client has lost track of is `unknown`. It
       // is checked on, never re-run, so it cannot bill twice.
-      if (options.hydrated === true || options.lost === true) {
+      if (!invocation.cancel_requested && (options.hydrated === true || options.lost === true)) {
         return {
           state: 'checking',
           tool,

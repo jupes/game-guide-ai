@@ -172,6 +172,8 @@ PROTECTED_ROUTES: list[Route] = [
     # the table principal too, so it is listed for the same reason.
     ("GET", "/table/snapshot", "/table/snapshot?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
     # 1kg.4.1 slice B: the GM's tool invocations.
+    ("GET", "/campaigns/{campaign_id}/tool-availability",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-availability", None),
     ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
      {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",
       "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa", "conversation_id": "cnv_aaaaaaaaaaaaaaaaaaaaaa"}),

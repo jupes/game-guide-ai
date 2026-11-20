@@ -62,7 +62,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final, NoReturn, Protocol
 
 import openai
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 import config
 
@@ -85,6 +85,7 @@ from .workbench_contracts import (
     ErrorCode,
     ErrorInfo,
     MediaResult,
+    OpaqueId,
     ToolId,
     ToolInvocation,
     ToolInvocationRequest,
@@ -271,7 +272,7 @@ class Admission:
 class Replay:
     """T1 started nothing: the stored invocation answers the repeat."""
 
-    invocation: ToolInvocation
+    invocation: InvocationAnswer
 
 
 type Clock = Callable[[], datetime]
@@ -467,7 +468,7 @@ class Refused(Exception):
 class _ReplayInstead(Exception):
     """A write found the key taken: roll T1 back and answer the stored row."""
 
-    def __init__(self, invocation: ToolInvocation) -> None:
+    def __init__(self, invocation: InvocationAnswer) -> None:
         super().__init__("replay")
         self.invocation = invocation
 
@@ -505,14 +506,21 @@ def _utc(moment: datetime) -> datetime:
     return moment.astimezone(UTC)
 
 
-def to_wire(row: InvocationRow) -> ToolInvocation:
+class InvocationAnswer(ToolInvocation):
+    """The public wire body plus its durable timeline identity for the routes."""
+
+    entry_id: OpaqueId = Field(exclude=True)
+
+
+def to_wire(row: InvocationRow) -> InvocationAnswer:
     """The ONE builder of an invocation's answer, which the routes and the
     timeline entry both use, so a status read and the entry cannot disagree."""
     if row.schema_version != CONTRACT_VERSION:
         raise Unreadable()
     try:
-        return ToolInvocation.model_validate({
+        return InvocationAnswer.model_validate({
             "schema_version": CONTRACT_VERSION, "invocation_id": row.invocation_id, "tool_id": row.tool_id,
+            "entry_id": row.entry_id,
             "status": row.status, "attempt": row.attempt, "cancel_requested": row.cancel_requested,
             "created_at": _utc(row.created_at), "updated_at": _utc(row.updated_at),
             "result": row.result, "error": row.error,
@@ -887,7 +895,7 @@ def _finished(
 def complete(
     db: TransactionalDatabase, stores: InvocationStores, executor: ToolExecutor, admission: Admission,
     outcome: Outcome, ctx: ExecutionContext, *, now: datetime,
-) -> ToolInvocation:
+) -> InvocationAnswer:
     """T2. The fence first (I-14, C-6): an outcome lands only on a row that is
     still `working`, still on this attempt, and before its deadline — a done, a
     failed and a cancelled outcome alike. After a failed fence the answer is the
@@ -925,7 +933,7 @@ def complete(
 def read(
     db: TransactionalDatabase, stores: InvocationStores, owner_id: int, campaign_id: str, invocation_id: str, *,
     now: datetime,
-) -> ToolInvocation:
+) -> InvocationAnswer:
     """The GET: the caller's invocation, lazily expired, or the one 404."""
     with db.transaction() as unit:
         row = stores.invocations.get_for_update(unit, owner_id, campaign_id, invocation_id)
@@ -937,7 +945,7 @@ def read(
 def cancel(
     db: TransactionalDatabase, stores: InvocationStores, owner_id: int, campaign_id: str, invocation_id: str, *,
     now: datetime,
-) -> ToolInvocation:
+) -> InvocationAnswer:
     """I-15: a flag, never refused for state. On `working` it asks the attempt
     to stop; on `done` it means "finished before it could be cancelled", so a
     cancel and a completion end the same in either order. On `failed` or

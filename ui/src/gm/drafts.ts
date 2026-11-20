@@ -16,11 +16,27 @@
  */
 
 import * as React from 'react'
+import type { ToolId } from './contracts'
+import { parseDraft } from './slash'
+
+interface DraftSource {
+  toolId: ToolId
+  entryId: string
+}
+
+interface SavedDraft {
+  text: string
+  revision: number
+  source: DraftSource | null
+}
 
 export interface DraftStore {
   /** This conversation's draft. `''` until something is typed. */
   draft: string
-  setDraft: (next: string) => void
+  source: DraftSource | null
+  setDraft: (next: string, source?: DraftSource | null) => void
+  /** Put back a rejected submission only if the GM has left this draft alone. */
+  restoreDraft: (rejected: string, target?: string) => void
   /** Drop one conversation's draft — after a submit, or when it is deleted. */
   clearDraft: () => void
 }
@@ -29,11 +45,21 @@ export function useConversationDrafts(conversationId: string | null): DraftStore
   // A Map rather than a plain object: `null` (a conversation with no id yet) is a
   // key of its own with no sentinel string to collide with, and an id such as
   // `__proto__` or `constructor` is just another key.
-  const [drafts, setDrafts] = React.useState<ReadonlyMap<string | null, string>>(() => new Map())
+  const [drafts, setDrafts] = React.useState<ReadonlyMap<string | null, SavedDraft>>(() => new Map())
+  const saved = drafts.get(conversationId)
+  const revision = saved?.revision ?? 0
+  const source = saved?.source ?? null
 
   const setDraft = React.useCallback(
-    (next: string) => {
-      setDrafts((prev) => (prev.get(conversationId) === next ? prev : new Map(prev).set(conversationId, next)))
+    (next: string, linked?: DraftSource | null) => {
+      setDrafts((prev) => {
+        const old = prev.get(conversationId)
+        const parsed = old?.source ? parseDraft(next) : null
+        const kept = parsed?.kind === 'command' && parsed.tool.id === old?.source?.toolId ? old.source : null
+        const nextSource = linked === undefined ? kept : linked
+        if ((old?.text ?? '') === next && (old?.source ?? null) === nextSource) return prev
+        return new Map(prev).set(conversationId, { text: next, revision: (old?.revision ?? 0) + 1, source: nextSource })
+      })
     },
     [conversationId],
   )
@@ -47,5 +73,13 @@ export function useConversationDrafts(conversationId: string | null): DraftStore
     })
   }, [conversationId])
 
-  return { draft: drafts.get(conversationId) ?? '', setDraft, clearDraft }
+  const restoreDraft = React.useCallback((rejected: string, target = conversationId) => {
+    setDrafts((prev) => {
+      const old = prev.get(target)
+      if (target === conversationId ? old?.revision !== revision + 1 || old.text !== '' : old !== undefined) return prev
+      return new Map(prev).set(target, { text: rejected, revision: (old?.revision ?? 0) + 1, source })
+    })
+  }, [conversationId, revision, source])
+
+  return { draft: saved?.text ?? '', source, setDraft, restoreDraft, clearDraft }
 }

@@ -228,6 +228,7 @@ class CampaignStore {
   private guards: SwitchGuard[] = []
   private documentListeners = new Set<(documentId: string) => void>()
   private nav: Nav = NO_NAV
+  private parkedThread: { scope: string; id: string } | null = null
   private restore: CampaignRestore | null
   private readonly fetchImpl: typeof fetch | undefined
   private readonly win: Window
@@ -318,6 +319,7 @@ class CampaignStore {
    * while the campaign does (`restoring(X) -> selected(X)`), unless the patch names one. */
   private select(patch: SelectionPatch): number {
     this.selectionSeq += 1
+    if (patch.scope?.key !== this.snap.scope?.key) this.parkedThread = null
     const { documentKey: named, ...rest } = patch
     const sameCampaign = campaignIdOf(patch.selection) === campaignIdOf(this.snap.selection)
     const documentKey = named !== undefined ? named : sameCampaign ? this.snap.documentKey : null
@@ -345,15 +347,30 @@ class CampaignStore {
   // ── Wiring from the provider ──
 
   syncNav(nav: Nav): void {
+    const { mode: previousMode, conversationId: previousId } = this.nav
+    const { scope, threads, pendingThread } = this.snap
     this.nav = nav
     this.threadStore.opened(nav.conversationId)
-    if (nav.mode !== 'gm') this.dropCampaignConversation()
+    if (nav.mode !== 'gm') {
+      if (previousMode === 'gm' && scope !== null && previousId !== null && threads.includes(previousId)) {
+        this.parkedThread = { scope: scope.key, id: previousId }
+      }
+      this.dropCampaignConversation()
+    } else if (previousMode !== 'gm') {
+      const parked = this.parkedThread
+      this.parkedThread = null
+      const explicitThread = nav.conversationId !== null && threads.includes(nav.conversationId)
+      if (parked !== null && parked.scope === scope?.key && pendingThread === null && !explicitThread) {
+        nav.setConversationId(parked.id)
+      }
+    }
   }
 
   setIdentity(account: string, enabled: boolean, settled: boolean): void {
     const firstSettle = settled && !this.settled
     if (firstSettle) this.settled = true
     if (account !== this.snap.account) {
+      this.parkedThread = null
       this.epoch += 1
       this.selectionSeq += 1
       this.listSeq += 1

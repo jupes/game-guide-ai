@@ -271,6 +271,24 @@ def status_of(client: TestClient, table: Table, invocation_id: str = INV) -> Res
     return client.get(path(table.campaign, invocation_id))
 
 
+def test_availability_uses_the_owners_campaign_and_actual_executors(client: TestClient, world: World) -> None:
+    table, foreign = world.table(), world.table(owner=GM_B)
+    _as(GM_A)
+    path_for = f"/campaigns/{table.campaign}/tool-availability"
+    ready = client.get(path_for)
+    assert ready.status_code == 200
+    assert ready.headers["cache-control"] == "no-store"
+    tools = ready.json()
+    assert set(tools) == {tool.value for tool in ToolId}
+    assert tools["npc"] is None
+    assert isinstance(tools["monster"], str)
+    world.executors.pop(ToolId.NPC)
+    assert isinstance(client.get(path_for).json()["npc"], str)
+    assert client.get(f"/campaigns/{foreign.campaign}/tool-availability").json() == NOT_FOUND
+    world.archive(table)
+    assert client.get(path_for).json() == NOT_FOUND
+
+
 def cancel_of(client: TestClient, table: Table, invocation_id: str = INV) -> Response:
     return client.post(path(table.campaign, invocation_id, "/cancel"))
 
@@ -650,7 +668,10 @@ def test_c1_the_first_post_is_done_with_one_row_one_attempt_and_one_entry_that_a
     [entry] = world.entries(table)
     assert entry["entry_kind"] == "tool" and entry["brief"] == "A dwarf smith"
     assert entry["invocation"] == answer
-    assert status_of(client, table).json() == answer
+    assert response.headers["x-workbench-entry-id"] == entry["entry_id"]
+    checked = status_of(client, table)
+    assert checked.json() == answer
+    assert checked.headers["x-workbench-entry-id"] == entry["entry_id"]
     [attempt] = world.attempts(table)
     assert attempt.outcome == "done" and attempt.operation_id == world.executors[ToolId.NPC].runs[0].operation_id
 

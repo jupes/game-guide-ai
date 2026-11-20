@@ -757,11 +757,11 @@ def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) 
     # 1kg.2.2's ten, bead cfx's conclude and reopen, 1kg.5.2's ten
     # document paths nested under a campaign, 1kg.2.3's two table-session
     # paths (agent-forge-harness-1kg.2.10), whose answers carry no secret either,
-    # 1kg.4.1's three tool-invocation paths nested under a campaign, btb's
+    # the three invocation paths and tool availability nested under a campaign, btb's
     # five group paths (their answers name seats by id, never an account), and
     # q156's three character-sheet link paths (also nested under a campaign), and
     # 1kg.7.2's two reveal paths (a picture, Confirm and Stop carry no field text).
-    assert len(family) == 37
+    assert len(family) == 38
     schemas = document["components"]["schemas"]
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
                 "PlayerSeatPage"}

@@ -1,4 +1,4 @@
-"""The GM's tool invocations (bead 1kg.4.1, slice B): three Workbench routes on
+"""The GM's tool invocations and availability: Workbench routes on
 a `workbench_router` (`agent-forge-harness-oe6`), wired into `service/app.py`
 with one line and importing nothing from it. The rules are
 `service/tool_invocations.py`'s; this module reads the request, asks, and
@@ -6,6 +6,7 @@ answers.
 
 | Route | Answers |
 | --- | --- |
+| `GET /campaigns/{campaign_id}/tool-availability` | Available tools and disabled reasons |
 | `POST /campaigns/{campaign_id}/tool-invocations` | `200 ToolInvocation` — new, replayed or retried — or a refusal |
 | `GET /campaigns/{campaign_id}/tool-invocations/{invocation_id}` | `200 ToolInvocation`, or the one 404 |
 | `POST /campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel` | `200 ToolInvocation`, or the one 404 |
@@ -36,7 +37,7 @@ from datetime import UTC, datetime
 from types import MappingProxyType
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import TypeAdapter, ValidationError
 
 import config
@@ -57,6 +58,7 @@ from .tool_invocations import (
     Clock,
     ExecutionContext,
     ExecutorFailed,
+    InvocationAnswer,
     InvocationStores,
     NotFound,
     Refused,
@@ -91,6 +93,13 @@ _SETTINGS = parse_settings(config.WORKBENCH_ENABLED_TOOLS, config.WORKBENCH_CAPA
 #: Builds a client on first use only; nothing is built at import.
 _FACTORY = ProviderClientFactory()
 _INVOCATION_ID: TypeAdapter[str] = TypeAdapter(InvocationId)
+
+
+def _with_entry(response: Response, invocation: InvocationAnswer) -> ToolInvocation:
+    # The body doubles as stored timeline JSON. Expose its location only
+    # here, so existing installations can still read the stored contract.
+    response.headers["X-Workbench-Entry-Id"] = invocation.entry_id
+    return invocation
 
 
 def get_invocation_stores() -> InvocationStores:
@@ -199,15 +208,38 @@ def build_router(
     database: Callable[[], TransactionalDatabase | None],
     usage_day: Callable[[], UsageDayReader | None],
 ) -> APIRouter:
-    """The three routes on a `workbench_router`, given the app's GM gate, its
+    """The routes on a `workbench_router`, given the app's GM gate, its
     database getter and its usage-day reader getter (the pilot day's chat half,
     agent-forge-harness-u2uj)."""
     router = workbench_router(gm)
+
+    @router.get("/campaigns/{campaign_id}/tool-availability", response_model=dict[ToolId, str | None])
+    def availability(
+        campaign_id: str,
+        user: SessionData = Depends(gm),
+        stores: InvocationStores = Depends(get_invocation_stores),
+        executors: Mapping[ToolId, ToolExecutor] = Depends(get_tool_executors),
+        settings: ToolSettings = Depends(get_tool_settings),
+        db: TransactionalDatabase | None = Depends(database),
+    ) -> dict[ToolId, str | None]:
+        _shaped(campaign_id)
+        if db is None:
+            raise _unavailable()
+
+        def owned_tools() -> dict[ToolId, str | None]:
+            with db.transaction() as unit:
+                campaign = stores.campaigns.get(unit, campaign_id, owner_id=user.user_id)
+                if campaign is None or campaign.archived_at is not None:
+                    raise NotFound()
+            return {tool: tool_availability(tool, settings, executors) for tool in ToolId}
+
+        return _answered(owned_tools)
 
     @router.post("/campaigns/{campaign_id}/tool-invocations", response_model=ToolInvocation)
     def create(
         campaign_id: str,
         request: Request,
+        response: Response,
         user: SessionData = Depends(gm),
         raw: bytes = Depends(read_tool_body),
         stores: InvocationStores = Depends(get_invocation_stores),
@@ -230,7 +262,7 @@ def build_router(
             db, stores, executors, settings, user, body, now=now, chat_turns_today=chat_turns,
         ))
         if isinstance(admitted, Replay):
-            return admitted.invocation
+            return _with_entry(response, admitted.invocation)
         executor = executors[admitted.target.tool_id]
         ctx = ExecutionContext(
             admitted, clock=clock, factory=factory, probe=cancellation_probe(db, stores, admitted, clock),
@@ -247,7 +279,9 @@ def build_router(
             outcome = execute(
                 executor, ctx, available=lambda tool: tool_availability(tool, settings, executors) is None,
             )
-            return _answered(lambda: complete(db, stores, executor, admitted, outcome, ctx, now=clock()))
+            return _with_entry(
+                response, _answered(lambda: complete(db, stores, executor, admitted, outcome, ctx, now=clock())),
+            )
         finally:
             usage_capture.end_operation(token)
 
@@ -255,6 +289,7 @@ def build_router(
     def status(
         campaign_id: str,
         invocation_id: str,
+        response: Response,
         user: SessionData = Depends(gm),
         stores: InvocationStores = Depends(get_invocation_stores),
         db: TransactionalDatabase | None = Depends(database),
@@ -263,12 +298,15 @@ def build_router(
         if db is None:
             raise _unavailable()
         _shaped(campaign_id, invocation_id)
-        return _answered(lambda: read(db, stores, user.user_id, campaign_id, invocation_id, now=clock()))
+        return _with_entry(
+            response, _answered(lambda: read(db, stores, user.user_id, campaign_id, invocation_id, now=clock())),
+        )
 
     @router.post("/campaigns/{campaign_id}/tool-invocations/{invocation_id}/cancel", response_model=ToolInvocation)
     def cancel_invocation(
         campaign_id: str,
         invocation_id: str,
+        response: Response,
         user: SessionData = Depends(gm),
         stores: InvocationStores = Depends(get_invocation_stores),
         db: TransactionalDatabase | None = Depends(database),
@@ -278,6 +316,8 @@ def build_router(
         if db is None:
             raise _unavailable()
         _shaped(campaign_id, invocation_id)
-        return _answered(lambda: cancel(db, stores, user.user_id, campaign_id, invocation_id, now=clock()))
+        return _with_entry(
+            response, _answered(lambda: cancel(db, stores, user.user_id, campaign_id, invocation_id, now=clock())),
+        )
 
     return router
