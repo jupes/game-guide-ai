@@ -41,6 +41,7 @@ import {
   FieldPatchRequestSchema,
   LibraryPageSchema,
   LibraryQuerySchema,
+  RestoreRequestSchema,
   parseDocument,
   type CharacterSheetLink,
   type ConflictInfo,
@@ -219,6 +220,26 @@ export async function saveDocumentField(
     return result
   }
   return { kind: 'failed', retryable: result.kind === 'failed' || result.kind === 'ok' }
+}
+
+export async function restoreDocumentVersion(
+  document: Document,
+  versionNumber: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DocumentReadResult> {
+  const { campaign_id: campaignId, document_id: documentId } = document
+  const request = RestoreRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, version_number: versionNumber })
+  if (!request.success) return { kind: 'failed' }
+  const response = await send(fetchImpl, `${documentPath(campaignId, documentId)}/restore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request.data),
+  })
+  const result = await readDocumentAnswer(response, campaignId, documentId)
+  if (result.kind === 'ok' && (result.document.type !== document.type || result.document.write_revision < document.write_revision)) {
+    return { kind: 'failed' }
+  }
+  return result
 }
 
 /**

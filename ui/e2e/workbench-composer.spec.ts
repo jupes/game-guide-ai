@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
-import { CAMPAIGN_ID, DOCUMENT, DOCUMENT_ID, DOCUMENT_TITLE, installWorkbenchRoutes } from './workbenchStubs'
-import { TOOL_IDS, type FieldPatchRequest, type ToolInvocationRequest } from '../src/gm/contracts'
+import { CAMPAIGN_ID, DOCUMENT, DOCUMENT_ID, DOCUMENT_TITLE, HISTORY, installWorkbenchRoutes } from './workbenchStubs'
+import { DocumentHistoryPageSchema, DocumentVersionSchema, TOOL_IDS, type FieldPatchRequest, type ToolInvocationRequest } from '../src/gm/contracts'
 import { cardResult, documentResult, toolInvocation } from '../src/gm/laneFixtures'
 
 const THREAD = 'cnv_e2eWorkbenchThread00000001'
@@ -210,4 +210,66 @@ test('phone autosave keeps new typing and resolves two-tab conflicts before swit
   await page.getByRole('button', { name: 'GM', exact: true }).click()
   await expect(canvas.getByText('The latest voice', { exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
+
+test('history restore on a phone flushes drafts and appends a new version', async ({ page }) => {
+  await prepWorkbench(page)
+  const documentPath = `/campaigns/${CAMPAIGN_ID}/documents/${DOCUMENT_ID}`
+  const writes: string[] = []
+  let server = { ...DOCUMENT, version: DocumentVersionSchema.parse(DOCUMENT.version) }
+  let history = DocumentHistoryPageSchema.parse(HISTORY)
+  let patchesFail = true
+  await page.route((url) => url.pathname === `/conversations/${THREAD}/timeline`, (route) => route.fulfill({ json: {
+    schema_version: 1, conversation_id: THREAD, next_cursor: null, items: [],
+  } }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/tool-availability`,
+    (route) => route.fulfill({ json: Object.fromEntries(TOOL_IDS.map((id) => [id, null])) }))
+  await page.route((url) => url.pathname === documentPath, (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: server })
+    const patch = route.request().postDataJSON() as FieldPatchRequest
+    expect(patch).toMatchObject({ base_write_revision: 4, fields: { voice: 'Voice to preserve in history' } })
+    writes.push('patch')
+    if (patchesFail) return route.fulfill({ status: 503, json: {} })
+    server = { ...server, write_revision: 5, data: { ...server.data, ...patch.fields } }
+    return route.fulfill({ json: server })
+  })
+  await page.route((url) => url.pathname === `${documentPath}/versions`, (route) => route.fulfill({ json: history }))
+  await page.route((url) => url.pathname === `${documentPath}/restore`, (route) => {
+    expect(route.request().method()).toBe('POST')
+    expect(route.request().postDataJSON()).toEqual({ schema_version: 1, version_number: 1 })
+    writes.push('restore')
+    if (writes.filter((write) => write === 'restore').length === 1) return route.fulfill({ status: 503, json: {} })
+    const version = { ...server.version, number: 3, restored_from: 1 }
+    server = { ...server, write_revision: 6, version, data: { ...server.data, voice: 'The first voice' } }
+    history = { ...history, items: [version, ...history.items] }
+    return route.fulfill({ json: server })
+  })
+
+  await page.goto(`${WORKSPACE}&document=${DOCUMENT_ID}`)
+  const canvas = page.getByRole('region', { name: DOCUMENT_TITLE })
+  await canvas.getByRole('button', { name: 'More canvas actions' }).click()
+  await canvas.getByRole('menuitem', { name: 'Version history' }).click()
+  const versions = canvas.getByRole('region', { name: 'Version history' })
+  const restore = versions.getByRole('button', { name: 'Restore v1', exact: true })
+  await expect(restore).toBeVisible()
+  await canvas.getByRole('button', { name: 'Edit Voice' }).click()
+  const voice = canvas.getByRole('textbox', { name: 'Voice', exact: true })
+  await voice.fill('Voice to preserve in history')
+  await restore.click()
+  const guard = page.getByRole('dialog', { name: /unsaved changes/i })
+  await expect(guard).toBeVisible()
+  expect(writes).toContain('patch')
+  expect(writes).not.toContain('restore')
+  patchesFail = false
+  await guard.getByRole('button', { name: 'Try saving again' }).click()
+  await expect(versions.getByRole('alert')).toHaveText("Couldn't restore v1. Select Restore v1 to try again.")
+  expect(server.data.voice).toBe('Voice to preserve in history')
+  expect(writes.slice(-2)).toEqual(['patch', 'restore'])
+
+  await restore.click()
+  await expect(versions.getByText('Restored from v1')).toBeVisible()
+  await expect(versions.getByRole('button', { name: 'Restore v2' })).toBeVisible()
+  await expect(canvas.getByText('The first voice', { exact: true })).toBeVisible()
+  await expect(canvas.getByRole('heading', { name: DOCUMENT_TITLE })).toBeFocused()
+  await expect(versions.getByRole('alert')).toBeHidden()
 })

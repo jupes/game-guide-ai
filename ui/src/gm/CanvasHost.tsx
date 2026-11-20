@@ -44,8 +44,9 @@ import { useLibraryPanel } from '../shell/libraryPanel'
 import { useReveals } from '../shell/revealContext'
 import { LIBRARY_COPY, WORKBENCH_COPY } from '../shell/workbenchCopy'
 import { CanvasPane, type CanvasLayout } from './CanvasPane'
+import { versionLabel } from './canvasStatus'
 import type { Document, DocumentVersion } from './contracts'
-import { getDocumentHistory, unarchiveDocument } from './documentApi'
+import { getDocumentHistory, restoreDocumentVersion, unarchiveDocument } from './documentApi'
 import { DocumentAutosave } from './documentAutosave'
 import { documentTitle } from './documentTitle'
 import { GameDocument } from './GameDocument'
@@ -150,7 +151,7 @@ interface OpenCanvasProps {
 
 /** One open document. A pending field remains mounted when an earlier write lands. */
 function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX.Element {
-  const { closeDocument, openerRef, composerRef, titleRef, registerDirtySource, acceptDocument, flushBeforeLeaving } = useCanvasActions()
+  const { closeDocument, openerRef, composerRef, titleRef, registerDirtySource, acceptDocument, flushBeforeLeaving, announce } = useCanvasActions()
   const [autosave] = React.useState(() => new DocumentAutosave(document, acceptDocument, fetchImpl))
   const saves = React.useSyncExternalStore(autosave.subscribe, autosave.getSnapshot)
   React.useLayoutEffect(() => {
@@ -166,6 +167,9 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
   const reveals = useReveals()
   const [historyOpen, setHistoryOpen] = React.useState(false)
   const [history, setHistory] = React.useState<(HistoryState & { revision: number }) | null>(null)
+  const restoreInProgress = React.useRef(false)
+  const [restoring, setRestoring] = React.useState<number | null>(null)
+  const [restoreError, setRestoreError] = React.useState<string | null>(null)
   const historyRequest = React.useRef(0)
   const requestedRevision = React.useRef<number | null>(null)
   const mounted = React.useRef(true)
@@ -221,6 +225,32 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
     setHistoryOpen(!historyOpen)
   }
 
+  async function restoreVersion(version: DocumentVersion): Promise<void> {
+    if (restoreInProgress.current) return
+    restoreInProgress.current = true
+    const opener = window.document.activeElement
+    try {
+      if (!(await flushBeforeLeaving()) || !mounted.current) return
+      setRestoreError(null)
+      setRestoring(version.number)
+      const result = await restoreDocumentVersion(document, version.number, fetchImpl)
+      if (!mounted.current) return
+      const label = versionLabel(version.number)
+      if (result.kind === 'ok') {
+        acceptDocument(result.document)
+        announce(`Restored ${label}`)
+        if (window.document.activeElement === opener || window.document.activeElement === window.document.body) {
+          titleRef.current?.focus({ preventScroll: true })
+        }
+      } else {
+        setRestoreError(`Couldn't restore ${label}. Select Restore ${label} to try again.`)
+      }
+    } finally {
+      restoreInProgress.current = false
+      if (mounted.current) setRestoring(null)
+    }
+  }
+
   const read = history?.revision === revision ? history : HISTORY_LOADING
   const title = documentTitle(document)
   const type = documentTypeById(document.type)
@@ -264,6 +294,9 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
           setHistory(null)
           void loadFirstPage()
         },
+        onRestore: document.archived ? undefined : (version) => void restoreVersion(version),
+        restoringVersionNumber: restoring,
+        restoreError,
         documentType: document.type,
       }}
       onRequestClose={closeDocument}
@@ -272,7 +305,7 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
       titleRef={titleRef}
       layout={layout}
       reveal={presentation.reveal}
-      onReveal={presentation.canOpen ? () => void openReveal() : undefined}
+      onReveal={presentation.canOpen && restoring === null ? () => void openReveal() : undefined}
       onStopReveal={
         presentation.canStop
           ? () => {
@@ -289,7 +322,7 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
       <GameDocument
         key={saves.reset}
         document={document}
-        readOnly={document.archived}
+        readOnly={document.archived || restoring !== null}
         fieldStates={saves.fields}
         onFieldDraft={autosave.draft}
         onInvalidFieldDraft={autosave.invalidDraft}
