@@ -112,7 +112,7 @@ class TableReads:
         return build(pinned.type, pinned.data, held.mask)
 
 
-_STREAM_READ_MAX: Final = 20
+TABLE_STREAM_BATCH_MAX: Final = 20
 
 
 @dataclass(frozen=True)
@@ -179,7 +179,7 @@ class TableStreamReads:
         """Results align with the watches. A denied or expired watch is empty."""
         if not watches:
             return []
-        if len(watches) > _STREAM_READ_MAX:
+        if len(watches) > TABLE_STREAM_BATCH_MAX:
             raise ValueError("too many table streams to read in one batch")
         values = {
             "campaigns": [watch.campaign_id for watch in watches],

@@ -789,8 +789,12 @@ sealed version and uses the same projection builder as the polling snapshot.
 Reveal, Stop, Start, End and Rotate publish the session ID on commit.
 Seat confirmation and removal publish the campaign ID. A screen revoke or
 departure publishes the grant ID. Listeners use these opaque wakeups to
-re-read current state. The HTTP stream, listening task and connection
-admission are server work under the same bead.
+re-read current state. Each active `TableFanout` owns one dedicated
+PostgreSQL listener and also batches authorized reads every two seconds.
+It sends only changed slots, with a bounded queue. Missing state, lost
+access, and a queue that could otherwise delay a Stop all end that stream.
+Heartbeats require a recent successful read. The HTTP route and distributed
+connection admission remain under this bead.
 
 ### Who may see what: the decision point and the principals
 

@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 
 import psycopg
 import pytest
@@ -17,6 +18,7 @@ from test_reveal_db import dsn as dsn
 from service import campaign_identity as ident
 from service.db import Database, PoolSettings
 from service.reveal_scope import DocumentCopies, EndReason, TableTarget
+from service.table_fanout import TableFanout, listen_table_wakeups
 from service.table_reads import TableReads, TableStreamReads, TableStreamWatch
 from service.table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 from service.workbench_contracts import TableRevealSnapshotEvent
@@ -294,3 +296,68 @@ def test_every_listener_receives_only_opaque_wakeups_after_commit(dsn: str) -> N
         with world.db.transaction() as unit:
             assert world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
         received([(SESSION_WAKEUP_CHANNEL, session.id)])
+
+
+@needs_db
+def test_two_instances_deliver_reveal_stop_and_end_without_leaking_a_private_frame(dsn: str) -> None:
+    world = _pg_world(dsn, fill=True)
+    campaign = _campaign(world)
+    session = _session(world, campaign)
+    seat = _seat(world, campaign, "confirmed", world.players[0])
+    shared, private = _document(world, campaign), _document(world, campaign)
+    _write(world, campaign, session.id, shared, TableTarget())
+    with world.db.transaction() as unit:
+        screen, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+
+    async def scenario() -> None:
+        db_a, db_b = (Database(dsn, PoolSettings(sync_max=0, async_max=1)) for _ in range(2))
+        listen = partial(listen_table_wakeups, dsn)
+        # Keep fallback polling beyond the assertion deadline to prove delivery
+        # came from notifications, even though the two hubs share no process state.
+        a = TableFanout(TableStreamReads(db_a), listen, poll_s=8, heartbeat_s=0.2)
+        b = TableFanout(TableStreamReads(db_b), listen, poll_s=8, heartbeat_s=0.2)
+        player = a.stream(TableStreamWatch(campaign, session.id, session.link_generation, account_id=world.players[0]))
+        guest = b.stream(TableStreamWatch(campaign, session.id, session.link_generation, grant_id=screen.id))
+
+        async def next_event(stream):
+            while (frame := await anext(stream)).startswith(b":"):
+                pass
+            return frame
+
+        async def next_for_both(prefix: bytes):
+            frames = await asyncio.wait_for(asyncio.gather(next_event(player), next_event(guest)), 3)
+            assert all(frame.startswith(prefix) for frame in frames)
+            return frames
+
+        try:
+            await next_for_both(b"event: session")
+            assert a.listening and b.listening
+            first_player, first_guest = await next_for_both(b"event: snapshot")
+            assert b'"mine"' in first_player and b'"mine"' not in first_guest
+            await next_for_both(b"event: ready")
+            assert await asyncio.wait_for(anext(guest), 1) == b": heartbeat\n\n"
+            _write(world, campaign, session.id, private, _parts(seat), mask=("qualifier",))
+            changed = await asyncio.wait_for(next_event(player), 1)
+            assert changed.startswith(b"event: slot") and b"Harbourmistress" in changed
+            assert await asyncio.wait_for(anext(guest), 1) == b": heartbeat\n\n"
+            assert _clear(world, session.id, DocumentCopies(shared, EndReason.GM_STOP))
+            stopped = await next_for_both(b"event: slot")
+            assert stopped[0] == stopped[1] and b'"content":null' in stopped[0]
+            with world.db.transaction() as unit:
+                assert world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
+            stopped = await next_for_both(b"event: inactive")
+            assert stopped[0] == stopped[1]
+            with pytest.raises(StopAsyncIteration):
+                await anext(player)
+            with pytest.raises(StopAsyncIteration):
+                await anext(guest)
+            assert not a.listening and not b.listening
+        finally:
+            await player.aclose()
+            await guest.aclose()
+            await a.close()
+            await b.close()
+            await db_a.aclose()
+            await db_b.aclose()
+
+    asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
