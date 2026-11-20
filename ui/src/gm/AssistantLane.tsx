@@ -42,10 +42,9 @@
 import * as React from 'react'
 import { Button } from '../ds/Button'
 import { Chip } from '../ds/Chip'
-import { StatBlockCard } from '../ds/StatBlockCard'
 import { AssistantDocumentLink } from './AssistantDocumentLink'
 import { AssistantText } from './AssistantText'
-import { toStatBlockCardProps } from './adapters'
+import { ToolCardBody } from './ToolCards'
 import type { DocumentLink, ToolId, ToolInvocation, ToolResult } from './contracts'
 import {
   LANE_ACTION_LABEL,
@@ -142,12 +141,7 @@ function ResultBody({
 }): React.JSX.Element {
   switch (result.result_kind) {
     case 'card':
-      // The lane supplies the chrome, so the card comes in compact. The other
-      // card kinds render in 1kg.4.3's PR-C; until then they are neutral, never
-      // a borrowed stat block (RAIL-24, X-8).
-      return result.card.card_kind === 'stat_block'
-        ? <StatBlockCard density="compact" {...toStatBlockCardProps(result.card.stat_block)} />
-        : <p className="assistant-lane__placeholder">{LANE_COPY.unsupportedResult}</p>
+      return <ToolCardBody card={result.card} />
     case 'document':
       return documentLinkMeta(result.document) === null
         ? <p className="assistant-lane__placeholder">{LANE_COPY.newerVersion}</p>

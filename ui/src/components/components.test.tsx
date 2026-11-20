@@ -26,6 +26,14 @@ describe('SourceList', () => {
     expect(screen.getByText(/mm-5e/)).toBeInTheDocument()
     expect(screen.getByText(/p\.12/)).toBeInTheDocument()
   })
+
+  it('can use authoritative citation numbers while ordinary sources are numbered in order', async () => {
+    const { rerender } = render(<SourceList sources={SOURCES} />)
+    await userEvent.click(screen.getByText(/2 sources/i))
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent?.slice(0, 3))).toEqual(['[1]', '[2]'])
+    rerender(<SourceList sources={SOURCES} numbers={[2, 4]} />)
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent?.slice(0, 3))).toEqual(['[2]', '[4]'])
+  })
 })
 
 describe('App (integration — shell renders Landing)', () => {

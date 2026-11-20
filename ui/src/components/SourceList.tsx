@@ -1,7 +1,7 @@
 import type { Source } from '../api'
 
 /** Collapsible citations — collapsed by default with a count badge. */
-export function SourceList({ sources }: { sources: Source[] }) {
+export function SourceList({ sources, numbers }: { sources: readonly Source[]; numbers?: readonly number[] }) {
   if (sources.length === 0) return null
   return (
     <details className="sources">
@@ -10,9 +10,9 @@ export function SourceList({ sources }: { sources: Source[] }) {
       </summary>
       <ul>
         {sources.map((s, i) => (
-          <li key={`${s.book}-${s.entity ?? s.section ?? i}`}>
+          <li key={i}>
             <span className="source-ref">
-              [{i + 1}] <strong>{s.entity ?? s.section ?? s.chapter ?? s.book}</strong>
+              [{numbers?.[i] ?? i + 1}] <strong>{s.entity ?? s.section ?? s.chapter ?? s.book}</strong>
               {' — '}
               <span className="source-book">{s.book}</span>
               {s.page != null && <span className="source-page">, p.{s.page}</span>}

@@ -22,6 +22,7 @@ const FILES = [
   'ToolComposer.css',
   'GmThread.css',
   'RevealSheet.css',
+  'ToolCards.css',
 ] as const
 
 function css(name: string): string {

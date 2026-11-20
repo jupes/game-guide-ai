@@ -20,6 +20,7 @@ import {
   ALL_ENABLED,
   DEFAULT_AVAILABILITY,
   SUGGESTIONS,
+  TOOL_CARD_FIXTURES,
   cardResult,
   documentResult,
   errorInfo,
@@ -275,19 +276,18 @@ describe('AssistantLane — a result kind this bead does not own (RAIL-24, X-8)'
   })
 })
 
-describe('AssistantLane — a card kind whose render is not built yet (1kg.4.3 PR-A; RAIL-24, X-8)', () => {
-  const loot = cardResult({
-    tool_id: 'loot',
-    prose: 'Invented for your campaign.',
-    card: { card_kind: 'loot', loot: { title: 'The offering box', items: [{ name: 'Tarnished silver censer' }] } },
-  })
-
-  it('stands in with the neutral placeholder, never a borrowed stat block', () => {
-    const { container } = renderLane({ invocation: toolInvocation({ tool_id: 'loot', status: 'done', result: loot }) })
-    expect(screen.getByText(LANE_COPY.unsupportedResult)).toBeInTheDocument()
+describe('AssistantLane — compact card results (1kg.4.3 PR-C)', () => {
+  it.each([
+    ['loot', 'The offering box'], ['names', 'Names for the coast'],
+    ['hooks', 'Riverside hooks'], ['rules', 'Using cover'],
+  ] as const)('renders %s in the existing completed lane', (tool, title) => {
+    const result = cardResult({ tool_id: tool, card: TOOL_CARD_FIXTURES[tool], prose: 'A short summary.' })
+    const { container } = renderLane({ invocation: toolInvocation({ tool_id: tool, status: 'done', result }) })
+    expect(screen.getByRole('heading', { level: 3, name: title })).toBeInTheDocument()
+    expect(screen.queryByText(LANE_COPY.unsupportedResult)).toBeNull()
     expect(container.querySelector('.stat-block-card__abilities')).toBeNull()
-    expect(screen.queryByText('Tarnished silver censer')).toBeNull()
-    expect(container.querySelector('.assistant-text')?.textContent).toContain('Invented for your campaign.')
+    expect(container.querySelector('.assistant-text')?.textContent).toContain('A short summary.')
+    expect(screen.getAllByRole('status')).toHaveLength(1)
   })
 
   it('still composes a stat block card for the monster', () => {

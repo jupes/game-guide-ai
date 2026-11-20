@@ -1,0 +1,22 @@
+.tool-card {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-card__list {
+  margin: 0;
+  padding-inline-start: var(--aether-space-5);
+}
+
+.tool-card__list li + li {
+  margin-block-start: var(--aether-space-2);
+}
+
+.tool-card__prose {
+  margin-block: 0;
+  white-space: pre-line;
+}
+
+.tool-card .sources {
+  margin-block-start: var(--aether-space-2);
+}
