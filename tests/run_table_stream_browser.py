@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import secrets
 import shutil
@@ -93,6 +94,11 @@ def _fixture(dsn: str) -> dict[str, str]:
     session = _session(world, campaign)
     player = world.players[0]
     seat = _seat(world, campaign, "confirmed", player)
+    pending = world.players[1]
+    _seat(world, campaign, "accepted", pending)
+    offered = world.players[2]
+    _seat(world, campaign, "offered", offered)
+    outsider = world.players[3]
     shared, private = _document(world, campaign), _document(world, campaign)
     _write(world, campaign, session.id, shared, TableTarget())
     _write(world, campaign, session.id, private, _parts(seat), mask=("qualifier",))
@@ -117,11 +123,17 @@ def _fixture(dsn: str) -> dict[str, str]:
         "TABLE_BROWSER_PUBLIC_DOCUMENT": shared,
         "TABLE_BROWSER_OWNER_COOKIE": encode_session(SessionData(world.owner, "dm"), secret),
         "TABLE_BROWSER_PLAYER_COOKIE": encode_session(SessionData(player, "player"), secret),
+        "TABLE_BROWSER_PENDING_COOKIE": encode_session(SessionData(pending, "player"), secret),
+        "TABLE_BROWSER_OFFERED_COOKIE": encode_session(SessionData(offered, "player"), secret),
+        "TABLE_BROWSER_OUTSIDER_COOKIE": encode_session(SessionData(outsider, "player"), secret),
         "TABLE_BROWSER_SCREEN_COOKIE": grant,
     }
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Verify live player tables across two local services.")
+    parser.add_argument("--browser", choices=("chromium", "webkit"), default="chromium")
+    args = parser.parse_args()
     _require_local_database()
     bun = shutil.which("bun")
     if bun is None or not (ROOT / "ui/dist/table.html").is_file():
@@ -132,8 +144,15 @@ def main() -> None:
         with _service(env, root / "player-port") as player, _service(env, root / "screen-port") as screen:
             subprocess.run(
                 [bun, "run", "test:e2e", "--config", "playwright.table-stream.config.ts"],
-                cwd=ROOT / "ui", check=True, timeout=80,
-                env=env | {"TABLE_BROWSER_PLAYER_URL": player, "TABLE_BROWSER_SCREEN_URL": screen},
+                cwd=ROOT / "ui",
+                check=True,
+                timeout=80,
+                env=env
+                | {
+                    "TABLE_BROWSER_ENGINE": args.browser,
+                    "TABLE_BROWSER_PLAYER_URL": player,
+                    "TABLE_BROWSER_SCREEN_URL": screen,
+                },
             )
 
 

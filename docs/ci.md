@@ -207,16 +207,19 @@ uv run python scripts/ci/eval_gate.py \
 ### Mobile table with two services
 
 Set `DATABASE_URL` to a local PostgreSQL 17 URI for a role that can create a
-temporary database. Install the UI dependencies and Playwright Chromium,
+temporary database. Install the UI dependencies and Playwright Chromium or WebKit,
 then run from the repository root.
 
 ```bash
 (cd ui && bun run build)
 uv run --frozen --extra dev python tests/run_table_stream_browser.py
+# Give WebKit its own fresh table fixture.
+uv run --frozen --extra dev python tests/run_table_stream_browser.py --browser webkit
 ```
 
 The profile creates a temporary database, starts two loopback FastAPI
-services, and opens player and shared-screen Chromium contexts at 320 and
+services, and opens player and shared-screen browser contexts at 320 and
 390 pixels. It checks reconnect, slot visibility, GM Stop and End through
 the real API. The runner stops both services and drops only its temporary
-database. Playwright writes failure traces to `ui/e2e-results/table-stream`.
+database. Playwright writes failure traces to `ui/e2e-results/table-stream-chromium`
+or `ui/e2e-results/table-stream-webkit`.
