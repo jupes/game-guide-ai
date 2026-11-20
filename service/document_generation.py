@@ -295,8 +295,13 @@ def _walk(value: object) -> Iterator[tuple[object, int]]:
     while pending:
         item, depth = pending.pop()
         yield item, depth
-        children = item.values() if isinstance(item, dict) else item if isinstance(item, list) else ()
+        children = item.values() if isinstance(item, Mapping) else item if isinstance(item, list) else ()
         pending.extend((child, depth + 1) for child in children)
+
+
+def _contains_remote_reference(data: object) -> bool:
+    folded = (item.casefold() for item, _ in _walk(data) if isinstance(item, str))
+    return any(marker in text for text in folded for marker in REMOTE_REFERENCE_MARKERS)
 
 
 def _checked_fields(doc_type: DocumentTypeId, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -324,8 +329,7 @@ def validate_generated_fields(
     if any(declared[key] is FieldKind.ASSET for key in raw):
         raise InvalidGeneration(InvalidOutput.ASSET_REFERENCE)
     data = {key: _normalized(declared[key], value) for key, value in raw.items() if key not in server_owned}
-    folded = (item.casefold() for item, _ in _walk(data) if isinstance(item, str))
-    if any(marker in text for text in folded for marker in REMOTE_REFERENCE_MARKERS):
+    if _contains_remote_reference(data):
         raise InvalidGeneration(InvalidOutput.REMOTE_REFERENCE)
     data.update(preset)
     required = REQUIRED_FIELDS[kind_of_type]
@@ -440,10 +444,10 @@ def _preset_is_valid(spec: GenerationSpec, preset: Mapping[str, Any]) -> bool:
     if any(key not in declared or declared[key] is FieldKind.ASSET or key == "tags" for key in preset):
         return False
     try:
-        check_fields(spec.doc_type, DOC_TYPE_VERSION[spec.doc_type], dict(preset), whole=False)
+        checked = check_fields(spec.doc_type, DOC_TYPE_VERSION[spec.doc_type], dict(preset), whole=False)
     except ValueError:
         return False
-    return True
+    return not _contains_remote_reference(checked)
 
 
 def _checked_request(request: GenerationRequest) -> GenerationSpec:
@@ -823,7 +827,7 @@ def _outcome(config: dict[str, Any], outcome: str) -> None:
     usage_capture.record_structuring_outcome(config, purpose=PURPOSE, outcome=outcome)
 
 
-def _refuse_if_tampered(doc_type: DocumentTypeId, data: Mapping[str, Any], must_fill: frozenset[str]) -> None:
+def _refuse_if_tampered(doc_type: DocumentTypeId, data: Mapping[str, object], must_fill: frozenset[str]) -> None:
     """Re-run I-16 and the must-fill check :func:`parse_generated` already ran, against the
     data a :class:`GeneratedDocument` carries right before it is written. ``GeneratedDocument``
     is a plain frozen dataclass: its ``data`` dict is mutable, and a caller could hand-build one
@@ -831,8 +835,7 @@ def _refuse_if_tampered(doc_type: DocumentTypeId, data: Mapping[str, Any], must_
     between then and now. The store re-checks only ``check_fields`` (shape and kind, not I-16's
     remote-reference markers or a type's must-fill set), so this is the last chance to refuse."""
     declared = _declared(doc_type)
-    folded = (item.casefold() for item, _ in _walk(data) if isinstance(item, str))
-    if any(marker in text for text in folded for marker in REMOTE_REFERENCE_MARKERS):
+    if _contains_remote_reference(data):
         raise InvalidGeneration(InvalidOutput.REMOTE_REFERENCE)
     if any(key not in data or is_empty_value(declared[key], data[key]) for key in must_fill):
         raise InvalidGeneration(InvalidOutput.MISSING_SUBSTANCE)
