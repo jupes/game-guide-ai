@@ -41,8 +41,10 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
-function start(request: typeof fetch, channel?: IdentityChannelLike) {
-  stop = mountTable(document, 'cmp_table', request, () => channel ?? null)
+function start(request: typeof fetch, channel?: IdentityChannelLike, stream?: typeof fetch) {
+  stop = mountTable(document, 'cmp_table', (input, init) => String(input).startsWith('/table/stream?')
+    ? (stream?.(input, init) ?? Promise.resolve(new Response(null, { status: 404 })))
+    : request(input, init), () => channel ?? null)
   return vi.advanceTimersByTimeAsync(0)
 }
 
@@ -160,5 +162,173 @@ describe('account-authorized player table', () => {
     expect(request).toHaveBeenLastCalledWith('/auth/logout', { method: 'POST', cache: 'no-store' })
     expect(channel.postMessage).toHaveBeenCalledWith({ v: 1, kind: 'identity-changed' })
     expect(document.querySelector('#table-sign-in')).toHaveFocus()
+  })
+})
+
+function streamFixture() {
+  const encoder = new TextEncoder()
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  const cancel = vi.fn()
+  const body = new ReadableStream<Uint8Array>({ start: (value) => { controller = value }, cancel })
+  const response = new Response(body, { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } })
+  const chunk = (value: string | Uint8Array) => controller.enqueue(typeof value === 'string' ? encoder.encode(value) : value)
+  const frame = (name: string, fields = {}) => chunk(`event: ${name}\ndata: ${JSON.stringify({
+    ...event, ...fields, event: name,
+  })}\n\n`)
+  const snapshot = (role: 'guest' | 'participant', slots: ReturnType<typeof slot>[]) => {
+    frame('session', { role, audio: false })
+    frame('snapshot', { slots })
+  }
+  return { response, chunk, frame, snapshot, cancel }
+}
+
+const connection = () => document.querySelector('#table-connection')!
+
+describe('player table streams and reconnects', () => {
+  it('waits for ready and applies Stop per slot while rejecting stale or duplicate frames', async () => {
+    const stream = streamFixture()
+    const request = vi.fn()
+    const open = vi.fn(async () => stream.response)
+    await start(request, undefined, open)
+    expect(open).toHaveBeenCalledWith('/table/stream?campaign_id=cmp_table', {
+      cache: 'no-store', headers: { Accept: 'text/event-stream' }, signal: expect.any(AbortSignal),
+    })
+    stream.snapshot('participant', [slot('table', 'Shared'), slot('mine', 'Private')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toBeEmptyDOMElement()
+    stream.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Shared')
+    expect(content()).toHaveTextContent('Private')
+    expect(connection()).toBeEmptyDOMElement()
+
+    stream.frame('slot', { ...slot('table', null), seq: 2 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).not.toHaveTextContent('Shared')
+    expect(content()).toHaveTextContent('Private')
+    stream.frame('slot', { ...slot('table', 'Duplicate'), seq: 2 })
+    stream.frame('slot', slot('table', 'Stale'))
+    stream.frame('slot', { ...slot('mine', 'Changed privately'), seq: 2 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).not.toHaveTextContent(/Duplicate|Stale/)
+    expect(content()).toHaveTextContent('Changed privately')
+    stream.frame('inactive')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toBeEmptyDOMElement()
+    expect(status()).toMatch(/isn’t active/)
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('opens a new stream after a sequence gap and accepts equal marks only after its fresh ready', async () => {
+    const initial = streamFixture()
+    const reassigned = streamFixture()
+    const open = vi.fn<typeof fetch>().mockResolvedValueOnce(initial.response).mockResolvedValueOnce(reassigned.response)
+    await start(vi.fn(), undefined, open)
+    initial.snapshot('guest', [slot('table', 'Before gap')])
+    initial.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Before gap')
+    initial.frame('slot', { ...slot('table', 'Never show this gap'), seq: 4 })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(content()).toBeEmptyDOMElement()
+    expect(open).toHaveBeenCalledTimes(2)
+    expect(initial.cancel).toHaveBeenCalledOnce()
+    reassigned.snapshot('guest', [slot('table', 'Fresh picture at the old mark')])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toBeEmptyDOMElement()
+    reassigned.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Fresh picture at the old mark')
+  })
+
+  it('uses comment bytes for liveness and blanks after ten seconds of silence', async () => {
+    const live = streamFixture()
+    await start(() => new Promise(() => {}), undefined, async () => live.response)
+    live.snapshot('guest', [slot('table', 'The handout')])
+    live.frame('ready')
+    await vi.advanceTimersByTimeAsync(5000)
+    live.chunk(': heartbeat\r')
+    live.chunk('\n\r\n')
+    await vi.advanceTimersByTimeAsync(9999)
+    expect(content()).toHaveTextContent('The handout')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(content()).toBeEmptyDOMElement()
+    expect(live.cancel).toHaveBeenCalled()
+    expect(connection()).toHaveTextContent('Live updates are delayed')
+  })
+
+  it('clears on phone lock and waits for the new stream after unlock', async () => {
+    const locked = streamFixture()
+    const resumed = streamFixture()
+    const open = vi.fn<typeof fetch>().mockResolvedValueOnce(locked.response).mockResolvedValueOnce(resumed.response)
+    await start(vi.fn(), undefined, open)
+    locked.snapshot('guest', [slot('table', 'Old handout')])
+    locked.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Old handout')
+    locked.frame('slot', { ...slot('table', 'Buffered while locked'), seq: 2 })
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(content()).toBeEmptyDOMElement()
+    expect(open.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toBeEmptyDOMElement()
+    resumed.snapshot('guest', [slot('table', 'Fresh after unlock')])
+    resumed.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Fresh after unlock')
+  })
+
+  it('recovers a UTF-8 frame split across chunks and CRLFs and reopens after planned reconnect', async () => {
+    const initial = streamFixture()
+    const retry = streamFixture()
+    const open = vi.fn<typeof fetch>().mockResolvedValueOnce(initial.response).mockResolvedValueOnce(retry.response)
+    await start(vi.fn(), undefined, open)
+    initial.frame('session', { role: 'guest', audio: false })
+    const json = JSON.stringify({ ...event, event: 'snapshot', slots: [slot('table', 'A dragon 🐉')] })
+    const encoded = new TextEncoder().encode(`event: snapshot\r\ndata: ${json}\r\n\r\n`)
+    const dragon = encoded.indexOf(0xf0) + 1
+    initial.chunk(encoded.slice(0, dragon))
+    initial.chunk(encoded.slice(dragon, -1))
+    initial.chunk(encoded.slice(-1))
+    initial.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('A dragon 🐉')
+    initial.frame('reconnect')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(content()).toBeEmptyDOMElement()
+    expect(open).toHaveBeenCalledTimes(2)
+  })
+
+  it('announces snapshot fallback and never shows a private frame on a guest stream', async () => {
+    const live = streamFixture()
+    await start(async () => picture('guest', slot('table', 'Fallback handout')), undefined, async () => live.response)
+    live.snapshot('guest', [slot('table', 'Authorized'), slot('mine', 'Forbidden')])
+    live.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Fallback handout')
+    expect(content()).not.toHaveTextContent('Forbidden')
+    expect(connection()).toHaveTextContent('Live updates are delayed')
+  })
+
+  it('reports stream capacity with Retry-After and retries admission before fetching a snapshot', async () => {
+    const retry = streamFixture()
+    const request = vi.fn()
+    const open = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503, headers: { 'Retry-After': '2' } }))
+      .mockResolvedValueOnce(retry.response)
+    await start(request, undefined, open)
+    expect(status()).toBe('This table is full.')
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(open).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(open).toHaveBeenCalledTimes(2)
+    expect(request).not.toHaveBeenCalled()
+    retry.snapshot('guest', [slot('table', 'Now admitted')])
+    retry.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Now admitted')
   })
 })

@@ -46,6 +46,7 @@ export default defineConfig({
       '^/table/screen(?:\\?|$)': 'http://localhost:8000',
       '^/table/leave(?:\\?|$)': 'http://localhost:8000',
       '^/table/snapshot(?:\\?|$)': 'http://localhost:8000',
+      '^/table/stream(?:\\?|$)': 'http://localhost:8000',
     }
   },
   test: {

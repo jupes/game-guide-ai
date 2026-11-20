@@ -770,6 +770,18 @@ names the campaign, so a live grant read under another campaign is the one
 and `version` are GM-side and never reach a table client; `1kg.7.2` builds the
 projection from them with its one builder.
 
+### Player table connection (1kg.7.5)
+
+The mobile table reads `/table/stream?campaign_id=` using Fetch and the shared
+SSE reader. It waits for a complete, validated snapshot ending in `ready`
+before painting. Each region tracks its own sequence. A Stop clears that
+region, and a sequence gap reopens the stream for a fresh snapshot. End,
+page hiding, account changes and ten seconds without bytes remove revealed
+content from the DOM. When streaming is unavailable, the page labels the
+connection as degraded and refreshes through `/table/snapshot` while it
+retries the stream. The stream endpoint, PostgreSQL fanout and connection
+admission are server work under the same bead.
+
 ### Who may see what: the decision point and the principals
 
 `1ir.2.2` adds `service/policy.py`, pure functions over facts one snapshot read

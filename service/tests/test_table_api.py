@@ -700,11 +700,16 @@ def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
     table_paths = sorted({path for path, _ in api_routes(app) if path.startswith("/table/")})
     assert table_paths == [LEAVE, MINT, SNAPSHOT]
     blocks = dict(re.findall(r"location\s+=\s+(/table/\S+)\s*\{([^}]*)\}", conf))
-    assert sorted(blocks) == table_paths
+    # The client can already probe this exact path while the server stream is built.
+    assert sorted(blocks) == [*table_paths, "/table/stream"]
     for path, block in blocks.items():
         assert "proxy_set_header   Host $host;" in block, path
         assert "proxy_set_header   X-Real-IP $remote_addr;" in block, path
         assert "proxy_pass         http://service:8000;" in block, path
+    stream = blocks["/table/stream"]
+    assert re.search(r"proxy_buffering\s+off;", stream)
+    assert re.search(r"proxy_cache\s+off;", stream)
+    assert re.search(r"proxy_read_timeout\s+320s;", stream)
 
 
 # ── The snapshot read (1kg.7.2 PR-2; ID-15, SEC-46, SEC-47, T-1, T-23) ───────

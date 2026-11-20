@@ -1,13 +1,13 @@
-import { CONTRACT_VERSION, TableSnapshotSchema, type TableSlot } from '../gm/contracts'
+import { CONTRACT_VERSION } from '../gm/contracts'
 import { openIdentityBroadcast, type IdentityChannelFactory } from '../shell/identityBroadcast'
 import { renderProjections } from './projection'
+import { streamTable, tablePicture, type TablePicture } from './stream'
 
 const POLL_MS = 5000
 const BLANK_MS = 10_000
 const READ_TIMEOUT_MS = 8000
 
-type Picture = { kind: 'live'; participant: boolean; slots: TableSlot[] }
-type ReadResult = Picture | { kind: 'inactive' | 'signed-out' | 'retry' } | { kind: 'limited'; delay: number }
+type ReadResult = TablePicture | { kind: 'inactive' | 'signed-out' | 'retry' } | { kind: 'limited'; delay: number }
 
 async function readTable(id: string, signal: AbortSignal, request: typeof fetch): Promise<ReadResult> {
   try {
@@ -19,14 +19,7 @@ async function readTable(id: string, signal: AbortSignal, request: typeof fetch)
       return { kind: 'limited', delay: Number.isFinite(seconds) ? Math.max(POLL_MS, Math.min(seconds, 300) * 1000) : POLL_MS }
     }
     if (!response.ok) return { kind: 'retry' }
-    const parsed = TableSnapshotSchema.safeParse(await response.json())
-    if (!parsed.success) return { kind: 'retry' }
-    const { frames } = parsed.data
-    const session = frames.find((frame) => frame.event === 'session')
-    const picture = frames.find((frame) => frame.event === 'snapshot')
-    if (session === undefined) return { kind: 'inactive' }
-    if (picture === undefined) return { kind: 'retry' }
-    return { kind: 'live', participant: session.role === 'participant', slots: picture.slots }
+    return tablePicture(await response.json())
   } catch {
     return { kind: 'retry' }
   }
@@ -37,10 +30,12 @@ const COPY = {
   waiting: 'Nothing to see yet. Your GM hasn’t shared anything.',
   changed: 'Your GM shared something new.',
   reconnecting: 'Reconnecting…',
+  degraded: 'Reconnecting… Live updates are delayed.',
   hidden: 'Reconnecting… hidden until the connection is back.',
   inactive: 'This table isn’t active or available to you.',
   signedOut: 'Sign in to open this table.',
   limited: 'Too many requests. Wait a moment and try again.',
+  full: 'This table is full.',
 }
 
 export function mountTable(
@@ -50,6 +45,7 @@ export function mountTable(
   channelFactory?: IdentityChannelFactory,
 ): () => void {
   const status = document.querySelector<HTMLElement>('#table-status')!
+  const connection = document.querySelector<HTMLElement>('#table-connection')!
   const projections = document.querySelector<HTMLElement>('#table-projections')!
   const reload = document.querySelector<HTMLButtonElement>('#table-reload')!
   const signIn = document.querySelector<HTMLAnchorElement>('#table-sign-in')!
@@ -61,12 +57,19 @@ export function mountTable(
   let pollTimer: number | undefined
   let blankTimer: number | undefined
   let pictureKey: string | null = null
+  let streamRetryAt = 0
+  let streamFailures = 0
   let paused = false
   let departed = false
   let actionPending = false
 
   function announce(message: string): void {
     if (status.textContent !== message) status.textContent = message
+  }
+
+  function showDegraded(degraded: boolean): void {
+    const message = degraded ? COPY.degraded : ''
+    if (connection.textContent !== message) connection.textContent = message
   }
 
   function redact(): void {
@@ -79,6 +82,9 @@ export function mountTable(
     browser.clearTimeout(pollTimer)
     activeRead?.abort()
     activeRead = null
+    streamRetryAt = 0
+    streamFailures = 0
+    showDegraded(false)
     redact()
   }
 
@@ -86,7 +92,7 @@ export function mountTable(
     pollTimer = browser.setTimeout(() => { void read() }, delay)
   }
 
-  function showPicture(result: Picture): void {
+  function showPicture(result: TablePicture): void {
     signOut.hidden = !result.participant
     leave.hidden = result.participant
     const key = JSON.stringify(result.slots.map(({ slot, content }) => [slot, content]))
@@ -98,17 +104,77 @@ export function mountTable(
     } else if (status.textContent === COPY.reconnecting) {
       announce(projections.childElementCount > 0 ? '' : COPY.waiting)
     }
+  }
+
+  function armSilenceTimer(onSilence?: () => void): void {
     browser.clearTimeout(blankTimer)
     blankTimer = browser.setTimeout(() => {
       redact()
       announce(COPY.hidden)
+      onSilence?.()
     }, BLANK_MS)
+  }
+
+  function finish(kind: 'signed-out' | 'inactive'): void {
+    redact()
+    showDegraded(false)
+    signIn.hidden = kind !== 'signed-out'
+    if (!signIn.hidden) {
+      signOut.hidden = true
+      leave.hidden = true
+    }
+    announce(kind === 'signed-out' ? COPY.signedOut : COPY.inactive)
+  }
+
+  async function openStream(id: string, controller: AbortController): Promise<void> {
+    let opened = false
+    const deadline = browser.setTimeout(() => controller.abort(), READ_TIMEOUT_MS)
+    const watchBytes = () => armSilenceTimer(() => controller.abort())
+    const end = await streamTable(id, controller.signal, request, {
+      opened() {
+        opened = true
+        redact()
+        watchBytes()
+      },
+      bytes: watchBytes,
+      picture(picture) {
+        browser.clearTimeout(deadline)
+        streamFailures = 0
+        showDegraded(false)
+        showPicture(picture)
+      },
+    })
+    browser.clearTimeout(deadline)
+    if (activeRead !== controller) return
+    activeRead = null
+    if (opened) redact()
+    if (end.kind === 'signed-out' || end.kind === 'inactive') {
+      finish(end.kind)
+    } else if (end.kind === 'reconnect') {
+      queue(0)
+    } else if (end.kind === 'full') {
+      redact()
+      showDegraded(false)
+      announce(COPY.full)
+      queue(end.delay)
+    } else {
+      const backoff = Math.min(30_000, 1000 * 2 ** Math.min(streamFailures, 5))
+      streamFailures += 1
+      streamRetryAt = Date.now() + Math.min(30_000, backoff * (0.75 + Math.random() * 0.5))
+      showDegraded(true)
+      if (opened) announce(COPY.hidden)
+      void read()
+    }
   }
 
   async function read(): Promise<void> {
     if (campaignId === null || paused || departed || actionPending || activeRead !== null) return
     const controller = new AbortController()
     activeRead = controller
+    if (Date.now() >= streamRetryAt) {
+      await openStream(campaignId, controller)
+      return
+    }
     const deadline = browser.setTimeout(() => controller.abort(), READ_TIMEOUT_MS)
     const result = await readTable(campaignId, controller.signal, request)
     browser.clearTimeout(deadline)
@@ -116,6 +182,7 @@ export function mountTable(
     activeRead = null
     if (result.kind === 'live') {
       showPicture(result)
+      armSilenceTimer()
       queue(POLL_MS)
       return
     }
@@ -130,12 +197,7 @@ export function mountTable(
       queue(result.delay)
       return
     }
-    signIn.hidden = result.kind !== 'signed-out'
-    if (!signIn.hidden) {
-      signOut.hidden = true
-      leave.hidden = true
-    }
-    announce(result.kind === 'signed-out' ? COPY.signedOut : COPY.inactive)
+    finish(result.kind)
   }
 
   function recheck(): void {
