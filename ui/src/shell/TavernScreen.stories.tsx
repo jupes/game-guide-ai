@@ -246,7 +246,11 @@ const PLAYER_HEADER = ['New Campaign', 'Back to chat']
 /** E-1 (ID-25): a player with no seat gets the panel; New Campaign is locked, never hidden. */
 export const PlayerNoSeats = playerState(() => page([]), async (canvas) => {
   await expect(await canvas.findByRole('heading', { name: 'Campaigns are being built', level: 2 })).toBeVisible()
-  await expect(canvas.getByRole('button', { name: 'New Campaign' })).toHaveAttribute('aria-disabled', 'true')
+  const locked = canvas.getByRole('button', { name: 'New Campaign' })
+  const reason = canvas.getByText('Creating campaigns is not available to your account yet')
+  await expect(locked).toHaveAttribute('aria-disabled', 'true')
+  await expect(locked).toHaveAccessibleDescription(reason.textContent ?? '')
+  await expect(reason.getBoundingClientRect().width).toBeGreaterThan(1)
   await expect(canvas.queryByRole('heading', { name: 'Begin anew' })).toBeNull()
   await expectTouchTargets(canvas, ['Ask the Sage', ...PLAYER_HEADER])
 })
@@ -268,6 +272,27 @@ export const PlayerSeats = playerState(() => page(SEATS), async (canvas) => {
 export const PlayerSeatsDark = dark(PlayerSeats)
 export const PhonePlayerSeats = onPhone(PlayerSeats)
 export const PhonePlayerSeatsDark = onPhone(PlayerSeats, 'dark')
+
+const playerMoreSeats = playerState(
+  () => page(Array.from({ length: 13 }, (_, i) => {
+    const number = String(i + 1).padStart(2, '0')
+    return seat(`cmp_s${number}`, `Table ${number}`)
+  })),
+  async (canvas) => {
+    const list = await canvas.findByRole('list', { name: 'Your seats' })
+    await expect(within(list).getAllByRole('listitem')).toHaveLength(12)
+    const more = canvas.getByRole('button', { name: 'Show more seats' })
+    await expectTouchTargets(canvas, ['Show more seats'])
+    more.focus()
+    await userEvent.keyboard('{Enter}')
+    const firstNewSeat = within(list).getByRole('heading', { name: 'Table 13' })
+    await expect(firstNewSeat).toHaveFocus()
+    await expect(getComputedStyle(firstNewSeat).outlineStyle).toBe('solid')
+    await expect(more).not.toBeInTheDocument()
+  },
+)
+export const PhonePlayerMoreSeats = onPhone(playerMoreSeats)
+export const PhonePlayerMoreSeatsDark = onPhone(playerMoreSeats, 'dark')
 
 export const PlayerSeatsLoading = playerState(() => pending(), async (canvas) => {
   await expect(canvas.getByText('Loading your seats…', { selector: 'p:not([role])' })).toBeVisible()

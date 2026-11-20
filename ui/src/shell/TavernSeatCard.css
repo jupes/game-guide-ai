@@ -46,3 +46,8 @@
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 3px;
 }
+
+.tavern-seat .tavern-card__name:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary);
+  outline-offset: 2px;
+}
