@@ -400,6 +400,22 @@ def test_chat_succeeds_when_metrics_storage_fails():
     assert response.json()["answerable"] is True
 
 
+def test_chat_dependency_failure_records_one_bounded_handler_error(monkeypatch):
+    sink = _RecordingSink()
+
+    def fail():
+        raise RuntimeError("synthetic dependency failure")
+
+    monkeypatch.setattr(app.state, "metrics_sink", sink, raising=False)
+    monkeypatch.setitem(app.dependency_overrides, get_service, fail)
+    response = TestClient(app).post("/chat", json={"prompt": "question"})
+    assert response.status_code == 500 and response.json() == {"detail": "internal error"}
+    assert [point.name for point in sink.points] == [
+        "service.chat.duration_ms", "service.chat.error", "service.chat.error_category",
+    ]
+    assert sink.points[0].value >= 0 and sink.points[1].value is True and sink.points[2].value == "handler"
+
+
 @pytest.mark.parametrize(
     ("payload", "service", "status_code", "category"),
     [

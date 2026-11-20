@@ -685,6 +685,7 @@ def test_the_hook_is_outside_chat_metrics_and_inside_the_security_headers():
         ("BodyLimitMiddleware", None),  # agent-forge-harness-ust7
         ("JobHookMiddleware", None),
         ("BaseHTTPMiddleware", "capture_chat_metrics"),
+        ("RouteErrors", None),
     ]
 
 

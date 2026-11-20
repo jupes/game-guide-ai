@@ -60,6 +60,7 @@ from service.job_driver import (
 )
 from service.jobs import LEASE_SECONDS, InMemoryJobQueue, Job, JobContext, JobHandler, JobRunner, JobRunResult
 from service.migrations import Report
+from service.route_errors import RouteErrors
 from service.workbench_api import api_route_dependants, install_workbench
 
 T0 = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
@@ -259,6 +260,7 @@ def test_every_declaration_that_existed_before_the_job_runner_is_unchanged() -> 
         (BodyLimitMiddleware, None),  # agent-forge-harness-ust7
         (JobHookMiddleware, None),
         (BaseHTTPMiddleware, appmod.capture_chat_metrics),
+        (RouteErrors, None),
     ]
     assert len(stack) == len(expected), stack
     for (cls, dispatch), (want_cls, want_dispatch) in zip(stack, expected, strict=True):
