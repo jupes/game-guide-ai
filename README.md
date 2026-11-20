@@ -168,6 +168,10 @@ cd ui && bun run test                            # UI: jsdom unit tests + storyb
 cd ui && bun run test:e2e                        # UI: Playwright E2E + perf budgets (production Compose image)
 ```
 
+Run `bunx playwright install chromium webkit` from `ui` to set up the mobile
+browser profile. Then run `bun run test:e2e:mobile` to check the GM Workbench
+and player table entry with Pixel and iPhone emulation through the same proxy.
+
 ### Continuous integration
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every pull request to

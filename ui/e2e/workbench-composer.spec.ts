@@ -12,6 +12,8 @@ const thread = {
   title: null, created_at: '2026-09-16T19:20:11Z', updated_at: null, archived_at: null,
 }
 
+test.use({ hasTouch: true })
+
 async function prepWorkbench(page: Page): Promise<void> {
   await page.setViewportSize({ width: 375, height: 812 })
   await page.route('**/auth/me', (route) => route.fulfill({
@@ -166,7 +168,7 @@ test('a hydrated monster card saves without replacing the canvas and opens on a 
   const save = page.getByRole('button', { name: 'Save to Bestiary' })
   await expect(save).toBeVisible()
   expect(called).toEqual([])
-  await save.click()
+  await save.press('Enter')
   const open = page.getByRole('button', { name: 'Open in Bestiary' })
   await expect(open).toBeFocused()
   await expect(page).not.toHaveURL(/document=/)
@@ -305,7 +307,7 @@ test('history restore on a phone flushes drafts and appends a new version', asyn
   await canvas.getByRole('button', { name: 'Edit Voice' }).click()
   const voice = canvas.getByRole('textbox', { name: 'Voice', exact: true })
   await voice.fill('Voice to preserve in history')
-  await restore.click()
+  await restore.tap()
   const guard = page.getByRole('dialog', { name: /unsaved changes/i })
   await expect(guard).toBeVisible()
   expect(writes).toContain('patch')
@@ -330,6 +332,7 @@ test('a phone retries a portrait upload without reserving a second asset', async
   const documentPath = `/campaigns/${CAMPAIGN_ID}/documents/${DOCUMENT_ID}`
   const assetId = 'ast_e2ePortraitAsset0000000001'
   const abandonedId = 'ast_e2ePortraitAbandoned000001'
+  const uploadPath = `${collection}/${assetId}/bytes`
   const description = 'A traveller wearing a sea-green cloak'
   const image = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8/x8AAwMCAO+/T1sAAAAASUVORK5CYII=',
@@ -338,6 +341,23 @@ test('a phone retries a portrait upload without reserving a second asset', async
   const commands: string[] = []
   const order: string[] = []
   const discarded: string[] = []
+  const uploads: Buffer[] = []
+  await page.exposeFunction('recordPortraitBytes', (bytes: number[]) => { uploads.push(Buffer.from(bytes)) })
+  // WebKit's network interceptor doesn't expose file blobs. Read the outgoing
+  // request body in the browser before forwarding the original fetch.
+  await page.addInitScript((path) => {
+    const fetchOriginal = window.fetch.bind(window)
+    const capture = (window as typeof window & {
+      recordPortraitBytes: (bytes: number[]) => Promise<void>
+    }).recordPortraitBytes
+    window.fetch = async (input, init) => {
+      if (typeof input === 'string' && input === path && init?.method === 'PUT') {
+        const request = new Request(new URL(path, window.location.href), init)
+        await capture(Array.from(new Uint8Array(await request.arrayBuffer())))
+      }
+      return fetchOriginal(input, init)
+    }
+  }, uploadPath)
   let server = { ...DOCUMENT, data: { ...DOCUMENT.data, portrait: undefined as AssetRef | undefined } }
   const asset = {
     schema_version: 1, asset_id: assetId, campaign_id: CAMPAIGN_ID, kind: 'image',
@@ -361,9 +381,9 @@ test('a phone retries a portrait upload without reserving a second asset', async
     order.push('reserve')
     return route.fulfill({ status: 201, json: commands.length <= 2 ? asset : { ...asset, asset_id: abandonedId } })
   })
-  await page.route((url) => url.pathname === `${collection}/${assetId}/bytes`, (route) => {
+  await page.route((url) => url.pathname === uploadPath, (route) => {
     expect(route.request().method()).toBe('PUT')
-    expect(route.request().postDataBuffer()).toEqual(image)
+    expect(route.request().headers()['content-type']).toBe('image/png')
     order.push('upload')
     if (commands.length === 1) return route.fulfill({ status: 503, json: {} })
     return route.fulfill({ json: { ...asset, state: 'ready', width: 1, height: 1 } })
@@ -401,6 +421,7 @@ test('a phone retries a portrait upload without reserving a second asset', async
   await expect.poll(() => canvas.getByRole('img', { name: description }).evaluate((node: HTMLImageElement) => node.naturalWidth)).toBe(1)
   await expect(canvas.getByRole('button', { name: 'Replace portrait' })).toBeFocused()
   expect(order).toEqual(['reserve', 'upload', 'reserve', 'upload', 'attach'])
+  expect(uploads).toEqual([image, image])
   expect(commands).toHaveLength(2)
   expect(commands[1]).toEqual(commands[0])
 

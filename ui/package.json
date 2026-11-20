@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --project=jsdom --coverage",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:mobile": "playwright test --config playwright.mobile.config.ts",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
