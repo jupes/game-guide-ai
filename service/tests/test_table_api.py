@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -58,6 +58,7 @@ from service.table_admission import TableFull
 from service.table_reads import TableReads
 from service.table_session_store import SCREENS_PER_SESSION, InMemoryTableSessionStore, no_slots
 from service.table_sessions import TableSessions
+from service.table_streams import TableStreams
 from service.workbench_api import (
     CROSS_SITE_DETAIL,
     FORBIDDEN_ORIGIN_DETAIL,
@@ -727,7 +728,11 @@ def test_stream_is_off_by_default_and_opt_in_reuses_the_table_route_guards(world
 
     class Streams:
         calls = []
-        result = "lease"
+        result: str | Exception | None = "lease"
+
+        @property
+        def admission(self) -> Streams:
+            return self
 
         async def open(self, campaign_id, **arguments):
             self.calls.append((campaign_id, arguments))
@@ -740,12 +745,12 @@ def test_stream_is_off_by_default_and_opt_in_reuses_the_table_route_guards(world
             yield b'event: inactive\ndata: {"schema_version":1,"event":"inactive"}\n\n'
 
     streams = Streams()
-    streams.admission = streams
     local = FastAPI()
     install_workbench(local)
     local.include_router(table_api.build_router(
         appmod.require_session, lambda: world.auth, appmod._clear_session_cookie,
-        lambda: world.lifecycle, lambda: None, table_streams=lambda: streams,
+        # The route only uses the admission and streaming interfaces on this fake.
+        lambda: world.lifecycle, lambda: None, table_streams=lambda: cast(TableStreams, streams),
     ))
     local.dependency_overrides[table_api.get_clock] = lambda: world.now[0]
     client = TestClient(local, base_url="https://testserver")
