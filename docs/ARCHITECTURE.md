@@ -854,6 +854,21 @@ or `scope` is. Consumers: `1kg.7.2` and `1kg.7.5` (table routes, streams),
 `1ir.2.3` (the transaction helper takes a principal, never loose ids),
 `1ir.2.5` (fingerprints over its carried revisions), `1ir.11.1` (the Confirm).
 
+### Campaign entities and aliases
+
+`service/entity_index.py` builds a GM lexicon snapshot from active campaign
+documents. Each entity uses its document name, kind and write revision. The
+snapshot's revision also includes the campaign policy revision, which advances
+for new aliases, classification changes and identity links. Repeating a
+registration, classification or link leaves that revision stable.
+
+Resolver aliases are explicit records. They start unclassified and use the
+same seven eligibility classes as fields. The alias read resolves the current
+seat, sheet links and group membership in the same statement as the aliases.
+It returns eligible alias text and its document reference. Pronunciation hints,
+canonical names and persona links stay in the GM snapshot. The player resolver
+and its route-level entitlement checks are downstream work.
+
 ## Media assets (GM Workbench)
 
 Storage for a GM's images and audio, added by `1kg.8.1.1` (slice a of `1kg.8.1`):
