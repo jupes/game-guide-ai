@@ -13,10 +13,9 @@
  * region: the status node, mounted empty with the list and given the messages in
  * the spec's section 3.4 (one at the start of a read, one at its end).
  *
- * - Seats (ID-17, ID-21 to ID-28): informational cards with nothing to press. A
- *   confirmed seat whose table is live reads "Live now" as plain text, never a
- *   link, because no table page exists yet (`1kg.7.4`, SEC-43). An unconfirmed
- *   seat reads "Waiting for your GM to confirm your seat".
+ * - Seats (ID-17, ID-21 to ID-28): a confirmed seat at a live table shows
+ *   "Live now" and links to the player table. An unconfirmed seat reads
+ *   "Waiting for your GM to confirm your seat".
  * - One Retry serves both reads: it re-asks whichever of campaigns and seats failed.
  *
  * - Read once per visit, every page (the order is the client's, and

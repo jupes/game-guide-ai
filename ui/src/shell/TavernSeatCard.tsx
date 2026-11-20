@@ -2,15 +2,11 @@
  * TavernSeatCard -- one of the caller's own seats on the tavern screen
  * (agent-forge-harness-30c, PR-2; ID-17, ID-24).
  *
- * A non-interactive container with nothing in it to press. A seat has no Prep
- * (the campaign is another GM's), no Start Session and no Mark concluded, and no
- * table page exists yet (`1kg.7.4`, SEC-43), so a confirmed seat's LIVE state is
- * plain text -- "Live now" -- and never a link: a dead link to a 404 is worse
- * than none. The card says exactly one thing about the seat's standing:
+ * The card says exactly one thing about the seat's standing:
  * - concluded: "This table has concluded";
  * - not yet confirmed (D-12): "Waiting for your GM to confirm your seat", whatever
  *   the table is doing, because an unconfirmed seat cannot join;
- * - confirmed and live: the "Live now" badge;
+ * - confirmed and live: the "Live now" badge and a link to the player table;
  * - otherwise "Last played {date}" when the table has met.
  *
  * Only what `PlayerSeat` carries is shown: the table's name, tone and system and
@@ -23,6 +19,7 @@ import { Badge } from '../ds/Badge'
 import { Card } from '../ds/Card'
 import { Chip } from '../ds/Chip'
 import type { PlayerSeat } from '../gm/contracts'
+import { tableAddress } from '../table/address'
 import { SYSTEM_LABELS, tavernDate } from './tavernOrder'
 import './TavernCampaignCard.css'
 import './TavernSeatCard.css'
@@ -73,6 +70,11 @@ export function TavernSeatCard({ seat, now }: TavernSeatCardProps): React.JSX.El
       {state === 'waiting' && <Note icon="hourglass_empty">{WAITING_FOR_GM}</Note>}
       {state === 'quiet' && seat.last_played_at !== null && (
         <Note icon="history">{`Last played ${tavernDate(seat.last_played_at, now)}`}</Note>
+      )}
+      {live && (
+        <a className="tavern-seat__join" href={tableAddress(seat.campaign_id)} aria-label={`Join table ${seat.campaign_name}`}>
+          Join table
+        </a>
       )}
     </Card>
   )

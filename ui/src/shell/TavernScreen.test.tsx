@@ -1011,7 +1011,7 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     expect(seatNames()).toEqual(['Table of cmp_B', 'Table of cmp_D', 'Table of cmp_A', 'Table of cmp_C'])
   })
 
-  it('SP-3 each seat says one thing about its standing: plain "Live now" and no link or button, waiting, concluded, or last played', async () => {
+  it('SP-3 each seat shows its standing, and only a confirmed live seat links to the player table', async () => {
     const seats = [
       seatBody('cmp_B', { live: true, tone: 'Mystery · Low magic' }),
       seatBody('cmp_D', { confirmed: false, live: true }),
@@ -1027,9 +1027,8 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     expect(live.getByText('Playing as Brannoc')).toBeInTheDocument()
     expect(live.getByText('5e')).toBeInTheDocument()
     expect(live.queryByText('Last played', { exact: false })).toBeNull()
-    // ID-17: no table page exists, so there is nothing to press and nowhere to go.
-    expect(screen.queryAllByRole('link')).toHaveLength(0)
-    expect(document.querySelectorAll('a')).toHaveLength(0)
+    expect(live.getByRole('link', { name: 'Join table Table of cmp_B' })).toHaveAttribute('href', '/table?campaign_id=cmp_B')
+    expect(within(screen.getByRole('list', { name: 'Your seats' })).getAllByRole('link')).toHaveLength(1)
     for (const id of ['cmp_B', 'cmp_D', 'cmp_C', 'cmp_A']) {
       expect(within(seatCard(id)).queryAllByRole('button'), id).toHaveLength(0)
     }

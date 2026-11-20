@@ -1,7 +1,6 @@
 /* ── TavernSeatCard (agent-forge-harness-30c, PR-2) ──────────────────────────
    One of the caller's own seats. It shares the owned card's head, name, tone and
-   chip rules (TavernCampaignCard.css) and adds only its alias and note lines.
-   Tokens only, so both themes come with them. Nothing here is pressable. */
+   chip rules (TavernCampaignCard.css) and adds the seated player's actions. */
 
 .tavern-seat__alias {
   margin: 0;
@@ -31,4 +30,19 @@
 
 .tavern-seat--concluded .tavern-card__name {
   color: var(--md-sys-color-on-surface-variant);
+}
+
+.tavern-seat__join {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 44px;
+  color: var(--md-sys-color-primary);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.tavern-seat__join:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 3px;
 }

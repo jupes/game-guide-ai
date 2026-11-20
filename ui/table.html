@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Player table · Aetheril</title>
+  </head>
+  <body>
+    <main id="player-table">
+      <h1>Player table</h1>
+      <p id="table-status" role="status">Joining the table…</p>
+      <div id="table-projections"></div>
+      <nav aria-label="Table actions">
+        <button class="table-action" id="table-reload" type="button" hidden>Reload table</button>
+        <button class="table-action" id="table-sign-out" type="button" hidden>Sign out</button>
+        <button class="table-action" id="table-leave" type="button" hidden>Leave table</button>
+        <a class="table-action" id="table-sign-in" href="/" hidden>Sign in</a>
+        <a class="table-action" href="/tavern">Back to the Tavern</a>
+      </nav>
+    </main>
+    <script type="module" src="/src/table/main.ts"></script>
+  </body>
+</html>

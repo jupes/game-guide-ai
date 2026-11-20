@@ -692,15 +692,15 @@ NGINX = SERVICE.parent / "ui" / "nginx.conf"
 
 
 def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
-    """`tests/test_proxy_contract.py` asks only for a location that begins with
-    `/table`. The three routes are named exactly — a bare `/table` would also
-    catch the table page (`1kg.7.4`) and `/table-sessions` — and each forwards
-    `Host` (the origin check compares `Origin` with it) and `X-Real-IP`."""
+    """Each table API has an exact location and forwards Host and X-Real-IP.
+
+    The /table document has its own location and is served by Nginx directly.
+    """
     conf = NGINX.read_text(encoding="utf-8")
     table_paths = sorted({path for path, _ in api_routes(app) if path.startswith("/table/")})
     assert table_paths == [LEAVE, MINT, SNAPSHOT]
-    blocks = dict(re.findall(r"location\s+(/table\S*)\s*\{([^}]*)\}", conf))
-    assert sorted(blocks) == table_paths, "each table route by its own name, and no bare /table"
+    blocks = dict(re.findall(r"location\s+=\s+(/table/\S+)\s*\{([^}]*)\}", conf))
+    assert sorted(blocks) == table_paths
     for path, block in blocks.items():
         assert "proxy_set_header   Host $host;" in block, path
         assert "proxy_set_header   X-Real-IP $remote_addr;" in block, path

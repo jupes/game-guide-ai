@@ -31,13 +31,12 @@ from service.security_headers import (
     PERMISSIONS_POLICY,
     REFERRER_POLICY,
     STRICT_TRANSPORT_SECURITY,
+    TABLE_PAGE_HEADERS,
     X_CONTENT_TYPE_OPTIONS,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 NGINX_CONF = REPO_ROOT / "ui" / "nginx.conf"
-
-_DECLARATION = re.compile(r'add_header\s+Content-Security-Policy\s+"([^"]*)"\s+always;')
 
 # y58 — the same drift guard as `_DECLARATION` above, generalised to the four
 # headers this bead added. Built from the header name rather than one regex
@@ -158,27 +157,33 @@ def declarations_of(nginx_conf: str, header_name: str) -> list[HeaderDeclaration
     return found
 
 
+def header_value(nginx: str, declaration: HeaderDeclaration, key: str = "default") -> str | None:
+    """Resolve the server header's request-URI map, if it uses one."""
+    value = declaration.value
+    if value is None or not value.startswith("$"):
+        return value
+    maps = re.findall(rf"^map \$request_uri {re.escape(value)} \{{\n([^}}]+)\}}", nginx, re.MULTILINE)
+    assert len(maps) == 1
+    entries = re.findall(r'^\s*(\S+) "([^"]*)";\s*$', maps[0], re.MULTILINE)
+    assert [selector for selector, _ in entries] == ["default", "~^/table([?]|$)"]
+    return dict(entries)[key]
+
+
 def test_nginx_declares_the_same_policy_exactly_once() -> None:
     nginx = NGINX_CONF.read_text(encoding="utf-8")
-    matches = _DECLARATION.findall(nginx)
+    (declaration,) = declarations_of(nginx, "Content-Security-Policy")
+    assert declaration.always
+    assert header_value(nginx, declaration) == CONTENT_SECURITY_POLICY
 
-    # Count FIRST. Asserting only on the value is vacuous the day the regex
-    # stops matching: `findall` returns [], no comparison runs, and the test
-    # reports the policy as intact while nginx sends nothing.
-    assert len(matches) == 1, (
-        f'expected exactly one `add_header Content-Security-Policy "…" always;` in '
-        f"ui/nginx.conf, found {len(matches)}. Two declarations at the same level do "
-        "not merge into a stronger policy — the browser enforces both, and the "
-        "stricter one wins in ways nobody reading either line would predict."
-    )
-    assert matches[0] == CONTENT_SECURITY_POLICY, (
-        "ui/nginx.conf and service/security_headers.py send different policies. "
-        "nginx serves the SPA in Compose and in the E2E; the service serves it in "
-        "production. A difference means the browser test and production enforce "
-        "different rules (threat model R-6).\n"
-        f"  nginx:   {matches[0]!r}\n"
-        f"  service: {CONTENT_SECURITY_POLICY!r}"
-    )
+
+@pytest.mark.parametrize("header,expected", TABLE_PAGE_HEADERS.items())
+def test_nginx_matches_the_separate_table_page_policy(header: str, expected: str) -> None:
+    nginx = NGINX_CONF.read_text(encoding="utf-8")
+    (declaration,) = declarations_of(nginx, header)
+    assert declaration.always
+    assert header_value(nginx, declaration, "~^/table([?]|$)") == expected
+    if header in {"Cache-Control", "Cross-Origin-Resource-Policy"}:
+        assert header_value(nginx, declaration) == ""
 
 
 def test_the_policy_is_declared_above_every_location_and_no_location_overrides_it() -> None:
@@ -227,12 +232,13 @@ def test_nginx_declares_each_new_security_header_exactly_once_and_it_matches(hea
         f'as `add_header {header_name} "<value>" always;`.'
     )
     assert declaration.always, f"ui/nginx.conf's {header_name} lacks `always`, so 4xx/5xx responses would not carry it."
-    assert declaration.value == _NEW_HEADERS[header_name], (
+    actual = header_value(nginx, declaration)
+    assert actual == _NEW_HEADERS[header_name], (
         f"ui/nginx.conf and service/security_headers.py send different {header_name} "
         "values. nginx serves the SPA in Compose and in the E2E; the service serves it "
         "in production. A difference means the browser test and production enforce "
         "different rules (threat model R-6).\n"
-        f"  nginx:   {declaration.value!r}\n"
+        f"  nginx:   {actual!r}\n"
         f"  service: {_NEW_HEADERS[header_name]!r}"
     )
 
