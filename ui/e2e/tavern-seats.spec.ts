@@ -16,9 +16,8 @@
  *    A separate signed-out context opens the same URL through the real proxy
  *    and API guard, without the picture stub.
  *
- * A new file, not an edit to an existing spec. Both tests sign in as the SECOND
- * account: the per-account sign-in budget is 10 attempts per 300 s and is
- * deliberately not raised for the E2E stack (docker-compose.e2e.yml).
+ * Each test signs in with a fresh test account and exercises the normal
+ * per-account sign-in limit.
  */
 
 import type { Page } from '@playwright/test'
