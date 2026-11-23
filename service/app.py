@@ -44,6 +44,7 @@ from . import (
     campaigns_api,
     card_executors,
     conversations_api,
+    cues_api,
     document_lifecycle_api,
     documents_api,
     gcp_logging,
@@ -2028,6 +2029,7 @@ app.include_router(seats_api.build_router(require_session, get_timeline_database
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
 app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
 app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
+app.include_router(cues_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
 app.include_router(
     asset_serving_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled, _job_driver)
 )

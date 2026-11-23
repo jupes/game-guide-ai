@@ -372,10 +372,13 @@ DARK_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
 
 
 def _dark_pairs() -> list[tuple[str, str]]:
-    campaign, asset = "cmp_" + "a" * 22, "ast_" + "b" * 22
+    campaign, asset, cue = "cmp_" + "a" * 22, "ast_" + "b" * 22, "cue_" + "c" * 22
     return [(f"/campaigns/{campaign}/assets", f"/campaigns/{campaign}/assetz"),
             (_bytes_path(campaign, asset), f"/campaigns/{campaign}/assetz/{asset}/bytes"),
-            (f"/campaigns/{campaign}/assets/upload-capability", f"/campaigns/{campaign}/assetz/upload-capability")]
+            (f"/campaigns/{campaign}/assets/upload-capability", f"/campaigns/{campaign}/assetz/upload-capability"),
+            (f"/campaigns/{campaign}/assets/{asset}/status", f"/campaigns/{campaign}/assetz/{asset}/status"),
+            *((f"/campaigns/{campaign}/cues{suffix}", f"/campaigns/{campaign}/cuez{suffix}")
+              for suffix in ("", "/capability", "/list", f"/{cue}", f"/{cue}/archive", f"/{cue}/restore"))]
 
 
 @pytest.mark.parametrize("topology", ["no static mount", "root static mount"])
@@ -414,11 +417,10 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert appmod._media_enabled() is True
     media = [route for path, route in api_routes(app) if "/assets" in path]
-    # Three upload routes, and 1kg.8.1.3's read and delete (`asset_serving_api`).
-    assert len(media) == 5 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
+    assert len(media) == 6 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
     assert not [path for path, _ in api_routes(app) if ":path}" in path]
     app.openapi_schema = None
-    assert not [path for path in app.openapi()["paths"] if "/assets" in path], "no announcement either"
+    assert not [path for path in app.openapi()["paths"] if "/assets" in path or "/cues" in path]
 
 
 def test_no_api_route_begins_with_assets() -> None:

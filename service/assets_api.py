@@ -527,6 +527,26 @@ def build_router(
         return create_asset(live_db, live.assets, campaign_id=campaign_id, owner_id=user.user_id, request=request,
                             now=clock())
 
+    @create_router.get(f"{CREATE_PATH}/{{asset_id}}/status", response_model=Asset, include_in_schema=False)
+    def status(
+        campaign_id: str,
+        asset_id: str,
+        user: SessionData = Depends(gm),
+        db: TransactionalDatabase | None = Depends(database),
+        runtime: MediaRuntime | None = Depends(media),
+    ) -> Asset:
+        live_db, live = _available(db, runtime)
+        _shaped(campaign_id, asset_id)
+
+        def read() -> Asset:
+            with live_db.transaction() as unit:
+                found = live.assets.get(unit, campaign_id, asset_id, owner_id=user.user_id)
+                if found is None:
+                    not_found()
+                return found.to_wire()
+
+        return _guarded(read)
+
     @bytes_router.put(BYTES_PATH, response_model=Asset, include_in_schema=False)
     async def upload(
         campaign_id: str,

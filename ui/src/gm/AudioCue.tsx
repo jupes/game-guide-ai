@@ -84,8 +84,8 @@ export interface AudioCueProps {
   onPreviewMute: (muted: boolean) => void
   /** Absent for a one-shot (AUDIO-3). */
   onLoopChange?: (loop: boolean) => void
-  onPlayToTable: () => void
-  onStop: () => void
+  onPlayToTable?: () => void
+  onStop?: () => void
   onRetryPush?: () => void
   /** §12.2: offered beside `This file couldn't be processed`. */
   onReplace?: () => void
@@ -276,7 +276,7 @@ export function AudioCue({
       )}
 
       {/* ── The table's two controls (AUDIO-8) ── */}
-      <div className="gm-audio-cue__table" role="group" aria-label="Table controls">
+      {onPlayToTable && onStop && <div className="gm-audio-cue__table" role="group" aria-label="Table controls">
         <Button
           variant="filled"
           size="small"
@@ -311,7 +311,7 @@ export function AudioCue({
             Retry
           </Button>
         )}
-      </div>
+      </div>}
 
       {/* STATE-7: the one polite region on this surface. Its text is derived
           from discrete state only, so no tick and no seek step announces. */}

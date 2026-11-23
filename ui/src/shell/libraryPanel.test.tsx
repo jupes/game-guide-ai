@@ -8,14 +8,16 @@
 
 import * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import {
   campaignFixture, defaultWorkbenchRoute, flush, live, mountSelected, mountWorkbench, run, type Route,
 } from '../testing/workbenchHarness'
 import { LIBRARY_TABS, LibraryPanelProvider, useLibraryPanel } from './libraryPanel'
+import { LibraryNavGroup } from './LibraryNavGroup'
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   window.history.replaceState(null, '', '/')
 })
 
@@ -46,11 +48,31 @@ function Surface({ withOpener = true }: { withOpener?: boolean }): React.JSX.Ele
 const opener = (): HTMLElement => screen.getByRole('button', { name: 'Opener' })
 
 describe('open, toggle, close and the tab', () => {
-  it('starts closed on NPCs, and has exactly the four document tabs (never cues)', async () => {
+  it('starts closed on NPCs with the four document tabs while audio is off', async () => {
     await mountSelected(() => <Surface />)
     expect(panel.open).toBe(false)
     expect(panel.category).toBe('npcs')
     expect(LIBRARY_TABS).toEqual(['npcs', 'bestiary', 'documents', 'session-log'])
+    expect(panel.tabs).toEqual(LIBRARY_TABS)
+  })
+
+  it('offers Cues in expanded navigation only for the campaign that enabled it', async () => {
+    await mountSelected(() => (
+      <LibraryPanelProvider>
+        <Probe />
+        <LibraryNavGroup />
+      </LibraryPanelProvider>
+    ), {
+      stubGlobalFetch: true,
+      route: (call) => call.url === '/campaigns/cmp_A/cues/capability' ? { status: 204 } : defaultWorkbenchRoute(call),
+    })
+    const row = await screen.findByRole('button', { name: 'Cues' })
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+    expect(panel.category).toBe('cues')
+    await run(() => live.campaign.selectCampaign(campaignFixture('cmp_B')))
+    expect(panel.open).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Cues' })).toBeNull()
   })
 
   it('opens at a category, switches tab while open, and closes', async () => {

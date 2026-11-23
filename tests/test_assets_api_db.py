@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import threading
 from collections.abc import Iterable, Iterator
+from contextlib import closing
 from datetime import datetime
 from typing import Any, cast
 
@@ -30,7 +31,7 @@ from service import app as appmod
 from service import assets_api
 from service import migrations as mig
 from service.app import app, get_timeline_database, require_session
-from service.asset_store import PostgresAssetStore
+from service.asset_store import PostgresAssetStore, new_object_key, new_tmp_key
 from service.db import Database, PoolSettings
 from service.jobs import PostgresJobQueue
 from service.media_objects import InMemoryObjectStore, MediaSettings, ObjectPage, ObjectStat
@@ -156,3 +157,93 @@ def test_no_connection_is_held_while_an_upload_moves_bytes(
         db.close()
     assert objects.probes >= 3, "the stream in, the copy out and the processed write were each probed"
     assert objects.failures == []
+
+
+def test_cues_are_private_idempotent_paginated_and_follow_the_asset(
+    dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from service import campaign_identity as ident
+
+    first, second, long, pending, foreign = (ident.new_id(ident.ASSET) for _ in range(5))
+    other = ident.new_id(ident.CAMPAIGN)
+    with connect(dsn) as conn:
+        outsider = int(conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('other@example.com', 'x') RETURNING id"
+        ).fetchone()[0])
+        conn.execute("INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Other')", (other, outsider))
+        for asset, campaign, duration in [(first, CAMPAIGN, 900), (second, CAMPAIGN, 1500),
+                                         (long, CAMPAIGN, 31_000), (foreign, other, 900)]:
+            conn.execute(
+                "INSERT INTO campaign.assets (id, campaign_id, kind, state, declared_media_type, declared_size_bytes, "
+                "media_type, size_bytes, duration_ms, object_key, tmp_key) "
+                "VALUES (%s,%s,'audio','ready','audio/mpeg',100,'audio/mpeg',100,%s,%s,%s)",
+                (asset, campaign, duration, new_object_key(), new_tmp_key()),
+            )
+        conn.execute(
+            "INSERT INTO campaign.assets (id, campaign_id, kind, state, declared_media_type, declared_size_bytes, "
+            "object_key, tmp_key) VALUES (%s,%s,'audio','uploading','audio/mpeg',100,%s,%s)",
+            (pending, CAMPAIGN, new_object_key(), new_tmp_key()),
+        )
+    db = Database(dsn, PoolSettings(async_max=0))
+    runtime = assets_api.MediaRuntime(InMemoryObjectStore(), PostgresAssetStore(PostgresJobQueue(db)))
+    principal = SessionData(user_id=owner, role="dm")
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+    monkeypatch.setitem(app.dependency_overrides, get_timeline_database, lambda: db)
+    monkeypatch.setitem(app.dependency_overrides, appmod._media, lambda: runtime)
+    monkeypatch.setitem(app.dependency_overrides, require_session, lambda: principal)
+    prefix = f"/campaigns/{CAMPAIGN}/cues"
+    try:
+        with closing(TestClient(app)) as client:
+            def post(asset: str, title: str, command: str):
+                return client.post(prefix, json={
+                    "schema_version": 1, "campaign_id": CAMPAIGN, "asset_id": asset,
+                    "command_id": command, "title": title, "kind": "one_shot",
+                })
+
+            def listed(**overrides: object):
+                return client.post(prefix + "/list", json={
+                    "schema_version": 1, "campaign_id": CAMPAIGN, "search": "", "sort": "name",
+                    "archived": False, **overrides,
+                })
+
+            assert client.get(prefix + "/capability").status_code == 204
+            assert client.get(f"/campaigns/{CAMPAIGN}/assets/{pending}/status").json()["state"] == "uploading"
+            assert post(foreign, "Private foreign sound", "cmd-cue-foreign-01").status_code == 404
+            assert post(pending, "An unfinished sound", "cmd-cue-pending-01").status_code == 409
+            assert post(long, "Long sound", "cmd-cue-too-long-01").status_code == 422
+            made = post(first, "Storm % at dusk", "cmd-cue-created-01")
+            assert made.status_code == 201, made.text
+            assert made.headers["cache-control"] == "no-store"
+            cue_id = made.json()["cue_id"]
+            assert made.json()["duration_ms"] == 900
+            assert post(first, "Storm % at dusk", "cmd-cue-created-01").json()["cue_id"] == cue_id
+            assert post(first, "Duplicate", "cmd-cue-created-02").status_code == 409
+            assert post(second, "Bell", "cmd-cue-created-03").status_code == 201
+            page = listed(limit=1).json()
+            assert [cue["title"] for cue in page["items"]] == ["Bell"]
+            assert [cue["title"] for cue in listed(limit=1, cursor=page["next_cursor"]).json()["items"]] == [
+                "Storm % at dusk"
+            ]
+            assert [cue["cue_id"] for cue in listed(search="% at").json()["items"]] == [cue_id]
+            rename = client.patch(f"{prefix}/{cue_id}", json={"schema_version": 1, "title": "Rain"})
+            assert rename.json()["kind"] == "one_shot"
+            assert rename.json()["title"] == "Rain"
+            assert client.post(f"{prefix}/{cue_id}/archive").json()["archived"] is True
+            assert [cue["title"] for cue in listed(archived=True).json()["items"]] == ["Rain"]
+            assert client.post(f"{prefix}/{cue_id}/restore").json()["archived"] is False
+
+            principal = SessionData(user_id=outsider, role="dm")
+            assert listed().status_code == 404
+            assert client.get(f"/campaigns/{CAMPAIGN}/assets/{first}/status").status_code == 404
+            assert client.post(f"{prefix}/{cue_id}/archive").status_code == 404
+            principal = SessionData(user_id=owner, role="dm")
+            with connect(dsn) as conn:
+                conn.execute("DELETE FROM campaign.assets WHERE id = %s", (first,))
+            assert [cue["title"] for cue in listed().json()["items"]] == ["Bell"]
+            assert client.post(f"{prefix}/{cue_id}/archive").status_code == 404
+            monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=False, store="memory"))
+            dark = listed()
+            missing = client.post(f"{prefix}/missing", json={})
+            assert (dark.status_code, dark.content) == (missing.status_code, missing.content)
+    finally:
+        db.close()

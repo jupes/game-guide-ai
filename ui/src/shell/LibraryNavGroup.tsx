@@ -2,10 +2,8 @@
  * LibraryNavGroup -- the "Campaign Library" group of LeftNav
  * (agent-forge-harness-1kg.6.4; brief 2.5; LIB-7, LIB-8, INFERRED I-5).
  *
- * Four rows, one per category (NPCs, Bestiary, Documents, Session log; no Cues, I-1),
- * that OPEN the Library panel at that category. It replaces the 1kg.6.3 placeholder
- * list, and unlike it makes no request at all: the lists load in the panel, and only
- * when the GM asks.
+ * One row per available category opens the Library panel at that category.
+ * The lists load in the panel when the GM asks.
  *
  * - A row is a disclosure of the panel: `aria-controls` names it and `aria-expanded`
  *   says whether it is open at that category.
@@ -20,7 +18,7 @@
 
 import * as React from 'react'
 import { useCanvasActions } from './canvasContext'
-import { LIBRARY_PANEL_ID, LIBRARY_TABS, useLibraryPanel, type LibraryCategoryId } from './libraryPanel'
+import { LIBRARY_PANEL_ID, useLibraryPanel, type LibraryCategoryId } from './libraryPanel'
 import { LIBRARY_COPY } from './workbenchCopy'
 import './LibraryNavGroup.css'
 
@@ -30,6 +28,7 @@ const ICON: Readonly<Record<LibraryCategoryId, string>> = {
   bestiary: 'shield',
   documents: 'description',
   'session-log': 'history_edu',
+  cues: 'music_note',
 }
 
 export interface LibraryNavGroupProps {
@@ -40,7 +39,7 @@ export interface LibraryNavGroupProps {
 }
 
 export function LibraryNavGroup({ onNavigate, onOpenLibrary }: LibraryNavGroupProps): React.JSX.Element {
-  const { open, category, openLibrary } = useLibraryPanel()
+  const { open, category, tabs, openLibrary } = useLibraryPanel()
   const { drawerOpenerRef } = useCanvasActions()
   const titleId = React.useId()
 
@@ -58,7 +57,7 @@ export function LibraryNavGroup({ onNavigate, onOpenLibrary }: LibraryNavGroupPr
         {LIBRARY_COPY.title}
       </p>
       <ul className="library-nav__list" aria-labelledby={titleId}>
-        {LIBRARY_TABS.map((id) => (
+        {tabs.map((id) => (
           <li key={id}>
             <button
               type="button"
@@ -70,7 +69,7 @@ export function LibraryNavGroup({ onNavigate, onOpenLibrary }: LibraryNavGroupPr
               <span className="material-symbols-rounded library-nav__icon" aria-hidden="true">
                 {ICON[id]}
               </span>
-              <span>{LIBRARY_COPY.category[id].tab}</span>
+              <span>{id === 'cues' ? 'Cues' : LIBRARY_COPY.category[id].tab}</span>
             </button>
           </li>
         ))}

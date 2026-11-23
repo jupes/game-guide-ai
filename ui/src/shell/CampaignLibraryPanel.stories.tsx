@@ -13,6 +13,7 @@ import { expect, fireEvent, userEvent, waitFor, within } from 'storybook/test'
 import { json, pending, stubFetch, withShell } from '../../.storybook/shellHarness'
 import { expectTouchTargets } from '../../.storybook/touchTarget'
 import { atViewport, expectNoPageOverflow, expectTheme, expectViewport, type ViewportName } from '../../.storybook/viewports'
+import type { Cue } from '../gm/contracts'
 import type { ShellLayout } from './breakpoints'
 import { CampaignLibraryPanel } from './CampaignLibraryPanel'
 import { CampaignProvider } from './campaignContext'
@@ -82,13 +83,15 @@ const empty: Library = ({ category }) => page(category, [])
 const manyRows = (count: number): Row[] =>
   Array.from({ length: count }, (_, index) => ({ id: `doc_n${index + 1}`, type: 'npc', title: `Npc ${index + 1}` }))
 
-function api(library: Library, create: () => Response = () => json({ detail: 'unrouted' }, 404)) {
+type StoryRoutes = (url: string, init?: RequestInit) => Response | undefined
+
+function api(library: Library, create: () => Response = () => json({ detail: 'unrouted' }, 404), routes?: StoryRoutes) {
   return stubFetch((url, init) => {
     if (url === `/campaigns/${CAMPAIGN_ID}`) return json(CAMPAIGN)
     if (url === `/campaigns/${CAMPAIGN_ID}/library`) return library(JSON.parse(String(init?.body ?? '{}')) as LibraryRequest)
     if (url === `/campaigns/${CAMPAIGN_ID}/documents` && init?.method === 'POST') return create()
     if (init?.method === 'POST' && /\/documents\/doc_\w+\/(archive|unarchive|delete)$/.test(url)) return new Response(null, { status: 204 })
-    return json({ detail: `unrouted: ${url}` }, 404)
+    return routes?.(url, init) ?? json({ detail: `unrouted: ${url}` }, 404)
   })
 }
 
@@ -124,13 +127,14 @@ interface Scenario {
   library: Library
   category?: LibraryCategoryId
   create?: () => Response
+  routes?: StoryRoutes
   play: (canvas: ReturnType<typeof within>) => Promise<void>
 }
 
-function scenario({ library, category = 'npcs', create, play }: Scenario): Story {
+function scenario({ library, category = 'npcs', create, routes, play }: Scenario): Story {
   return {
     args: { layout: 'wide' },
-    beforeEach: api(library, create),
+    beforeEach: api(library, create, routes),
     render: (args) => (
       <CampaignProvider restore={{ campaignId: CAMPAIGN_ID, conversationId: null, documentId: null }}>
         <CanvasProvider>
@@ -211,6 +215,46 @@ export const EmptyNpcs = scenario({
 })
 export const EmptyNpcsPhone = asPhone(EmptyNpcs)
 export const EmptyNpcsDark = asDark(EmptyNpcs)
+
+const rainCue: Cue = {
+  schema_version: 1,
+  campaign_id: CAMPAIGN_ID,
+  cue_id: 'cue_Rain000000000000000001',
+  asset_id: 'ast_Rain000000000000000001',
+  title: 'Rain on the tavern roof',
+  kind: 'ambience',
+  duration_ms: 18000,
+  archived: false,
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+}
+
+export const CuesPhone = asPhone(scenario({
+  library: empty,
+  routes: (url) => {
+    const prefix = `/campaigns/${CAMPAIGN_ID}`
+    if (url === `${prefix}/cues/capability`) return new Response(null, { status: 204 })
+    if (url === `${prefix}/cues/list`) {
+      return json({ schema_version: 1, campaign_id: CAMPAIGN_ID, items: [rainCue], next_cursor: null })
+    }
+    if (url === `${prefix}/assets/${rainCue.asset_id}?rendition=waveform`) {
+      return json({ schema_version: 1, peaks: [0.1, 0.3, 0.2] })
+    }
+  },
+  play: async (canvas) => {
+    await canvas.findByRole('tab', { name: 'Cues' })
+    await expectTouchTargets(canvas, ['Cues'], 'tab')
+    await userEvent.click(canvas.getByRole('tab', { name: 'Cues' }))
+    const row = await canvas.findByRole('button', { name: rainCue.title })
+    await expectTouchTargets(canvas, ['Upload sound', rainCue.title])
+    await userEvent.click(row)
+    await expect(canvas.getByRole('group', { name: 'Preview (only you hear this)' })).toBeVisible()
+    await expect(canvas.getByRole('button', { name: `Loop ${rainCue.title}` })).toHaveAttribute('aria-pressed', 'true')
+    await expect(canvas.queryByRole('button', { name: 'Play to table' })).toBeNull()
+    await userEvent.click(canvas.getByRole('tab', { name: 'Documents' }))
+    await expect(canvas.queryByRole('group', { name: 'Preview (only you hear this)' })).toBeNull()
+  },
+}))
 
 export const EmptyBestiary = scenario({
   library: empty,
