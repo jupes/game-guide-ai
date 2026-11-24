@@ -5,6 +5,7 @@ import {
   type CueListQuery, type CuePage,
 } from './contracts'
 import { assetPath } from './documentFields'
+import { deleteArchivedResource, type DeleteResult } from './documentApi'
 
 const ONE_SHOT_MAX_BYTES = 5_000_000
 const AUDIO_TYPE: Readonly<Record<string, string>> = {
@@ -80,6 +81,10 @@ export async function updateCue(
   const saved = await checkedCue(reply, cue.campaign_id, failure)
   if (saved.cue_id !== cue.cue_id) throw new CueApiError(failure)
   return saved
+}
+
+export function deleteCue(cue: Cue, password: string, fetchImpl: typeof fetch): Promise<DeleteResult> {
+  return deleteArchivedResource(path(cue.campaign_id, `/${encodeURIComponent(cue.cue_id)}/delete`), password, fetchImpl, 'conflict')
 }
 
 export interface CueUploadIntent {

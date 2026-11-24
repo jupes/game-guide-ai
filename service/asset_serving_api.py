@@ -33,7 +33,8 @@ tombstone, releases the reservation, enqueues `asset.delete` last, and records
 and no unique index. After it commits the answer is `204`, and the job is tried
 after the response (`job_driver.run_after_response`), because an answer never
 waits on bytes. A deleted asset is missing like anything else, so a second
-`DELETE` is the `404`.
+`DELETE` is the `404`. Audio attached to a cue follows that cue's
+reauthenticated archived-delete route.
 
 **The order of checks** (SEC-3): origin (403, `DELETE` only) → authentication
 (the one 401) → role (403) → the database and the media runtime (503) → the
@@ -62,7 +63,7 @@ from .asset_store import AssetStore, ReadyObject
 from .assets_api import MediaRuntime, get_clock, media_route
 from .audit_log import ActorKind, AuditAction, AuditLog, Decision, ObjectKind, PostgresAuditLog
 from .campaign_store import MissingParent
-from .db import TransactionalDatabase
+from .db import PgTransaction, TransactionalDatabase, UnitOfWork
 from .job_driver import JobDriver, run_after_response
 from .media_objects import (
     THUMBNAIL_MAX_BYTES,
@@ -123,6 +124,19 @@ def resolve(db: TransactionalDatabase, assets: AssetStore, *, campaign_id: str, 
     return found
 
 
+def tombstone_asset(
+    unit: UnitOfWork, assets: AssetStore, audit: AuditLog, *, campaign_id: str, asset_id: str,
+    owner_id: int, now: datetime,
+) -> int:
+    job_id = assets.delete(unit, campaign_id, asset_id, owner_id=owner_id, now=now)
+    audit.append(
+        unit, campaign_id=campaign_id, actor_kind=ActorKind.GM, action=AuditAction.ASSET_DELETED,
+        object_kind=ObjectKind.ASSET, decision=Decision.ALLOWED, actor_ref=str(owner_id),
+        object_ref=asset_id, detail={"asset_id": asset_id}, now=now,
+    )
+    return job_id
+
+
 def delete_asset(
     db: TransactionalDatabase, assets: AssetStore, audit: AuditLog, *, campaign_id: str, asset_id: str,
     owner_id: int, now: datetime,
@@ -133,11 +147,18 @@ def delete_asset(
     job_id = 0
     try:
         with db.transaction() as unit:
-            job_id = assets.delete(unit, campaign_id, asset_id, owner_id=owner_id, now=now)
-            audit.append(
-                unit, campaign_id=campaign_id, actor_kind=ActorKind.GM, action=AuditAction.ASSET_DELETED,
-                object_kind=ObjectKind.ASSET, decision=Decision.ALLOWED, actor_ref=str(owner_id),
-                object_ref=asset_id, detail={"asset_id": asset_id}, now=now,
+            if isinstance(unit, PgTransaction):
+                # Share the lock order used when adding a cue. An upload reserved for
+                # a cue can still be cancelled until the cue record commits.
+                if assets.hold(unit, campaign_id, asset_id, owner_id=owner_id) is None:
+                    not_found()
+                if unit.conn.execute(
+                    "SELECT 1 FROM campaign.audio_cues WHERE campaign_id = %s AND asset_id = %s",
+                    (campaign_id, asset_id),
+                ).fetchone() is not None:
+                    not_found()
+            job_id = tombstone_asset(
+                unit, assets, audit, campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id, now=now,
             )
     except MissingParent:
         gone = True

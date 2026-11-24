@@ -3819,14 +3819,18 @@ class SeatRemoveRequest(_Contract):
     password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
 
 
-class DocumentDeleteRequest(_Contract):
+class ArchivedDeleteRequest(_Contract):
+    """Write-only reauthentication body for deleting an archived resource."""
+
+    schema_version: SchemaVersion
+    password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
+
+
+class DocumentDeleteRequest(ArchivedDeleteRequest):
     """``POST /campaigns/{id}/documents/{id}/delete``: deleting a document takes
     its whole history with it and cannot be undone, so it asks for the password
     again (SEC-40; the 1kg.5.2 brief's I-13). Write-only, hidden from ``repr``,
     never echoed."""
-
-    schema_version: SchemaVersion
-    password: Annotated[SecretStr, Field(min_length=1, max_length=PASSWORD_MAX_CHARS), AfterValidator(_a_password)]
 
 
 class SeatOffer(_Contract):

@@ -9,8 +9,9 @@ import {
   CONTRACT_VERSION, CUE_TITLE_MAX_CHARS, CueListQuerySchema, SEARCH_MAX_CHARS, SEARCH_MIN_CHARS, codePointLength, trimWire,
   type Cue, type CueKind, type CuePage,
 } from '../gm/contracts'
-import { CueApiError, discardCueUpload, listCues, previewPeaks, updateCue, uploadCue, type CueUploadIntent } from '../gm/cueApi'
+import { CueApiError, deleteCue, discardCueUpload, listCues, previewPeaks, updateCue, uploadCue, type CueUploadIntent } from '../gm/cueApi'
 import { assetPath } from '../gm/documentFields'
+import { PasswordDeleteDialog, type DeleteOutcome } from './LibraryDialogs'
 import { mintCommandId } from './tableSessionApi'
 import { LIBRARY_PAGE_SIZE, SEARCH_DEBOUNCE_MS } from './useLibraryList'
 import { LIBRARY_COPY } from './workbenchCopy'
@@ -212,6 +213,7 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce }: CueLibrary
   const [saving, setSaving] = React.useState(false)
   const [editError, setEditError] = React.useState('')
   const [undoCue, setUndoCue] = React.useState<Cue | null>(null)
+  const [deleteTarget, setDeleteTarget] = React.useState<Cue | null>(null)
   const requestScope = React.useRef<AbortController | null>(null)
   const panelRef = React.useRef<HTMLDivElement>(null)
   const uploadButton = React.useRef<HTMLButtonElement>(null)
@@ -289,6 +291,17 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce }: CueLibrary
     uploadButton.current?.focus()
   }
 
+  function finishDelete(cue: Cue, outcome: DeleteOutcome): void {
+    setDeleteTarget(null)
+    setUndoCue((previous) => previous?.cue_id === cue.cue_id ? null : previous)
+    setExpanded(null)
+    refresh()
+    panelRef.current?.focus()
+    if (outcome === 'deleted') announce(LIBRARY_COPY.deleted(cue.title))
+    if (outcome === 'not_archived') announce(LIBRARY_COPY.notArchived(cue.title))
+    if (outcome === 'gone') announce('Cue unavailable.')
+  }
+
   return (
     <div className="cue-library" ref={panelRef} tabIndex={-1}>
       <div className="cue-library__actions">
@@ -350,13 +363,19 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce }: CueLibrary
               }}>{cue.title}</Button>
               {expanded === cue.cue_id && (
                 <>
-                  <CuePreview cue={cue} fetchImpl={fetchImpl} />
+                  {deleteTarget === null && <CuePreview cue={cue} fetchImpl={fetchImpl} />}
                   {titleEdit === null ? (
                     <div className="cue-library__actions">
                       {!cue.archived && <Button variant="text" onClick={() => setTitleEdit(cue.title)}>Rename</Button>}
                       <Button variant="text" disabled={saving} onClick={() => void change(cue, cue.archived ? 'restore' : 'archive')}>
                         {cue.archived ? 'Restore' : 'Archive'}
                       </Button>
+                      {cue.archived && (
+                        <Button variant="text" disabled={saving} aria-label={LIBRARY_COPY.deleteNamed(cue.title)}
+                          onClick={() => setDeleteTarget(cue)}>
+                          {LIBRARY_COPY.delete}
+                        </Button>
+                      )}
                     </div>
                   ) : (
                     <form className="cue-library__form" aria-label="Rename cue" onSubmit={(event) => {
@@ -384,6 +403,16 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce }: CueLibrary
         <Button variant="text" disabled={loadingMore} onClick={() => void more()}>
           {loadingMore ? 'Loading…' : lastMoreError === key ? 'Retry load more' : 'Load more'}
         </Button>
+      )}
+      {deleteTarget && (
+        <PasswordDeleteDialog
+          title={deleteTarget.title}
+          body={`This permanently deletes ${deleteTarget.title} and its audio file. This can't be undone.`}
+          failure={`Couldn't confirm deletion of ${deleteTarget.title}. Try again.`}
+          remove={(password) => deleteCue(deleteTarget, password, fetchImpl)}
+          onCancel={() => setDeleteTarget(null)}
+          onDone={(outcome) => finishDelete(deleteTarget, outcome)}
+        />
       )}
     </div>
   )

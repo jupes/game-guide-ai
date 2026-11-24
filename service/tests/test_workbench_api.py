@@ -1042,6 +1042,7 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/cues"), ("PATCH", "/campaigns/{campaign_id}/cues/{cue_id}"),
     ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/archive"),
     ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/restore"),
+    ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/delete"),
     ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
     # 1kg.7.2 PR-1: the GM's reveal picture, Confirm and Stop.

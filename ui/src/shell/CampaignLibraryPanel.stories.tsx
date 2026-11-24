@@ -231,11 +231,12 @@ const rainCue: Cue = {
 
 export const CuesPhone = asPhone(scenario({
   library: empty,
-  routes: (url) => {
+  routes: (url, init) => {
     const prefix = `/campaigns/${CAMPAIGN_ID}`
     if (url === `${prefix}/cues/capability`) return new Response(null, { status: 204 })
     if (url === `${prefix}/cues/list`) {
-      return json({ schema_version: 1, campaign_id: CAMPAIGN_ID, items: [rainCue], next_cursor: null })
+      const { archived } = JSON.parse(String(init?.body)) as { archived: boolean }
+      return json({ schema_version: 1, campaign_id: CAMPAIGN_ID, items: [{ ...rainCue, archived }], next_cursor: null })
     }
     if (url === `${prefix}/assets/${rainCue.asset_id}?rendition=waveform`) {
       return json({ schema_version: 1, peaks: [0.1, 0.3, 0.2] })
@@ -251,6 +252,14 @@ export const CuesPhone = asPhone(scenario({
     await expect(canvas.getByRole('group', { name: 'Preview (only you hear this)' })).toBeVisible()
     await expect(canvas.getByRole('button', { name: `Loop ${rainCue.title}` })).toHaveAttribute('aria-pressed', 'true')
     await expect(canvas.queryByRole('button', { name: 'Play to table' })).toBeNull()
+    await expect(canvas.queryByRole('button', { name: `Delete ${rainCue.title}` })).toBeNull()
+    await userEvent.selectOptions(canvas.getByRole('combobox', { name: 'Show' }), 'archived')
+    await userEvent.click(await canvas.findByRole('button', { name: `Delete ${rainCue.title}` }))
+    const dialog = within(await canvas.findByRole('dialog', { name: `Delete ${rainCue.title}?` }))
+    await expectTouchTargets(dialog, ['Delete', 'Cancel'])
+    await expect(dialog.getByLabelText('Your password')).toHaveFocus()
+    await expectNoPageOverflow()
+    await userEvent.click(dialog.getByRole('button', { name: 'Cancel' }))
     await userEvent.click(canvas.getByRole('tab', { name: 'Documents' }))
     await expect(canvas.queryByRole('group', { name: 'Preview (only you hear this)' })).toBeNull()
   },

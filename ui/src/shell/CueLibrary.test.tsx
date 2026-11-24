@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -148,5 +148,50 @@ describe('Cue library', () => {
     await user.click(await screen.findByRole('button', { name: 'Storm' }))
     await user.click(screen.getByRole('button', { name: 'Restore' }))
     expect(await screen.findByText('No archived cues.')).toBeVisible()
+  })
+
+  it('requires confirmation and reauthentication for permanent cue removal', async () => {
+    let exists = true
+    const deletePath = `${prefix}/cues/${cueId}/delete`
+    const fetchImpl = fakeFetch((path, init) => {
+      if (path === `${prefix}/cues/list`) {
+        const query = JSON.parse(String(init?.body)) as CueListQuery
+        return page(query.archived && exists ? [{ ...cue, archived: true }] : [])
+      }
+      if (path === deletePath) {
+        const { password } = JSON.parse(String(init?.body)) as { password: string }
+        if (password !== 'correct password') {
+          return Response.json({ detail: { code: 'reauth_failed', message: 'Wrong password', retryable: false } }, { status: 403 })
+        }
+        exists = false
+        return new Response(null, { status: 204 })
+      }
+      return new Response(null, { status: 404 })
+    })
+    const announce = vi.fn()
+    const user = userEvent.setup()
+    render(<CueLibrary campaign={campaign} fetchImpl={fetchImpl} announce={announce} />)
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'archived')
+    await user.click(await screen.findByRole('button', { name: 'Rain' }))
+    const remove = screen.getByRole('button', { name: 'Delete Rain' })
+    await user.click(remove)
+    const dialog = within(await screen.findByRole('dialog', { name: 'Delete Rain?' }))
+    expect(dialog.getByText(/permanently deletes Rain and its audio file/)).toBeVisible()
+    expect(dialog.getByLabelText('Your password')).toHaveFocus()
+    await user.click(dialog.getByRole('button', { name: 'Cancel' }))
+    expect(remove).toHaveFocus()
+    expect(fetchImpl.mock.calls.some(([url]) => url === deletePath)).toBe(false)
+
+    await user.click(remove)
+    const confirm = within(await screen.findByRole('dialog', { name: 'Delete Rain?' }))
+    const password = confirm.getByLabelText('Your password')
+    await user.type(password, 'wrong password')
+    await user.click(confirm.getByRole('button', { name: 'Delete' }))
+    expect(await confirm.findByRole('alert')).toHaveTextContent("That password didn't match")
+    expect(password).toHaveValue('')
+    await user.type(password, 'correct password')
+    await user.click(confirm.getByRole('button', { name: 'Delete' }))
+    expect(await screen.findByText('No archived cues.')).toBeVisible()
+    expect(announce).toHaveBeenCalledWith('Deleted Rain')
   })
 })

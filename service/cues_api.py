@@ -6,20 +6,25 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 import psycopg
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from psycopg import sql
 from psycopg.rows import dict_row
 from pydantic import BaseModel, ValidationError
 
 from . import campaign_identity as ident
-from .assets_api import MediaRuntime, media_route
+from .asset_serving_api import get_audit_log, tombstone_asset
+from .assets_api import MediaRuntime, get_clock, media_route
+from .audit_log import AuditLog
 from .campaign_store import pg
 from .db import CampaignAuthzMissing, PgTransaction, TransactionalDatabase
+from .job_driver import JobDriver, run_after_response
 from .session import SessionData
 from .workbench_api import SessionDependency, body_reader, not_found, reads_by_post, workbench_router
 from .workbench_contracts import (
     CUE_MAX_MS,
+    ArchivedDeleteRequest,
+    AssetState,
     Cue,
     CueCreateRequest,
     CueKind,
@@ -203,11 +208,55 @@ def change(
     return Cue.model_validate({"schema_version": 1, **row})
 
 
+def delete_archived(
+    transaction: PgTransaction,
+    runtime: MediaRuntime,
+    audit: AuditLog,
+    *,
+    campaign: str,
+    cue_id: str,
+    owner: int,
+    now: datetime,
+) -> int:
+    if not ident.is_id(ident.CUE, cue_id):
+        not_found()
+    reference = transaction.conn.execute(
+        "SELECT asset_id FROM campaign.audio_cues WHERE campaign_id = %s AND id = %s",
+        (campaign, cue_id),
+    ).fetchone()
+    if reference is None:
+        not_found()
+    asset_id = str(reference[0])
+    asset = runtime.assets.hold(transaction, campaign, asset_id, owner_id=owner)
+    if asset is None or asset.state is not AssetState.READY:
+        not_found()
+    # Hold the asset before deleting the cue, as cue creation and asset purge
+    # also reach the asset first. The archived predicate is rechecked under the
+    # cue row's lock, so a concurrently committed Restore prevents deletion.
+    removed = transaction.conn.execute(
+        "DELETE FROM campaign.audio_cues WHERE campaign_id = %s AND id = %s AND archived RETURNING id",
+        (campaign, cue_id),
+    ).fetchone()
+    if removed is None:
+        raise _conflict("The cue is no longer archived.")
+    return tombstone_asset(
+        transaction,
+        runtime.assets,
+        audit,
+        campaign_id=campaign,
+        asset_id=asset_id,
+        owner_id=owner,
+        now=now,
+    )
+
+
 def build_router(
     gm: SessionDependency,
     database: Callable[[], TransactionalDatabase | None],
     media: Callable[[], MediaRuntime | None],
     enabled: Callable[[], bool],
+    reauthenticate: Callable[..., Callable[[str], None]],
+    driver: Callable[[], JobDriver | None],
 ) -> APIRouter:
     router = workbench_router(gm)
     router.route_class = media_route(enabled)
@@ -246,5 +295,35 @@ def build_router(
     def restore(campaign_id: str, cue_id: str, user: User, db: DB, runtime: Media) -> Cue:
         with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
             return change(transaction, campaign_id, cue_id, archived=False)
+
+    @router.post(f"{PREFIX}/{{cue_id}}/delete", status_code=204, include_in_schema=False)
+    def delete(
+        campaign_id: str,
+        cue_id: str,
+        raw: Body,
+        tasks: BackgroundTasks,
+        user: User,
+        db: DB,
+        runtime: Media,
+        check_password: Annotated[Callable[[str], None], Depends(reauthenticate)],
+        runner: Annotated[JobDriver | None, Depends(driver)],
+        audit: Annotated[AuditLog, Depends(get_audit_log)],
+        clock: Annotated[Callable[[], datetime], Depends(get_clock)],
+    ) -> Response:
+        body = _parse(ArchivedDeleteRequest, raw)
+        check_password(body.password.get_secret_value())
+        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+            assert runtime is not None  # _owned refuses an unavailable runtime
+            job_id = delete_archived(
+                transaction,
+                runtime,
+                audit,
+                campaign=campaign_id,
+                cue_id=cue_id,
+                owner=user.user_id,
+                now=clock(),
+            )
+        run_after_response(tasks, runner, job_id)
+        return Response(status_code=204)
 
     return router
