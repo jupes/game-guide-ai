@@ -169,6 +169,8 @@ SNIPPET_MAX: int = _int("RAG_SNIPPET_MAX", 240)
 # OpenAI chat model used for grounded answer generation. gpt-4o-mini is the
 # cost/quality sweet spot for this RAG workload.
 DEFAULT_MODEL: str = _str("RAG_DEFAULT_MODEL", "gpt-4o-mini")
+# Hosted rollout requires per-account eligibility (xiu.5.6).
+RAG_ADDITIVE_EVIDENCE: bool = _bool("RAG_ADDITIVE_EVIDENCE", False) and not os.environ.get("K_SERVICE")
 
 # Sampling temperature for answer generation. 0.2 keeps answers faithful to the
 # cited sources and largely deterministic while allowing minor phrasing

@@ -26,8 +26,8 @@ tracing, no proxies, no database, no sleeps.
 THREE CLASSES OF PIN.
 - INVARIANT (every test not named below): must stay green, unedited, through
   the refactor. A later bead may not weaken one quietly.
-- FLAG_DEFAULT: must stay green, unedited, with xiu.2.2's evidence-selection
-  flag at its default; xiu.2.2 adds flag-on counterparts next to them.
+- FLAG_DEFAULT: must stay green, unedited, with RAG_ADDITIVE_EVIDENCE at its
+  default. The local flag-on counterparts exercise the same policy gates.
 - SLATED: the "before" picture a named bead is expected to change. A bead that
   flips one edits the test AND its SLATED entry in the same diff, so the flip is
   a visible, reviewed decision rather than a silent one.
@@ -39,8 +39,8 @@ is a visible call: at most `retrieval.EMBED_MAX_ATTEMPTS`, the service-owned
 retry of a transient fault, and exactly one for any other. Where a
 turn fails inside the handler's `try:`, "no message rows" means exactly that:
 the ownership claim and the strategy binding were committed before the `try:`
-and stay. When both branches of the GM fan-out fail, which error wins is
-nondeterministic and deliberately not pinned. Error bodies are asserted
+and stay. When both branches record stage-local faults under the opt-in, the
+first stage in pipeline order determines the typed error. Error bodies are asserted
 content-free (a canary token in the prompt and in every injected fault, and the
 model / provider / secret names of D-9). Log text is asserted only where a pin
 says so, and then as content-free: the class and the stage or category, never
@@ -65,7 +65,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from psycopg_pool import PoolTimeout
+from psycopg_pool import PoolClosed, PoolTimeout
 
 import config
 import ingestion.rerank as rerank_module
@@ -96,21 +96,30 @@ FLAG_DEFAULT: frozenset[str] = frozenset({
     "test_answerability_is_decided_before_rerank",
     "test_embedding_api_errors_are_typed_embed_faults",
     "test_embedding_and_generation_failures_are_distinguishable",
+    "test_missing_embedding_key_is_a_503",
+    "test_retrieval_database_errors_are_a_503",
+    "test_gm_secondary_failure_fails_the_turn",
+    "test_retrieval_faults_fail_by_default_even_with_an_attachment",
 })
 
+_EVIDENCE_POLICY = "agent-forge-harness-xiu.2.2: evidence selection follows the approved xiu.1.1 mode policy"
 SLATED: dict[str, str] = {
-    "test_missing_embedding_key_is_a_503":
-        "agent-forge-harness-xiu.2.3: a missing embedding key becomes a typed embed fault that degrades",
-    "test_retrieval_database_errors_are_a_503":
-        "agent-forge-harness-xiu.2.3: vector-search and fetch faults degrade to generation instead of a 503",
-    "test_gm_secondary_failure_fails_the_turn":
-        "agent-forge-harness-xiu.2.3: a secondary-retriever fault degrades to the primary result",
+    "test_additive_evidence_uses_the_surviving_attachment": _EVIDENCE_POLICY,
+    "test_additive_evidence_uses_the_surviving_gm_source": _EVIDENCE_POLICY,
+    "test_additive_evidence_without_a_surviving_source_returns_the_typed_failure": _EVIDENCE_POLICY,
+    "test_additive_evidence_reports_the_first_lost_stage_and_logs_both": _EVIDENCE_POLICY,
+    "test_additive_evidence_keeps_a_reranker_fault_on_weak_evidence_a_refusal": _EVIDENCE_POLICY,
+    "test_additive_evidence_preserves_fault_free_turns": _EVIDENCE_POLICY,
+    "test_additive_evidence_shared_credentials_fail_closed":
+        "agent-forge-harness-xiu.2.2: credential degradation requires independent generation credentials",
     "test_history_write_failure_does_not_fail_the_answer":
         "agent-forge-harness-ul21: the message-persistence consistency policy may change the status or the "
         "partial rows",
     "test_gm_channel_refuses_a_non_dm_session_before_retrieval":
         "agent-forge-harness-ubw: the dm-role check becomes campaign ownership plus tier (TA-3); "
         "any caller still refused must still spend nothing",
+    "test_additive_evidence_preserves_the_gm_role_gate":
+        "agent-forge-harness-ubw: change the admission rule with its normal flag-default counterpart",
 }
 
 _SLATED_VALUE = re.compile(r"^agent-forge-harness-[a-z0-9]+(\.\d+)*: .+")
@@ -530,6 +539,7 @@ def post_chat(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., ChatRun
         real_embed_client: bool = False,
         model_preference: str | None = None, session: SessionData | None = _DM,
         auth: FakeAuthStore | None = None, headers: dict[str, str] | None = None,
+        additive_evidence: bool = False,
     ) -> ChatRun:
         corpus = FakeCorpus(rows or [], fail=corpus_fail, fail_connect_on=fail_connect_on)
         emb = FakeEmbeddings(emb_exc)
@@ -538,7 +548,7 @@ def post_chat(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., ChatRun
         llm = FakeChatModel(llm_exc)
         secondary = secondary or FakeSecondary()
         svc = RagService(retriever=retrieval.RagRetriever(connect=corpus.connect), reranker=reranker,
-                         llm_client=llm, secondary_retriever=secondary)
+                         llm_client=llm, secondary_retriever=secondary, additive_evidence=additive_evidence)
         assert svc.factory.client_for(svc.model) is llm
         store = store if store is not None else ProbedStore()
         day = day if day is not None else ProbedDay()
@@ -1024,6 +1034,186 @@ def test_gm_secondary_failure_fails_the_turn(
     assert_content_free(run, fault=True)
 
 
+_STAGE_LOCAL_FAULTS = [
+    pytest.param("embed", lambda: {"emb_exc": _rate_limit()}, id="embed_rate_limit"),
+    pytest.param("embed", lambda: {"emb_exc": _timeout()}, id="embed_timeout"),
+    pytest.param("vector_search", lambda: {"corpus_fail": {"search": db_down("search")}}, id="search"),
+    pytest.param("fetch", lambda: {"corpus_fail": {"fetch": db_down("fetch")}}, id="fetch"),
+]
+
+
+@pytest.mark.parametrize(("stage", "options"), _STAGE_LOCAL_FAULTS)
+def test_retrieval_faults_fail_by_default_even_with_an_attachment(
+    post_chat: Callable[..., ChatRun], stage: str, options: Callable[[], dict[str, object]],
+) -> None:
+    run = post_chat(FAILING_PROMPT, rows=HIT, attachment=True, **options())
+    expected = _EMBED_DOWN if stage == "embed" else _RETRIEVAL_DOWN
+    assert (run.response.status_code, run.response.json()) == (503, expected)
+    assert (run.llm.calls, run.rows()) == (0, [])
+    assert_failure_metrics(run, "dependency")
+    assert_content_free(run, fault=True)
+
+
+@pytest.mark.parametrize("mode", ["sage", "rules", "gm"])
+@pytest.mark.parametrize(("stage", "options"), _STAGE_LOCAL_FAULTS)
+def test_additive_evidence_uses_the_surviving_attachment(
+    post_chat: Callable[..., ChatRun], caplog: pytest.LogCaptureFixture, mode: str, stage: str,
+    options: Callable[[], dict[str, object]],
+) -> None:
+    run = post_chat(FAILING_PROMPT, mode=mode, rows=HIT, attachment=True, additive_evidence=True, **options())
+    assert_answer(run, answer=FAKE_ANSWER, answerable=True, sources=[ATTACHMENT_SOURCE], mode=mode)
+    assert (run.searches, run.corpus.count("fetch")) == {
+        "embed": (0, 0), "vector_search": (1, 0), "fetch": (1, 1),
+    }[stage]
+    context = str(run.llm.messages[0][-1].content)
+    assert ATTACHMENT_TEXT in context
+    assert full_text(HIT[0].chunk_id) not in context
+    assert run.rows() == [("user", FAILING_PROMPT), ("assistant", FAKE_ANSWER)]
+    assert_gate_metric(run, True, mode)
+    assert_logs_content_free(caplog, f"stage={stage}")
+    assert sum(f"stage={stage}" in record.message for record in caplog.records) == 1
+
+
+@pytest.mark.parametrize("lost_source", ["local", "secondary"])
+def test_additive_evidence_uses_the_surviving_gm_source(
+    post_chat: Callable[..., ChatRun], lost_source: str,
+) -> None:
+    if lost_source == "local":
+        secondary = FakeSecondary(SecondaryResult(
+            chunks=[SECONDARY_CHUNK], full_texts={"char-w1": full_text("char-w1")},
+            book_by_id={"char-w1": SECONDARY_BOOK}, answerable=True,
+        ))
+        fail = {"search": db_down("search")}
+        expected = [SECONDARY_SOURCE]
+    else:
+        secondary = FakeSecondary(exc=db_down("secondary"))
+        fail = {}
+        expected = [corpus_source(row) for row in HIT]
+    run = post_chat(FAILING_PROMPT, mode="gm", rows=HIT, secondary=secondary, corpus_fail=fail, additive_evidence=True)
+    assert_answer(run, answer=FAKE_ANSWER, answerable=True, sources=expected, mode="gm")
+    assert (secondary.calls, run.llm.calls) == (1, 1)
+    assert_gate_metric(run, True, "gm")
+
+
+@pytest.mark.parametrize(("stage", "options"), _STAGE_LOCAL_FAULTS)
+def test_additive_evidence_without_a_surviving_source_returns_the_typed_failure(
+    post_chat: Callable[..., ChatRun], stage: str, options: Callable[[], dict[str, object]],
+) -> None:
+    run = post_chat(FAILING_PROMPT, rows=HIT, additive_evidence=True, **options())
+    expected = _EMBED_DOWN if stage == "embed" else _RETRIEVAL_DOWN
+    assert (run.response.status_code, run.response.json()) == (503, expected)
+    assert (run.llm.calls, run.rows()) == (0, [])
+    assert_failure_metrics(run, "dependency")
+    assert_content_free(run, fault=True)
+
+
+def test_additive_evidence_rejected_embedding_retains_the_422(post_chat: Callable[..., ChatRun]) -> None:
+    problem = _status_error(openai.BadRequestError, 400)
+    run = post_chat(FAILING_PROMPT, rows=HIT, additive_evidence=True, emb_exc=problem)
+    assert (run.response.status_code, run.response.json()) == (422, _d4("invalid_request", False))
+    assert (run.llm.calls, run.rows()) == (0, [])
+    assert_failure_metrics(run, "validation")
+
+
+def test_additive_evidence_reports_the_first_lost_stage_and_logs_both(
+    post_chat: Callable[..., ChatRun], caplog: pytest.LogCaptureFixture,
+) -> None:
+    secondary = FakeSecondary(exc=db_down("secondary"))
+    run = post_chat(FAILING_PROMPT, mode="gm", emb_exc=_rate_limit(), secondary=secondary, additive_evidence=True)
+    assert (run.response.status_code, run.response.json()) == (503, _EMBED_DOWN)
+    assert (secondary.calls, run.searches, run.llm.calls, run.rows()) == (1, 0, 0, [])
+    assert_logs_content_free(caplog, "stage=embed", "stage=secondary")
+    assert_failure_metrics(run, "dependency")
+
+
+def test_additive_evidence_keeps_a_reranker_fault_on_weak_evidence_a_refusal(post_chat: Callable[..., ChatRun]) -> None:
+    reranker = CountingReranker(RuntimeError(f"reranker fault {CANARY}"))
+    run = post_chat(FAILING_PROMPT, rows=MISS, reranker=reranker, additive_evidence=True)
+    assert_refusal(run, "sage")
+    assert reranker.calls == 1
+
+
+@pytest.mark.parametrize(("mode", "rows", "attachment"), [
+    ("sage", HIT, False), ("rules", MISS, False), ("gm", MISS, False), ("sage", [], True),
+])
+def test_additive_evidence_preserves_fault_free_turns(
+    post_chat: Callable[..., ChatRun], mode: str, rows: list[ChunkRow], attachment: bool,
+) -> None:
+    before = post_chat(PROSE, mode=mode, rows=rows, attachment=attachment)
+    after = post_chat(PROSE, mode=mode, rows=rows, attachment=attachment, additive_evidence=True)
+    assert (after.response.status_code, after.response.json(), after.rows()) == (
+        before.response.status_code, before.response.json(), before.rows(),
+    )
+    assert_gate_metric(after, before.response.json()["answerable"], mode)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("exception", [RuntimeError, PermissionError, psycopg.errors.InsufficientPrivilege])
+def test_additive_evidence_keeps_secondary_bugs_and_denials_fatal(
+    post_chat: Callable[..., ChatRun], enabled: bool, exception: type[Exception],
+) -> None:
+    secondary = FakeSecondary(exc=exception(f"secondary fault {CANARY}"))
+    run = post_chat(FAILING_PROMPT, mode="gm", rows=HIT, attachment=True,
+                    secondary=secondary, additive_evidence=enabled)
+    expected = (503, _RETRIEVAL_DOWN) if exception is psycopg.errors.InsufficientPrivilege else (500, _INTERNAL)
+    assert (run.response.status_code, run.response.json()) == expected
+    assert (secondary.calls, run.llm.calls, run.rows()) == (1, 0, [])
+    assert_content_free(run, fault=True)
+
+
+@pytest.mark.parametrize("where", [
+    "search_timeout", "fetch_timeout", "search_closed", "secondary_timeout", "search_denied",
+])
+def test_additive_evidence_keeps_pool_and_permission_errors_fatal(
+    post_chat: Callable[..., ChatRun], where: str,
+) -> None:
+    kwargs: dict[str, object] = {}
+    if where == "secondary_timeout":
+        kwargs.update(mode="gm", secondary=FakeSecondary(exc=PoolTimeout(f"pool timeout {CANARY}")))
+    elif where == "search_closed":
+        kwargs["corpus_fail"] = {"search": PoolClosed(f"pool closed {CANARY}")}
+    elif where == "search_denied":
+        kwargs["corpus_fail"] = {"search": psycopg.errors.InsufficientPrivilege(f"denied {CANARY}")}
+    else:
+        kwargs["fail_connect_on"] = 2 if where == "search_timeout" else 3
+    run = post_chat(FAILING_PROMPT, rows=HIT, attachment=True, additive_evidence=True, **kwargs)
+    assert (run.response.status_code, run.response.json()) == (503, _RETRIEVAL_DOWN)
+    assert (run.llm.calls, run.rows()) == (0, [])
+    assert_failure_metrics(run, "dependency")
+    assert_content_free(run, fault=True)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_additive_evidence_shared_credentials_fail_closed(post_chat: Callable[..., ChatRun], missing: bool) -> None:
+    kwargs = {"real_embed_client": True} if missing else {"emb_exc": _status_error(openai.AuthenticationError, 401)}
+    run = post_chat(FAILING_PROMPT, rows=HIT, attachment=True, additive_evidence=True, **kwargs)
+    assert (run.response.status_code, run.response.json()) == (503, _EMBED_DOWN)
+    assert (run.searches, run.llm.calls, run.rows()) == (0, 0, [])
+    assert_failure_metrics(run, "dependency")
+    assert_content_free(run, fault=not missing)
+
+
+def test_generation_fault_after_degradation_retains_its_taxonomy(post_chat: Callable[..., ChatRun]) -> None:
+    run = post_chat(FAILING_PROMPT, rows=HIT, attachment=True, additive_evidence=True,
+                    corpus_fail={"search": db_down("search")}, llm_exc=_rate_limit())
+    assert (run.response.status_code, run.response.json(), run.response.headers.get("retry-after")) == (
+        429, _d4("rate_limit", True), "7",
+    )
+    assert run.rows() == []
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_rag_builder_passes_the_local_opt_in(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
+    seen: dict[str, object] = {}
+    sentinel = object()
+    monkeypatch.setitem(service_app._state, "rag", sentinel)
+    monkeypatch.setattr(config, "RAG_ADDITIVE_EVIDENCE", enabled)
+    monkeypatch.setattr(service_app, "RagService", lambda **kwargs: seen.update(kwargs) or sentinel)
+    monkeypatch.setattr(service_app, "build_reranker", lambda: None)
+    service_app._build_rag(SimpleNamespace(connection=lambda: None))
+    assert seen["additive_evidence"] is enabled
+
+
 # ── Pre-retrieval gates: fail closed, spend nothing ───────────────────────────
 
 
@@ -1155,6 +1345,62 @@ def test_gm_channel_refuses_a_non_dm_session_before_retrieval(post_chat: Callabl
     assert run.store.calls["claim_conversation"] == 0
 
 
+@pytest.mark.parametrize("case", [*_GATE_CASES, "everything_down"])
+def test_additive_evidence_preserves_pre_retrieval_gates(
+    post_chat: Callable[..., ChatRun], monkeypatch: pytest.MonkeyPatch, case: str,
+) -> None:
+    monkeypatch.setattr(config, "RAG_ADDITIVE_EVIDENCE", True)
+    store, day = ProbedStore(), ProbedDay()
+    budget = CountingBudget(service_app.check_chat_request)
+    monkeypatch.setattr(service_app, "check_chat_request", budget)
+    if case == "everything_down":
+        store.faults.update({method: db_down(method) for method in (
+            "claim_conversation", "conversation_binding", "claim_conversation_strategy", "attachments_for",
+        )})
+        day.faults["for_account"] = db_down("usage count")
+        gate = Gate(503, {"detail": "usage backend unavailable"}, probe=lambda: day.calls["for_account"], fault=True)
+        kwargs: dict[str, object] = {"fail_connect_on": 2, "emb_exc": _timeout(),
+                                     "corpus_fail": {"search": db_down("search"), "fetch": db_down("fetch")}}
+    else:
+        gate, kwargs = _arrange_gate(case, monkeypatch, store, day, budget)
+    prompt = kwargs.pop("prompt", FAILING_PROMPT)
+    run = post_chat(prompt, rows=HIT, store=store, day=day, additive_evidence=True, **kwargs)
+    assert run.response.status_code == gate.status, run.response.text
+    if gate.budget is not None:
+        assert budget.calls == gate.budget
+    if case == "control_reaches_retrieval":
+        assert (run.emb.calls, run.searches, run.llm.calls) == (1, 1, 1)
+        return
+    assert_no_spend(run)
+    if gate.body is not None:
+        assert run.response.json() == gate.body
+    for name, value in gate.headers.items():
+        assert run.response.headers.get(name) == value
+    if gate.probe is not None:
+        assert gate.probe() == 1
+    elif run.auth is not None:
+        assert run.auth.calls == 0
+    if case == "nul_in_prompt":
+        detail = run.response.json()["detail"]
+        assert [entry["loc"] for entry in detail] == [["body", "prompt"]]
+        assert all("input" not in entry for entry in detail)
+    assert_content_free(run, fault=gate.fault)
+
+
+def test_additive_evidence_preserves_the_gm_role_gate(
+    post_chat: Callable[..., ChatRun], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "RAG_ADDITIVE_EVIDENCE", True)
+    run = post_chat(FAILING_PROMPT, mode="gm", rows=HIT, session=SessionData(user_id=1, role="player"),
+                    additive_evidence=True)
+    assert (run.response.status_code, run.response.json()) == (403, {"detail": "the GM channel requires the DM role"})
+    assert_no_spend(run)
+    assert_content_free(run, fault=False)
+    assert run.store.owner_of(CONV) is None
+    assert run.store.conversation_strategy(CONV) is None
+    assert run.store.calls["claim_conversation"] == 0
+
+
 def test_per_user_throttle_refuses_a_chat_call_before_ownership_or_strategy(
     post_chat: Callable[..., ChatRun], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1275,17 +1521,18 @@ def test_characterization_registries_name_real_tests() -> None:
     # The split pins: the slated halves are owned as recorded, the invariant halves are unregistered.
     assert SLATED["test_gm_channel_refuses_a_non_dm_session_before_retrieval"].startswith("agent-forge-harness-ubw: ")
     assert SLATED["test_history_write_failure_does_not_fail_the_answer"].startswith("agent-forge-harness-ul21: ")
-    # After xiu.2.3 PR-2: what the flag-free changes flipped, and what its PR-3 still owns.
+    # The default characterization pins survive local opt-in.
     assert {"test_embedding_api_errors_are_typed_embed_faults",
             "test_embedding_and_generation_failures_are_distinguishable"} <= FLAG_DEFAULT
-    assert {name for name, owner in SLATED.items() if owner.startswith("agent-forge-harness-xiu.2.3: ")} == {
-        "test_missing_embedding_key_is_a_503", "test_retrieval_database_errors_are_a_503",
-        "test_gm_secondary_failure_fails_the_turn",
-    }
+    assert not any(owner.startswith("agent-forge-harness-xiu.2.3: ") for owner in SLATED.values())
     for invariant in ("test_history_write_failure_is_not_reported_as_a_retrieval_failure",
                       "test_strategy_claim_failure_spends_nothing",
                       "test_strategy_claim_failure_status",
                       "test_pre_retrieval_gates_fail_closed_without_spending_retrieval",
+                      "test_additive_evidence_preserves_pre_retrieval_gates",
+                      "test_additive_evidence_keeps_pool_and_permission_errors_fatal",
+                      "test_additive_evidence_keeps_secondary_bugs_and_denials_fatal",
+                      "test_rag_builder_passes_the_local_opt_in",
                       "test_the_service_embedding_client_is_bounded",
                       "test_reranker_failure_degrades_to_the_vector_order",
                       "test_an_invalid_rerank_order_keeps_the_vector_order",

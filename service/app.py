@@ -440,7 +440,9 @@ def _build_rag(db: Database) -> None:
     # Build the service once (loads corpus vocabulary). Guarded so the app can
     # still start for endpoint tests that override the dependency without a DB.
     try:
-        _state["rag"] = RagService(reranker=build_reranker(), connect=db.connection)
+        _state["rag"] = RagService(
+            reranker=build_reranker(), connect=db.connection, additive_evidence=config.RAG_ADDITIVE_EVIDENCE,
+        )
     except Exception:  # pragma: no cover - depends on live DB
         log.warning(
             "startup: RagService unavailable; /chat will 503 until ready", exc_info=True

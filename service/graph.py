@@ -58,10 +58,13 @@ from .evidence import (
     EMBED_FAULTS,
     SECONDARY_FAULTS,
     SECONDARY_NEVER_TYPED,
+    SHARED_INFRA_FAULTS,
     EvidenceAttempt,
     RerankOrderInvalid,
+    RetrievalStage,
     RetrievalStageError,
     attempt_for_fault,
+    first_lost_evidence,
 )
 from .generate import (
     _looks_like_statblock,
@@ -90,6 +93,7 @@ class GraphState(TypedDict, total=False):
     """State threaded through the graph (last-value-wins per key)."""
     prompt: str
     mode: str
+    additive_evidence: bool
     # retrieval stages
     emb: list[float]
     classes: set[str]
@@ -126,6 +130,12 @@ def build_rag_graph(svc: RagService) -> Any:
     read `answer` / `sources` / `answerable`."""
     from langgraph.graph import END, START, StateGraph
 
+    def stage_fault(state: GraphState, stage: RetrievalStage, exc: BaseException) -> EvidenceAttempt:
+        attempt = attempt_for_fault(stage, exc)
+        if not state.get("additive_evidence") or isinstance(exc, SHARED_INFRA_FAULTS + SECONDARY_NEVER_TYPED):
+            raise RetrievalStageError.from_attempt(attempt) from exc
+        return attempt
+
     def preflight_node(state: GraphState) -> GraphState:
         # Unknown mode fails fast with a clear error (direct callers only; the
         # API layer already 422s real users via the ChatMode enum).
@@ -152,7 +162,7 @@ def build_rag_graph(svc: RagService) -> Any:
         except EMBED_FAULTS as exc:
             # xiu.2.3: an embeddings fault is a retrieval-stage fault, never
             # the generation branch's D4 category.
-            raise RetrievalStageError.from_fault("embed", exc) from exc
+            return {"attempts": [stage_fault(state, "embed", exc)]}
         finally:
             usage_capture.end_embedding_scope(token)
 
@@ -180,9 +190,11 @@ def build_rag_graph(svc: RagService) -> Any:
         except SECONDARY_NEVER_TYPED:
             raise  # an authorization denial is never an outage (see evidence.py)
         except SECONDARY_FAULTS as exc:
-            raise RetrievalStageError.from_fault("secondary", exc) from exc
+            return {"secondary_result": SecondaryResult(), "attempts": [stage_fault(state, "secondary", exc)]}
 
     def search_node(state: GraphState) -> GraphState:
+        if "emb" not in state:
+            return {"chunks": []}
         try:
             chunks = svc.retriever.search(
                 state["emb"], state["prompt"], TOP_K,
@@ -190,14 +202,20 @@ def build_rag_graph(svc: RagService) -> Any:
                 state["effective_ctypes"], state["allowed_books"],
             )
         except CORPUS_DB_FAULTS as exc:
-            raise RetrievalStageError.from_fault("vector_search", exc) from exc
+            return {"chunks": [], "attempts": [stage_fault(state, "vector_search", exc)]}
         return {"chunks": chunks}
 
+    def empty_primary(state: GraphState) -> RetrievalResult:
+        return assemble_result([], {}, {}, state["classes"], state["entities"], state["ctypes"])
+
     def fetch_texts_node(state: GraphState) -> GraphState:
+        if any(attempt.loses_evidence and attempt.source_kind == "local" for attempt in state.get("attempts", [])):
+            return {"result": empty_primary(state)}
         try:
             full, book_by_id = svc.retriever.fetch(state["chunks"])
         except CORPUS_DB_FAULTS as exc:
-            raise RetrievalStageError.from_fault("fetch", exc) from exc
+            attempt = stage_fault(state, "fetch", exc)
+            return {"result": empty_primary(state), "attempts": [attempt]}
         result = assemble_result(
             state["chunks"], full, book_by_id,
             state["classes"], state["entities"], state["ctypes"],
@@ -258,6 +276,11 @@ def build_rag_graph(svc: RagService) -> Any:
         else:
             # sage / spell / rules: strict koz gate — need answerable AND chunks.
             route = "generate" if (result.answerable and result.chunks) else "refuse"
+        if route == "refuse":
+            attempts = tuple(state.get("attempts", ()))
+            lost = first_lost_evidence(attempts)
+            if lost is not None:
+                raise RetrievalStageError.from_attempt(lost, attempts)
         return {"route": route}
 
     def gate_route(state: GraphState) -> Literal["generate", "refuse"]:
