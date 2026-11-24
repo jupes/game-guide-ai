@@ -2,111 +2,17 @@ import * as React from 'react'
 
 import { Button } from '../ds/Button'
 import { TextField } from '../ds/TextField'
-import { AudioCue } from '../gm/AudioCue'
-import { readPreviewVolume, usePreviewGain, writePreviewVolume } from '../gm/audioGain'
-import { clampPositionMs } from '../gm/audioHelpers'
+import { CuePreview } from '../gm/CuePreview'
 import {
   CONTRACT_VERSION, CUE_TITLE_MAX_CHARS, CueListQuerySchema, SEARCH_MAX_CHARS, SEARCH_MIN_CHARS, codePointLength, trimWire,
   type Cue, type CueKind, type CuePage,
 } from '../gm/contracts'
-import { CueApiError, deleteCue, discardCueUpload, listCues, previewPeaks, updateCue, uploadCue, type CueUploadIntent } from '../gm/cueApi'
-import { assetPath } from '../gm/documentFields'
+import { CueApiError, deleteCue, discardCueUpload, listCues, updateCue, uploadCue, type CueUploadIntent } from '../gm/cueApi'
 import { PasswordDeleteDialog, type DeleteOutcome } from './LibraryDialogs'
 import { mintCommandId } from './tableSessionApi'
 import { LIBRARY_PAGE_SIZE, SEARCH_DEBOUNCE_MS } from './useLibraryList'
 import { LIBRARY_COPY } from './workbenchCopy'
 import './CueLibrary.css'
-
-function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fetch }): React.JSX.Element {
-  const [media, setMedia] = React.useState<HTMLAudioElement | null>(null)
-  const audioRef = React.useRef<HTMLAudioElement | null>(null)
-  const linkMedia = React.useCallback((node: HTMLAudioElement | null) => {
-    audioRef.current = node
-    setMedia(node)
-  }, [])
-  const [volume, setVolume] = React.useState(readPreviewVolume)
-  const [muted, setMuted] = React.useState(false)
-  const [loop, setLoop] = React.useState(cue.kind === 'ambience')
-  const [playing, setPlaying] = React.useState(false)
-  const [positionMs, setPosition] = React.useState(0)
-  const [blocked, setBlocked] = React.useState(false)
-  const [failed, setFailed] = React.useState(false)
-  const [peaks, setPeaks] = React.useState<readonly number[]>()
-  const seekOnLoad = React.useRef(0)
-  const previewGain = usePreviewGain({ media, volume, muted })
-
-  React.useEffect(() => {
-    const abort = new AbortController()
-    void previewPeaks(cue, abort.signal, fetchImpl).then((values) => {
-      if (!abort.signal.aborted) setPeaks(values)
-    })
-    return () => abort.abort()
-  }, [cue, fetchImpl])
-
-  React.useEffect(() => () => {
-    if (!media?.getAttribute('src')) return
-    media.pause()
-    media.removeAttribute('src')
-    media.load()
-  }, [media])
-
-  function seek(ms: number): void {
-    const position = clampPositionMs(ms, cue.duration_ms)
-    seekOnLoad.current = position
-    const element = audioRef.current
-    if (element && element.readyState > 0) element.currentTime = position / 1000
-    setPosition(position)
-  }
-
-  function toggle(): void {
-    const element = audioRef.current
-    if (element === null) return
-    if (!element.paused) {
-      element.pause()
-      return
-    }
-    setBlocked(false)
-    setFailed(false)
-    if (!element.getAttribute('src') || element.error) {
-      element.src = assetPath(cue.campaign_id, cue.asset_id)
-    }
-    void element.play().catch((error: unknown) => {
-      if (error instanceof DOMException && error.name === 'AbortError') return
-      if (error instanceof DOMException && error.name === 'NotAllowedError') setBlocked(true)
-      else setFailed(true)
-    })
-  }
-
-  return (
-    <>
-      <audio
-        ref={linkMedia}
-        preload="none"
-        muted={muted}
-        loop={loop && cue.kind === 'ambience'}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onEnded={() => { setPlaying(false); seek(0) }}
-        onLoadedMetadata={(event) => { event.currentTarget.currentTime = seekOnLoad.current / 1000 }}
-        onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime * 1000)}
-        onError={() => { setPlaying(false); setFailed(true) }}
-      />
-      <AudioCue
-        cue={cue}
-        preview={{ playing, positionMs, muted, volume, blocked }}
-        previewGain={previewGain}
-        loop={loop}
-        peaks={peaks}
-        onPreviewToggle={toggle}
-        onPreviewSeek={seek}
-        onPreviewVolume={(next) => { setVolume(next); writePreviewVolume(next) }}
-        onPreviewMute={setMuted}
-        onLoopChange={setLoop}
-      />
-      {failed && <p role="alert">Couldn't play this sound. Try preview again.</p>}
-    </>
-  )
-}
 
 function UploadCueForm({
   campaign, fetchImpl, onSaved, onCancel,
@@ -197,9 +103,10 @@ interface CueLibraryProps {
   campaign: string
   fetchImpl?: typeof fetch
   announce: (message: string) => void
+  onAttach?: (cue: Cue) => Promise<void>
 }
 
-export function CueLibrary({ campaign, fetchImpl = fetch, announce }: CueLibraryProps): React.JSX.Element {
+export function CueLibrary({ campaign, fetchImpl = fetch, announce, onAttach }: CueLibraryProps): React.JSX.Element {
   const [search, setSearch] = React.useState('')
   const [sort, setSort] = React.useState<'recent' | 'name'>('recent')
   const [archived, setArchived] = React.useState(false)
@@ -302,6 +209,19 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce }: CueLibrary
     if (outcome === 'gone') announce('Cue unavailable.')
   }
 
+  async function addToThread(cue: Cue): Promise<void> {
+    if (saving || onAttach === undefined) return
+    setSaving(true)
+    setEditError('')
+    try {
+      await onAttach(cue)
+    } catch (reason) {
+      setEditError(reason instanceof CueApiError ? reason.message : "Couldn't add the cue to the GM thread.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="cue-library" ref={panelRef} tabIndex={-1}>
       <div className="cue-library__actions">
@@ -366,6 +286,9 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce }: CueLibrary
                   {deleteTarget === null && <CuePreview cue={cue} fetchImpl={fetchImpl} />}
                   {titleEdit === null ? (
                     <div className="cue-library__actions">
+                      {!cue.archived && onAttach && (
+                        <Button variant="text" disabled={saving} onClick={() => void addToThread(cue)}>Add to thread</Button>
+                      )}
                       {!cue.archived && <Button variant="text" onClick={() => setTitleEdit(cue.title)}>Rename</Button>}
                       <Button variant="text" disabled={saving} onClick={() => void change(cue, cue.archived ? 'restore' : 'archive')}>
                         {cue.archived ? 'Restore' : 'Archive'}

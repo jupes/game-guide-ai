@@ -373,7 +373,8 @@ DARK_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
 
 def _dark_pairs() -> list[tuple[str, str]]:
     campaign, asset, cue = "cmp_" + "a" * 22, "ast_" + "b" * 22, "cue_" + "c" * 22
-    cue_suffixes = ("", "/capability", "/list", f"/{cue}", f"/{cue}/archive", f"/{cue}/restore", f"/{cue}/delete")
+    cue_suffixes = ("", "/capability", "/list", f"/{cue}", f"/{cue}/archive", f"/{cue}/restore", f"/{cue}/delete",
+                    f"/{cue}/attach")
     return [(f"/campaigns/{campaign}/assets", f"/campaigns/{campaign}/assetz"),
             (_bytes_path(campaign, asset), f"/campaigns/{campaign}/assetz/{asset}/bytes"),
             (f"/campaigns/{campaign}/assets/upload-capability", f"/campaigns/{campaign}/assetz/upload-capability"),

@@ -411,6 +411,8 @@ describe('useGmTimeline', () => {
       loadingEarlier: false,
       earlierError: null,
       loadEarlier: expect.any(Function),
+      addAttachedCue: expect.any(Function),
+      recentCueEntries: [],
     })
     expect(load).not.toHaveBeenCalled()
   })
@@ -428,6 +430,26 @@ describe('useGmTimeline', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(ids(result.current.items)).toEqual(['ent_1', 'ent_2'])
     expect(result.current.error).toBeNull()
+  })
+
+  it('adds an acknowledged cue once without carrying it into a different thread', async () => {
+    const load: LoadTimelinePageFn = async (conversationId) => ({
+      kind: 'ok', page: { schema_version: 1, conversation_id: conversationId, items: [], next_cursor: null },
+    })
+    const { result, rerender } = renderHook(({ id }) => useGmTimeline(id, true, load), { initialProps: { id: 'cnv_1' } })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    const attached = {
+      schema_version: 1, entry_kind: 'attached_cue', entry_id: 'ent_first',
+      cue_id: 'cue_first', created_at: '2026-01-01T00:00:00Z',
+    } as const
+    act(() => {
+      result.current.addAttachedCue(attached)
+      result.current.addAttachedCue(attached)
+    })
+    expect(result.current.recentCueEntries).toEqual([{ entry: attached, receivedAt: expect.any(Number) }])
+    rerender({ id: 'cnv_2' })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.recentCueEntries).toEqual([])
   })
 
   it('reports a failed read and holds no stale entries', async () => {
@@ -463,6 +485,8 @@ describe('useGmTimeline', () => {
       loadingEarlier: false,
       earlierError: null,
       loadEarlier: expect.any(Function),
+      addAttachedCue: expect.any(Function),
+      recentCueEntries: [],
     })
     await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_cnv_b']))
   })

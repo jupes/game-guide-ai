@@ -227,7 +227,7 @@ describe('every state of the list (§12.2)', () => {
   it('a first page that fails says so once, and Retry sends the same request again', async () => {
     const user = userEvent.setup()
     const { server } = await mountPanel(libraryRoute(ROWS, { failing: ['npcs'] }))
-    expect(await screen.findByText("Couldn't load NPCs")).toBeInTheDocument()
+    expect(await within(screen.getByRole('tabpanel')).findByText("Couldn't load NPCs")).toBeInTheDocument()
     await waitFor(() => expect(status()).toHaveTextContent("Couldn't load NPCs"))
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(server.libraryCalls()).toHaveLength(2))

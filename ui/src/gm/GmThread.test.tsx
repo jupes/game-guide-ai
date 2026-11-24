@@ -5,12 +5,13 @@
 
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import type { MockInstance } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { GmThread } from './GmThread'
+import { CUE_REMOVED_EVENT } from './cueApi'
 import { DIVIDER_COPY, collapseSessionSpans, formatDividerTime, turnFromExchange, turnsFromTimeline } from './gmTimeline'
 import type { GmTurn } from './gmTimeline'
 import { LANE_COPY } from './laneState'
@@ -36,6 +37,36 @@ import {
 function renderThread(turns: readonly GmTurn[]) {
   return render(<GmThread turns={turns} />)
 }
+
+it('resolves a stored cue for the campaign and removes its private controls after deletion', async () => {
+  const cueId = 'cue_Attached00000000000001'
+  const cuePath = `/campaigns/${LIVE_CAMPAIGN}/cues/${cueId}`
+  const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (path) => {
+    if (path === cuePath) return Response.json({
+      schema_version: 1, cue_id: cueId, campaign_id: LIVE_CAMPAIGN, asset_id: 'ast_Attached00000000000001',
+      title: 'Distant thunder', kind: 'one_shot', duration_ms: 1000, archived: false,
+      created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z',
+    })
+    return new Response(null, { status: 404 })
+  })
+  try {
+    const turns = turnsFromTimeline([{ kind: 'ok', value: {
+      schema_version: 1, entry_kind: 'attached_cue', entry_id: 'ent_Attached00000000000001',
+      created_at: '2026-11-01T00:00:00Z', cue_id: cueId,
+    } }])
+    render(<GmThread campaignId={LIVE_CAMPAIGN} turns={turns} />)
+    expect(screen.getByText('You · attached')).toBeVisible()
+    expect(screen.getByText('AUDIO CUE')).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Play preview of Distant thunder' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Play to table' })).toBeNull()
+    expect(fetcher).toHaveBeenCalledWith(cuePath, expect.objectContaining({ credentials: 'include', cache: 'no-store' }))
+    fireEvent(window, new CustomEvent(CUE_REMOVED_EVENT, { detail: cueId }))
+    expect(screen.getByText('This audio cue is unavailable.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /play preview/i })).toBeNull()
+  } finally {
+    fetcher.mockRestore()
+  }
+})
 
 function exchanges(container: HTMLElement): HTMLElement[] {
   return [...container.querySelectorAll<HTMLElement>('.gm-thread__exchange')]

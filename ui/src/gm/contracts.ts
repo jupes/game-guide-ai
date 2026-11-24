@@ -110,8 +110,7 @@ export type InvocationStatus = (typeof INVOCATION_STATUSES)[number]
 
 export type BriefPolicy = 'required' | 'optional'
 
-/** The attached-cue entry joins with the cue family. */
-export const ENTRY_KINDS = ['chat', 'tool', 'edit', 'session_divider', 'opaque'] as const
+export const ENTRY_KINDS = ['chat', 'tool', 'edit', 'session_divider', 'opaque', 'attached_cue'] as const
 export type EntryKind = (typeof ENTRY_KINDS)[number]
 
 /** What a document field holds. A kind is a registry fact and never appears on
@@ -1310,12 +1309,24 @@ const OpaqueEntrySchema = z.object({
   reason: z.enum(OPAQUE_REASONS),
 })
 
+export const AttachedCueEntrySchema = z.object({
+  ...entryBase,
+  entry_kind: z.literal('attached_cue'),
+  cue_id: OpaqueIdSchema,
+})
+export type AttachedCueEntry = z.infer<typeof AttachedCueEntrySchema>
+export const CueAttachRequestSchema = refusingProtoKeys(z.strictObject({
+  schema_version: z.literal(CONTRACT_VERSION),
+  conversation_id: OpaqueIdSchema,
+}))
+
 export const TimelineEntrySchema = z.discriminatedUnion('entry_kind', [
   ChatEntrySchema,
   ToolEntrySchema,
   EditEntrySchema,
   SessionDividerEntrySchema,
   OpaqueEntrySchema,
+  AttachedCueEntrySchema,
 ])
 export type TimelineEntry = z.infer<typeof TimelineEntrySchema>
 
@@ -2853,6 +2864,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   TableAssetRef: TableAssetRefSchema,
   Cue: CueSchema,
   CueCreateRequest: CueCreateRequestSchema,
+  CueAttachRequest: CueAttachRequestSchema,
   CueRenameRequest: CueRenameRequestSchema,
   CueListQuery: CueListQuerySchema,
   CuePage: CuePageSchema,

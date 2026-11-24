@@ -228,11 +228,26 @@ const rainCue: Cue = {
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 }
+const CUE_THREAD = 'cnv_CueStory00000000000001'
 
 export const CuesPhone = asPhone(scenario({
   library: empty,
   routes: (url, init) => {
     const prefix = `/campaigns/${CAMPAIGN_ID}`
+    if (url === '/conversations' && init?.method === 'POST') {
+      return json({
+        schema_version: 1, conversation_id: CUE_THREAD, campaign_id: CAMPAIGN_ID, started_mode: 'gm',
+        title: null, created_at: rainCue.created_at, updated_at: null, archived_at: null,
+      }, 201)
+    }
+    if (url === `${prefix}/cues/${rainCue.cue_id}/attach`) {
+      const { conversation_id } = JSON.parse(String(init?.body)) as { conversation_id: string }
+      if (conversation_id !== CUE_THREAD) return json({}, 404)
+      return json({
+        schema_version: 1, entry_kind: 'attached_cue', cue_id: rainCue.cue_id,
+        entry_id: 'ent_CueStory00000000000001', created_at: rainCue.created_at,
+      })
+    }
     if (url === `${prefix}/cues/capability`) return new Response(null, { status: 204 })
     if (url === `${prefix}/cues/list`) {
       const { archived } = JSON.parse(String(init?.body)) as { archived: boolean }
@@ -252,6 +267,9 @@ export const CuesPhone = asPhone(scenario({
     await expect(canvas.getByRole('group', { name: 'Preview (only you hear this)' })).toBeVisible()
     await expect(canvas.getByRole('button', { name: `Loop ${rainCue.title}` })).toHaveAttribute('aria-pressed', 'true')
     await expect(canvas.queryByRole('button', { name: 'Play to table' })).toBeNull()
+    await expectTouchTargets(canvas, ['Add to thread'])
+    await userEvent.click(canvas.getByRole('button', { name: 'Add to thread' }))
+    await canvas.findByText(`Added ${rainCue.title} to the GM thread`)
     await expect(canvas.queryByRole('button', { name: `Delete ${rainCue.title}` })).toBeNull()
     await userEvent.selectOptions(canvas.getByRole('combobox', { name: 'Show' }), 'archived')
     await userEvent.click(await canvas.findByRole('button', { name: `Delete ${rainCue.title}` }))
@@ -312,7 +330,7 @@ export const ArchivedEmptyDark = asDark(ArchivedEmpty)
 export const Error = scenario({
   library: () => json({}, 503),
   play: async (canvas) => {
-    await expect(await canvas.findByText("Couldn't load NPCs")).toBeVisible()
+    await expect(await within(canvas.getByRole('tabpanel')).findByText("Couldn't load NPCs")).toBeVisible()
     await expectTouchTargets(canvas, ['Retry'])
   },
 })

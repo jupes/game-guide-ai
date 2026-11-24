@@ -1,13 +1,15 @@
 import { notifyUnauthorized } from '../api'
 import {
-  AUDIO_MAX_BYTES, AssetCreateRequestSchema, AssetSchema, CONTRACT_VERSION, CueCreateRequestSchema,
-  CuePageSchema, CueSchema, ErrorBodySchema, ONE_SHOT_MAX_MS, type Asset, type Cue, type CueKind,
+  AUDIO_MAX_BYTES, AssetCreateRequestSchema, AssetSchema, AttachedCueEntrySchema, CONTRACT_VERSION,
+  CueAttachRequestSchema, CueCreateRequestSchema,
+  CuePageSchema, CueSchema, ErrorBodySchema, ONE_SHOT_MAX_MS, type Asset, type AttachedCueEntry, type Cue, type CueKind,
   type CueListQuery, type CuePage,
 } from './contracts'
 import { assetPath } from './documentFields'
 import { deleteArchivedResource, type DeleteResult } from './documentApi'
 
 const ONE_SHOT_MAX_BYTES = 5_000_000
+export const CUE_REMOVED_EVENT = 'workbench:cue-removed'
 const AUDIO_TYPE: Readonly<Record<string, string>> = {
   mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav',
 }
@@ -83,8 +85,34 @@ export async function updateCue(
   return saved
 }
 
-export function deleteCue(cue: Cue, password: string, fetchImpl: typeof fetch): Promise<DeleteResult> {
-  return deleteArchivedResource(path(cue.campaign_id, `/${encodeURIComponent(cue.cue_id)}/delete`), password, fetchImpl, 'conflict')
+export async function deleteCue(cue: Cue, password: string, fetchImpl: typeof fetch): Promise<DeleteResult> {
+  const result = await deleteArchivedResource(
+    path(cue.campaign_id, `/${encodeURIComponent(cue.cue_id)}/delete`), password, fetchImpl, 'conflict',
+  )
+  if (result.kind === 'ok') window.dispatchEvent(new CustomEvent(CUE_REMOVED_EVENT, { detail: cue.cue_id }))
+  return result
+}
+
+export async function readCue(
+  campaign: string, cueId: string, signal: AbortSignal, fetchImpl: typeof fetch,
+): Promise<Cue> {
+  const failure = 'This audio cue is unavailable.'
+  const reply = await request(fetchImpl, path(campaign, `/${encodeURIComponent(cueId)}`), { signal }, failure)
+  const cue = await checkedCue(reply, campaign, failure)
+  if (cue.cue_id !== cueId) throw new CueApiError(failure)
+  return cue
+}
+
+export async function attachCue(cue: Cue, conversation: string, fetchImpl: typeof fetch): Promise<AttachedCueEntry> {
+  const failure = "Couldn't add the cue to the GM thread. Try again."
+  const data = CueAttachRequestSchema.safeParse({
+    schema_version: CONTRACT_VERSION, conversation_id: conversation,
+  })
+  if (!data.success) throw new CueApiError(failure)
+  const reply = await request(fetchImpl, path(cue.campaign_id, `/${encodeURIComponent(cue.cue_id)}/attach`), json('POST', data.data), failure)
+  const entry = AttachedCueEntrySchema.safeParse(await body(reply))
+  if (!reply.ok || !entry.success || entry.data.cue_id !== cue.cue_id) throw new CueApiError(failure)
+  return entry.data
 }
 
 export interface CueUploadIntent {

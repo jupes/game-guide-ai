@@ -9,6 +9,7 @@ import { expect, fn, within } from 'storybook/test'
 
 import { atViewport, expectNoPageOverflow, expectTheme, expectViewport } from '../../.storybook/viewports'
 import { expectTouchTarget } from '../../.storybook/touchTarget'
+import { json, stubFetch } from '../../.storybook/shellHarness'
 import { GmThread } from './GmThread'
 import { collapseSessionSpans, turnsFromTimeline } from './gmTimeline'
 import { LANE_COPY } from './laneState'
@@ -18,6 +19,7 @@ import {
   DIVIDER_ENTRY,
   EDIT_ENTRY,
   END_DIVIDER_ENTRY,
+  LIVE_CAMPAIGN,
   LIVE_CONVERSATION,
   OPAQUE_ENTRY,
   QUIET_SESSION,
@@ -121,6 +123,37 @@ export const Placeholders: Story = {
     const canvas = within(canvasElement)
     await expect(canvas.getByText(LANE_COPY.newerVersion)).toBeVisible()
     await expect(canvas.getByText(LANE_COPY.unsupportedResult)).toBeVisible()
+  },
+}
+
+const THUNDER = {
+  schema_version: 1, campaign_id: LIVE_CAMPAIGN, cue_id: 'cue_Thunder000000000000001',
+  asset_id: 'ast_Thunder000000000000001', title: 'Distant thunder', kind: 'one_shot',
+  duration_ms: 1400, archived: false, created_at: '2026-11-01T00:00:00Z', updated_at: '2026-11-01T00:00:00Z',
+} as const
+
+export const AttachedCuePhone: Story = {
+  ...atViewport('phone375'),
+  args: {
+    campaignId: LIVE_CAMPAIGN,
+    turns: turnsFromTimeline([{ kind: 'ok', value: {
+      schema_version: 1, entry_kind: 'attached_cue', entry_id: 'ent_Thunder000000000000001',
+      created_at: THUNDER.created_at, cue_id: THUNDER.cue_id,
+    } }]),
+  },
+  beforeEach: stubFetch((url) => {
+    if (url === `/campaigns/${LIVE_CAMPAIGN}/cues/${THUNDER.cue_id}`) return json(THUNDER)
+    return json({ schema_version: 1, peaks: Array.from({ length: 512 }, (_, index) => (index % 12) / 12) })
+  }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expectViewport('phone375')
+    await expect(canvas.getByText('You · attached')).toBeVisible()
+    await expect(canvas.getByText('AUDIO CUE')).toBeVisible()
+    await canvas.findByRole('button', { name: 'Play preview of Distant thunder' })
+    await expectTouchTarget(canvas, 'Play preview of Distant thunder')
+    await expect(canvas.queryByRole('button', { name: 'Play to table' })).toBeNull()
+    await expectNoPageOverflow()
   },
 }
 

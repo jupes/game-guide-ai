@@ -187,11 +187,13 @@ def validated_entry(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -
 
 
 def _appendable(entry: AnyEntry | Mapping[str, Any], created_at: datetime) -> tuple[AnyEntry, str]:
-    """`_checked`, and never a session divider (`1kg.3.5`, I-6). A divider's
-    only writer is the guarded divider store, so `append`, which guards the owner
-    alone, can never store one."""
+    """`_checked` for entries whose write only needs the conversation owner.
+
+    Session dividers and attached cues use writers that also authorize their
+    campaign resources.
+    """
     validated, payload = _checked(entry, created_at)
-    if validated.entry_kind == "session_divider":
+    if validated.entry_kind in ("session_divider", "attached_cue"):
         raise EntryInvalid(["entry_kind"])
     return validated, payload
 

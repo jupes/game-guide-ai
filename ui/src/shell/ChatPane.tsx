@@ -32,6 +32,7 @@ import { armDraft, parseDraft } from '../gm/slash'
 import { loadToolAvailability } from '../gm/toolInvocationApi'
 import { useToolInvocations, type ToolInvocations } from '../gm/useToolInvocations'
 import {
+  attachedCueTurn,
   collapseSessionSpans,
   exchangesForExport,
   turnFromExchange,
@@ -298,7 +299,7 @@ function ChatPaneBody({
   // to is the one useChat adopts. A campaign thread's prompt never reaches the
   // local store (RAIL-26: `handleSend` below).
   const { selection, scope, isCurrentScope, enabled } = useCampaign()
-  const { ensureThread } = useCampaignThreads()
+  const { ensureThread, onCueAttachment } = useCampaignThreads()
   const campaignPost = React.useMemo<PostFn | undefined>(() => {
     if (mode !== 'gm' || selection.kind === 'none') return undefined
     const base = post ?? postTurn
@@ -363,6 +364,13 @@ function ChatPaneBody({
   // drawn list, so the pair still collapses once Load earlier prepends one
   // half above the other.
   const timeline = useGmTimeline(conversationId, gm, loadTimeline)
+  const { addAttachedCue } = timeline
+  React.useEffect(() => {
+    if (!gm || conversationId === null) return
+    return onCueAttachment((thread, entry) => {
+      if (thread === conversationId) addAttachedCue(entry)
+    })
+  }, [gm, conversationId, onCueAttachment, addAttachedCue])
   const gmTurns = React.useMemo(() => {
     if (!gm) return []
     const stored = turnsFromTimeline(timeline.items)
@@ -372,9 +380,10 @@ function ChatPaneBody({
     const live = [
       ...exchanges.map((exchange) => ({ turn: turnFromExchange(exchange), submittedAt: exchange.submittedAt ?? 0 })),
       ...liveTools,
+      ...timeline.recentCueEntries.map(({ entry, receivedAt }) => ({ turn: attachedCueTurn(entry), submittedAt: receivedAt })),
     ].sort((a, b) => a.submittedAt - b.submittedAt)
     return collapseSessionSpans([...turns, ...live.map(({ turn }) => turn)])
-  }, [gm, timeline.items, exchanges, conversationId, tools.work])
+  }, [gm, timeline.items, timeline.recentCueEntries, exchanges, conversationId, tools.work])
   const threadError = gm ? timeline.error : historyError
   const threadLoading = gm ? timeline.loading : loadingHistory
   const threadLength = gm ? gmTurns.length : exchanges.length
@@ -811,6 +820,7 @@ function ChatPaneBody({
         ) : gm ? (
           <GmThread
             turns={gmTurns}
+            campaignId={scope?.campaignId}
             hasEarlier={timeline.hasEarlier}
             loadingEarlier={timeline.loadingEarlier}
             earlierError={timeline.earlierError}

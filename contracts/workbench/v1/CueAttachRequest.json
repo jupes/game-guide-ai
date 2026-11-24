@@ -1,0 +1,24 @@
+{
+  "schema": "CueAttachRequest",
+  "direction": "request",
+  "valid": [
+    {
+      "name": "attach a cue to the selected thread",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_Example000000000000001"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "caller-supplied audience",
+      "why": "The server resolves the conversation owner and campaign",
+      "value": {
+        "schema_version": 1,
+        "conversation_id": "cnv_Example000000000000001",
+        "audience": "campaign"
+      }
+    }
+  ]
+}

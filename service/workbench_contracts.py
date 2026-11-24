@@ -410,13 +410,13 @@ class LibrarySort(str, Enum):
 
 
 class EntryKind(str, Enum):
-    """Timeline entry kinds. The attached-cue entry joins with the cue family;
-    a new kind after v1 ships is a version bump."""
+    """Timeline entry kinds. A client can show a placeholder for an unknown kind."""
 
     CHAT = "chat"
     TOOL = "tool"
     EDIT = "edit"
     SESSION_DIVIDER = "session_divider"
+    ATTACHED_CUE = "attached_cue"
     OPAQUE = "opaque"
 
 
@@ -1877,7 +1877,19 @@ class OpaqueEntry(_EntryBase):
     reason: OpaqueReason
 
 
-AnyEntry = ChatEntry | ToolEntry | EditEntry | SessionDividerEntry | OpaqueEntry
+class AttachedCueEntry(_EntryBase):
+    """A GM-thread reference resolved through the campaign's cue library."""
+
+    entry_kind: Literal["attached_cue"]
+    cue_id: OpaqueId
+
+
+class CueAttachRequest(_Contract):
+    schema_version: SchemaVersion
+    conversation_id: OpaqueId
+
+
+AnyEntry = ChatEntry | ToolEntry | EditEntry | SessionDividerEntry | AttachedCueEntry | OpaqueEntry
 TimelineEntry = Annotated[AnyEntry, Field(discriminator="entry_kind")]
 
 
@@ -4026,6 +4038,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "TableAssetRef": TypeAdapter(TableAssetRef),
     "Cue": TypeAdapter(Cue),
     "CueCreateRequest": TypeAdapter(CueCreateRequest),
+    "CueAttachRequest": TypeAdapter(CueAttachRequest),
     "CueRenameRequest": TypeAdapter(CueRenameRequest),
     "CueListQuery": TypeAdapter(CueListQuery),
     "CuePage": TypeAdapter(CuePage),

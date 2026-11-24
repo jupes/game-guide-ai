@@ -20,6 +20,16 @@
   margin-bottom: 0;
 }
 
+.gm-thread__attached-cue .chat-message__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.gm-thread__attached-cue .chat-message__bubble {
+  align-self: stretch;
+  min-width: 0;
+}
+
 /* RAIL-9: the tool's label as a badge on the GM's turn, in the lane badge's
    voice so the turn and its lane visibly belong to one tool. */
 .gm-thread__tool {

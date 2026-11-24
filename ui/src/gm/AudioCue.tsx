@@ -121,7 +121,12 @@ export function AudioCue({
   const positionMs = clampPositionMs(preview.positionMs, durationMs)
   const volume = clampUnit(preview.volume)
   const looping = isLoopable(cue.kind) && loop
-  const bars = peaks && peaks.length > 0 ? peaks : fallbackPeaks(BAR_COUNT, durationMs)
+  const recorded = peaks?.length ? peaks : fallbackPeaks(BAR_COUNT, durationMs)
+  const bars = recorded.length <= BAR_COUNT ? recorded : Array.from({ length: BAR_COUNT }, (_, index) => {
+    const start = Math.floor(index * recorded.length / BAR_COUNT)
+    const end = Math.floor((index + 1) * recorded.length / BAR_COUNT)
+    return Math.max(...recorded.slice(start, end))
+  })
   const played = durationMs > 0 ? Math.round((bars.length * positionMs) / durationMs) : 0
   const playable = playability === 'ready'
 

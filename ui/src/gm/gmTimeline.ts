@@ -26,12 +26,12 @@
  * React key is an entry id or a local counter, never text.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getTimelinePage } from '../api'
 import type { ChatMode, ChatResponse, TimelinePageResult } from '../api'
 import type { Exchange } from '../useChat'
 import { TIMELINE_PAGE_MAX_ITEMS } from './contracts'
-import type { ChatAnswer, TimelineItem, ToolInvocation } from './contracts'
+import type { AttachedCueEntry, ChatAnswer, TimelineItem, ToolInvocation } from './contracts'
 
 export type LoadTimelinePageFn = (conversationId: string, cursor: string | null) => Promise<TimelinePageResult>
 
@@ -84,6 +84,7 @@ export type GmTurn =
   | { kind: 'unreadable'; key: string }
   /** An AI edit. Known, but its lane is 1kg.6.5's, so it says so rather than guessing. */
   | { kind: 'unsupported'; key: string }
+  | { kind: 'attached_cue'; key: string; cueId: string }
   /** A session boundary (1kg.3.5): not an exchange, drawn between them. */
   | DividerTurn
 
@@ -101,6 +102,10 @@ export type DividerTurn =
 
 /** Every turn that is an exchange: the GM's turn, then its outcome. */
 export type ExchangeTurn = Exclude<GmTurn, DividerTurn>
+
+export function attachedCueTurn(entry: AttachedCueEntry): Extract<GmTurn, { kind: 'attached_cue' }> {
+  return { kind: 'attached_cue', key: `entry:${entry.entry_id}`, cueId: entry.cue_id }
+}
 
 /** The divider's words, in one place for the design lane (agent-forge-harness-cub). */
 export const DIVIDER_COPY = { start: 'Session started', end: 'Session ended', span: 'Session played' } as const
@@ -171,6 +176,9 @@ export function turnsFromTimeline(items: readonly TimelineItem[]): GmTurn[] {
         return
       case 'edit':
         turns.push({ kind: 'unsupported', key })
+        return
+      case 'attached_cue':
+        turns.push(attachedCueTurn(entry))
         return
       case 'opaque':
         turns.push({ kind: 'unreadable', key })
@@ -356,11 +364,19 @@ export interface GmTimeline {
    * what is already drawn. Retries in place on a previous failure (§12.2's
    * GM-thread row) — a no-op while one is already in flight or none remain. */
   loadEarlier: () => void
+  addAttachedCue: (entry: AttachedCueEntry) => void
+  /** Acknowledged attachments that the server page has yet to include. */
+  recentCueEntries: readonly CueReceipt[]
+}
+
+interface CueReceipt {
+  readonly entry: AttachedCueEntry
+  readonly receivedAt: number
 }
 
 /** The part of `GmTimeline` that is plain state; `loadEarlier` is bound fresh
  * on every call so it always closes over the current scope. */
-type TimelineSnapshot = Omit<GmTimeline, 'loadEarlier'>
+type TimelineSnapshot = Omit<GmTimeline, 'loadEarlier' | 'addAttachedCue' | 'recentCueEntries'>
 
 interface TimelineState extends TimelineSnapshot {
   scopeId: string | null
@@ -383,11 +399,12 @@ const LOADING: TimelineSnapshot = {
   earlierError: null,
 }
 const NOOP = (): void => {}
+const NO_RECENT_CUES: readonly CueReceipt[] = []
 
 /**
  * The stored thread of the open conversation, read when it opens. `enabled` is
- * false outside the GM channel, where nothing is fetched. State is scoped the
- * way `useChat` scopes it: derived, never reset by a synchronous setState.
+ * false outside the GM channel, where nothing is fetched. Acknowledged
+ * attachments are kept only for the open conversation.
  */
 export function useGmTimeline(
   conversationId: string | null,
@@ -396,6 +413,22 @@ export function useGmTimeline(
 ): GmTimeline {
   const scope = enabled ? conversationId : null
   const [state, setState] = useState<TimelineState>({ scopeId: null, ...NO_TIMELINE })
+  const [newCues, setNewCues] = useState<{ id: string; items: readonly CueReceipt[] } | null>(null)
+  if (newCues !== null && newCues.id !== scope) setNewCues(null)
+  const recentCueEntries = useMemo(() => {
+    if (newCues?.id !== scope) return NO_RECENT_CUES
+    const present = new Set(state.items.map(entryKeyOf))
+    return newCues.items.filter(({ entry }) => !present.has(entry.entry_id))
+  }, [newCues, scope, state.items])
+  const addAttachedCue = useCallback((entry: AttachedCueEntry) => {
+    if (scope === null) return
+    const receivedAt = Date.now()
+    setNewCues((current) => {
+      const before = current?.id === scope ? current.items : []
+      if (before.some((item) => item.entry.entry_id === entry.entry_id)) return current
+      return { id: scope, items: [...before, { entry, receivedAt }] }
+    })
+  }, [scope])
   // Load earlier's cursor and in-flight guard live only in memory (X-7),
   // never in state or persisted — so neither a rerender nor a stale promise
   // can smear them across a conversation switch. `generationRef` counts the
@@ -503,6 +536,6 @@ export function useGmTimeline(
     )
   }, [scope, loadPage])
 
-  if (scope === null) return { ...NO_TIMELINE, loadEarlier: NOOP }
-  return state.scopeId === scope ? { ...state, loadEarlier } : { ...LOADING, loadEarlier }
+  if (scope === null) return { ...NO_TIMELINE, loadEarlier: NOOP, addAttachedCue, recentCueEntries }
+  return { ...(state.scopeId === scope ? state : LOADING), loadEarlier, addAttachedCue, recentCueEntries }
 }

@@ -27,12 +27,15 @@
 
 import * as React from 'react'
 import { documentTypeRead } from '../gm/canvasStatus'
-import { SEARCH_MAX_CHARS, type DocumentTypeId } from '../gm/contracts'
+import { SEARCH_MAX_CHARS, type Cue, type DocumentTypeId } from '../gm/contracts'
+import { attachCue, CueApiError } from '../gm/cueApi'
 import { archiveDocument, createDocument, unarchiveDocument } from '../gm/documentApi'
 import { REGISTRY } from '../gm/registry'
 import { liveOf } from '../gm/revealFields'
+import { useAppNav } from './AppNav'
 import type { ShellLayout } from './breakpoints'
 import { useCampaign } from './campaignContext'
+import { useCampaignThreads } from './campaignThreads'
 import { PendingButton, useRetrying } from './CampaignPicker'
 import { CueLibrary } from './CueLibrary'
 import { useCanvasActions, useCanvasState, type CanvasDoc } from './canvasContext'
@@ -75,15 +78,32 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
   const { category, tabs, setCategory, closeLibrary } = useLibraryPanel()
   const { guardDialog, doc } = useCanvasState()
   const { bumpDocumentsVersion, refreshDocument } = useCanvasActions()
-  const { scope } = useCampaign()
+  const { scope, isCurrentScope } = useCampaign()
   const campaignId = scope?.campaignId ?? null
   const scopeKey = scope?.key ?? null
+  const nav = useAppNav()
+  const currentNav = React.useRef(nav)
+  React.useLayoutEffect(() => { currentNav.current = nav }, [nav])
+  const { ensureThread, reportCueAttachment } = useCampaignThreads()
   const headingRef = React.useRef<HTMLHeadingElement>(null)
   const tabRefs = React.useRef(new Map<LibraryCategoryId, HTMLButtonElement>())
   const [announcement, setAnnouncement] = React.useState({ text: '', tick: 0 })
   const announce = React.useCallback((text: string): void => {
     setAnnouncement((now) => ({ text, tick: now.tick + 1 }))
   }, [])
+
+  async function addToThread(cue: Cue): Promise<void> {
+    if (scope === null || nav.mode !== 'gm' || cue.campaign_id !== scope.campaignId) return
+    const selected = nav.conversationId
+    const thread = selected ?? await ensureThread()
+    if (!isCurrentScope(scope.key) || currentNav.current.mode !== 'gm') return
+    if (thread === null) throw new CueApiError("Couldn't open a GM thread. Try again.")
+    const entry = await attachCue(cue, thread, fetchImpl ?? fetch)
+    if (!isCurrentScope(scope.key) || currentNav.current.mode !== 'gm') return
+    reportCueAttachment(thread, entry)
+    if (selected === null && currentNav.current.conversationId === null) nav.setConversationId(thread)
+    announce(`Added ${cue.title} to the GM thread`)
+  }
 
   React.useEffect(() => {
     headingRef.current?.focus()
@@ -211,7 +231,8 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
 
       <div role="tabpanel" id={TABPANEL_ID} aria-labelledby={tabId(category)} className="library-panel__body">
         {category === 'cues' ? (
-          campaignId && <CueLibrary key={scopeKey} campaign={campaignId} announce={announce} fetchImpl={fetchImpl} />
+          campaignId && <CueLibrary key={scopeKey} campaign={campaignId} announce={announce}
+            fetchImpl={fetchImpl} onAttach={addToThread} />
         ) : (
           <LibraryTabBody
             key={category}

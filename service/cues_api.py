@@ -20,12 +20,15 @@ from .campaign_store import pg
 from .db import CampaignAuthzMissing, PgTransaction, TransactionalDatabase
 from .job_driver import JobDriver, run_after_response
 from .session import SessionData
+from .timeline_store import new_entry_id, validated_entry
 from .workbench_api import SessionDependency, body_reader, not_found, reads_by_post, workbench_router
 from .workbench_contracts import (
     CUE_MAX_MS,
     ArchivedDeleteRequest,
     AssetState,
+    AttachedCueEntry,
     Cue,
+    CueAttachRequest,
     CueCreateRequest,
     CueKind,
     CueListQuery,
@@ -208,6 +211,67 @@ def change(
     return Cue.model_validate({"schema_version": 1, **row})
 
 
+_THREAD = """
+    c.conversation_id = %(thread)s AND c.user_id = %(owner)s
+    AND c.campaign_id = %(campaign)s AND c.archived_at IS NULL
+    AND (c.started_mode IS NULL OR c.started_mode = 'gm')
+"""
+
+
+def attach(
+    transaction: PgTransaction,
+    campaign: str,
+    cue_id: str,
+    thread: str,
+    owner: int,
+    now: datetime,
+) -> AttachedCueEntry:
+    if not ident.is_id(ident.CUE, cue_id):
+        not_found()
+    entry = AttachedCueEntry(
+        schema_version=1,
+        entry_kind="attached_cue",
+        entry_id=new_entry_id(),
+        cue_id=cue_id,
+        created_at=now,
+    )
+    _, payload = validated_entry(entry, now)
+    params = {
+        "thread": thread,
+        "campaign": campaign,
+        "owner": owner,
+        "cue": cue_id,
+        "entry": entry.entry_id,
+        "time": now,
+        "payload": payload,
+    }
+    inserted = transaction.conn.execute(
+        f"""
+        INSERT INTO chat.timeline_entries (entry_id, conversation_id, entry_kind, schema_version, created_at, payload)
+        SELECT %(entry)s, c.conversation_id, 'attached_cue', 1, %(time)s, %(payload)s::jsonb
+        FROM chat.conversations c
+        WHERE {_THREAD} AND EXISTS (SELECT 1 {_VISIBLE} AND q.id = %(cue)s AND NOT q.archived)
+        ON CONFLICT (conversation_id, (payload->>'cue_id')) WHERE entry_kind = 'attached_cue' DO NOTHING
+        RETURNING entry_id
+        """,
+        params,
+    ).fetchone()
+    if inserted is not None:
+        return entry
+    # A retry can race the first write. Read the winner under the same thread
+    # authorization, even if the referenced cue has since been removed.
+    earlier = transaction.conn.execute(
+        f"""
+        SELECT e.payload FROM chat.timeline_entries e JOIN chat.conversations c USING (conversation_id)
+        WHERE {_THREAD} AND e.entry_kind = 'attached_cue' AND e.payload->>'cue_id' = %(cue)s
+        """,
+        params,
+    ).fetchone()
+    if earlier is None:
+        not_found()
+    return AttachedCueEntry.model_validate(earlier[0])
+
+
 def delete_archived(
     transaction: PgTransaction,
     runtime: MediaRuntime,
@@ -280,6 +344,34 @@ def build_router(
     def create_cue(campaign_id: str, raw: Body, user: User, db: DB, runtime: Media) -> Cue:
         with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
             return create(transaction, campaign_id, user.user_id, _parse(CueCreateRequest, raw))
+
+    @router.get(f"{PREFIX}/{{cue_id}}", include_in_schema=False)
+    def read_cue(campaign_id: str, cue_id: str, user: User, db: DB, runtime: Media) -> Cue:
+        with _owned(db, runtime, campaign_id, user.user_id) as transaction:
+            if not ident.is_id(ident.CUE, cue_id):
+                not_found()
+            with transaction.conn.cursor(row_factory=dict_row) as cursor:
+                row = cursor.execute(
+                    f"SELECT {_COLUMNS} {_VISIBLE} AND q.id = %(cue)s",
+                    {"campaign": campaign_id, "cue": cue_id},
+                ).fetchone()
+            if row is None:
+                not_found()
+            return Cue.model_validate({"schema_version": 1, **row})
+
+    @router.post(f"{PREFIX}/{{cue_id}}/attach", include_in_schema=False)
+    def attach_cue(
+        campaign_id: str,
+        cue_id: str,
+        raw: Body,
+        user: User,
+        db: DB,
+        runtime: Media,
+        clock: Annotated[Callable[[], datetime], Depends(get_clock)],
+    ) -> AttachedCueEntry:
+        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+            body = _parse(CueAttachRequest, raw)
+            return attach(transaction, campaign_id, cue_id, body.conversation_id, user.user_id, clock())
 
     @router.patch(f"{PREFIX}/{{cue_id}}", include_in_schema=False)
     def rename(campaign_id: str, cue_id: str, raw: Body, user: User, db: DB, runtime: Media) -> Cue:
