@@ -1218,3 +1218,14 @@ four Lows are folded in as well. Deferred, one line each:
 - **Back/forward cache:** whether each supported browser evicts it on `Clear-Site-Data: "cache"`, which decides part of SEC-48's residue (`1kg.9.3`).
 - **Presence:** whether the GM should see a per-seat connection count as a shared-login signal (§10) — the design lane's.
 - **Leave on a screen:** anyone standing at the screen can press it (B9); whether it needs a confirmation is the design lane's.
+
+## 16. Campaign document uploads and retrieval — proposed amendments for LORE-1
+
+| # | Amendment | Basis |
+|---|---|---|
+| SEC-L1 | Authorize the signed-in Verified account and campaign or confirmed seat before ingesting or searching. Derive the conversation link and principal on the server. Apply the same scope before lexical scoring, vector scoring, mentions and citation resolution. A denied resource gets the ordinary unavailable response. | SEC-2, SEC-3, ED-L1, critic 5–7 |
+| SEC-L2 | Stream at most 10 MB of Markdown, UTF-8 text, text-layer PDF or DOCX. Inspect file contents and cap PDF input at 120 pages. Refuse extracted output over 200,000 characters. For DOCX inspect the bounded WordprocessingML document, styles and numbering parts with DTD and entity parsing disabled. Use the shared one-per-instance media processing gate with bounded wait, execution and memory, no network and disposable scratch space. Reserve quota before reading the body. | SEC-25–28, SEC-31, LORE-2, critic 12 and 16–22 |
+| SEC-L3 | Store normalized text and private extraction metadata. Discard original bytes and scratch files. Keep filenames, document text, search terms and embeddings out of logs, telemetry, audit events and public payloads. Treat uploaded content as untrusted evidence with inert rendering and no authority to run actions. | SEC-20, SEC-23, SEC-28, SEC-38, critic 11–15 |
+| SEC-L4 | Record provider approval under SEC-39 before sending private text for extraction or embeddings. Name the approved processing provider in upload UI. Keep campaign-linked tracing metadata-only and web fallback off pending `xiu.1.1`. Exclude both link kinds from cross-conversation profile and summary extraction. | SEC-39, D-9, LORE-1 items 9–10 |
+| SEC-L5 | Player citations use opaque recipient-safe handles. Show a title only when shared. Exclude GM document IDs, version numbers, chunk ordinals and page coordinates from player responses. Apply the recipient's checks to generated answers before delivery. | SEC-15, ED-L5, critic 4 and 8 |
+| SEC-L6 | Document the residuals. Later Unshare removes future access to the material. Already delivered answers remain in their conversation. Filtering private material may suppress matching public model knowledge. References, chunks and notes follow the documented deletion and backup expiry rules. | SEC-36, ED-L5, LORE-1 item 11 |

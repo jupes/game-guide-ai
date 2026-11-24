@@ -754,3 +754,18 @@ is the bead's.
   answered at all, without their answers, is the design lane's; RR-6 is the risk either
   way.
 - **A presenting mode** for the GM's screen (TM-41) is the design lane's; LV-28 reviews it.
+
+## 17. Campaign document corpus — proposed amendments for LORE-1
+
+| # | Amendment | Basis |
+|---|---|---|
+| LS-L1 | Use a sealed GM principal for the campaign's `gm_chunks`. Keep a separate server-owned seat link, exclusive with the GM campaign link. Recheck Verified account, confirmed seat and campaign availability on each player read. The link kind and principal select the namespace. Check seat and shelf authorization before candidate ranking. | ED-L1, IDA-L1, LORE-3 through LORE-5, critic 5, 7 and 26 |
+| LS-L2 | Keep chunks field-local. The GM embedding input may also include the document name and type. Compute player lexical features and embedding inputs only from approved field text and registry labels. Reuse an embedding only when representation and exact approved input match. If approved under the reviewed design, scope any input digest to the index and keep it out of events, logs and responses. | LS-25, ED-L5, critic 2–3 and 31 |
+| LS-L3 | Draft player-path answers from authorized PlayerEvidence and apply the per-recipient egress filter. Include other-seat notes in the blocked evidence set, subtracting text the recipient can already see, including their own notes and prompt. Use recipient-safe citations. Keep traces metadata-only, and exclude campaign-linked turns from cross-conversation memory. | SEC-L4–L5, LSA plan §4.5 rule 3, critic 4, 8–9 and 13 |
+| LS-L4 | The GM retrieval phase can land independently of table retrieval. `hfde.3` creates the GM index and `hfde.4` supplies the GM half of CampaignRetriever. `1ir.2.3` owns the player projection and row-level policy, and `1ir.2.4` owns the player retriever. `1ir.11.5` owns the recipient egress boundary. | LORE-1, critic 26, 29 and 31 |
+
+The design proposes exact campaign-filtered lexical and vector search in the existing PostgreSQL database.
+The proposed embedding representation is a renormalized 512-dimensional half vector, subject to recall
+and deployment compatibility checks, with the full provider vector as the recall fallback. The GCP review
+and provider approval determine the actual input dimensions and migration gate. Treat this as a design
+candidate until that review is recorded.

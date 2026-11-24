@@ -597,3 +597,43 @@ same decisions.
 **Not changed:** mask-only v1, the enforcement switch, the classes, the lock
 protocol, disclosures and per-recipient copies (O-3), re-display rules (O-4),
 the gated excerpt kind (O-5), and every race case not named above.
+
+### 15.3 Campaign document corpus — proposed amendments for LORE-1
+
+The owner requested user-uploaded documents searchable within the signed-in user's selected campaign.
+These rows apply that boundary to the reviewed campaign lore design (`agent-forge-harness-hfde.1`).
+The sharing phase, tier caps and provider approval are pending review.
+
+| # | Amendment | Basis |
+|---|---|---|
+| ED-L1 | Resolve campaign and audience server-side before selecting, ranking or citing any uploaded content. An owner-linked GM thread uses its own campaign's GM namespace. A seat-linked thread uses its authenticated seat's notes and, if enabled, explicitly shared lore addressed to that seat. Campaign uploads stay in the campaign corpus. | SEC-2, ED-3, LORE-1 items 3 and 5, critic 5 and 26 |
+| ED-L2 | A `reference` body is one eligibility field. Its title and summary have their own fields. Extraction metadata and the PDF page map stay GM-private. A table-slot Reveal of a long prose body above 20,000 characters receives a 422 before any session mutation. | ED-2, ED-3, ED-5, critic 33 |
+| ED-L3 | Seat notes are visible to the author and the campaign GM. The confirmed seat owns the notes. Exclude notes from classification and projection to other players. The GM may omit seat notes from retrieval. When enabled, show at most three of eight GM evidence chunks as player-supplied notes and exclude them from automatic GM cards in v1. | Identity §8.1, LORE-5, critic 23 |
+| ED-L4 | If Phase C is approved, Share previews the exact fields, pinned version and recipients for Confirm. Under the exclusive campaign lock, classify to the narrowest applicable audience, store the expanded participant IDs, and record a `displayed` event for the `shelf` kind. “Everyone seated” takes a snapshot of confirmed seats. Future seats and new members need a new Share. Reads require current eligibility and membership in the frozen audience. Shelf and slot re-displays require authorization for their own display kind. | ED-9, ED-12, ED-13, ED-15, ED-17, RQ-4, critic 1 and 29–30 |
+| ED-L5 | Unshare applies Stop to future reads. Narrowing rechecks current authorization at egress. Keep any answer already delivered under the normal conversation lifecycle. Only approved text can contribute to a player's ranking or citation. | ED-12, ED-25, LORE-1 item 11, critic 2 and 4 |
+| ED-L6 | Require isolation fixtures for two campaigns owned by one account, campaigns owned by different accounts, and two seats in the same campaign. For a given player, changes to GM-private, draft or other-seat text leave their candidate set, ranking, citations and user-visible outcomes identical. | Owner corpus boundary, LORE epic acceptance, critic 1–8 |
+
+These are planning defaults from the campaign lore design. Tier policy and pricing
+approval determine the final limits.
+
+| Corpus | Planning default |
+|---|---|
+| Free GM campaign | 25 reference documents and 1 million extracted characters per campaign |
+| Paid GM campaign | 300 reference documents and 6 million extracted characters per campaign |
+| Player seat, free or paid | 10 notes and 100,000 characters per seat, per the reviewed cap in critic 23 |
+| All tiers | Per-account quota, bounded upload throughput and indexing metered through the usage ledger |
+
+| Owner question | Recorded status |
+|---|---|
+| Q-1, player upload and GM access | Proposed for confirmed seats, with the author-and-GM audience disclosed on upload |
+| Q-2, player questions about GM-shared lore | Proposed Phase C after the shelf, projection and recipient-filter gates. Awaiting confirmation |
+| Q-3, tier limits | Defaults above, pending pricing and limit approval |
+| Q-4, notes on removal | Reviewed design uses immediate revocation and purge, with original files retained by the author |
+| Q-5, stored originals | Proposed text-only first release |
+| Q-6, corpus boundary | Owner requested per-user, per-campaign search. Cross-campaign reuse is a separate product decision |
+| Q-7, privately uploaded published adventures | Pending the rights and terms review under `yje.6.1` |
+| Q-8, PDF extraction library | Pending the license and extractor decision. Extraction provider approval follows the GCP comparison |
+
+Implementation references are `hfde.2` for LIB-L1 and SEC-L2–L4, `hfde.3` for
+ED-L1 and LS-L1–L2, `hfde.4` for LIB-L2 and LS-L4, `hfde.5` for ED-L3 and
+IDA-L1, `hfde.6` for ED-L4–L5, and `hfde.7` for SEC-L5 and LS-L3.
