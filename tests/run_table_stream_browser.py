@@ -87,7 +87,7 @@ def _service(env: dict[str, str], address: Path) -> Iterator[str]:
                     process.kill()
 
 
-def _fixture(dsn: str) -> dict[str, str]:
+def _fixture(dsn: str, media_dir: Path) -> dict[str, str]:
     migrations.migrate(dsn)
     world = _pg_world(dsn, fill=True)
     campaign = _campaign(world)
@@ -105,13 +105,16 @@ def _fixture(dsn: str) -> dict[str, str]:
     with world.db.transaction() as unit:
         _, grant = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
     with connect(dsn) as connection:
-        connection.execute("UPDATE auth.users SET role = 'dm' WHERE id = %s", (world.owner,))
+        connection.execute("UPDATE auth.users SET role = 'dm' WHERE id IN (%s, %s)", (world.owner, world.other_owner))
 
     secret = secrets.token_urlsafe(48)
     return os.environ | {
         "DATABASE_URL": dsn,
         "MIGRATIONS_MODE": "verify",
         "WORKBENCH_TABLE_STREAMS_ENABLED": "1",
+        "WORKBENCH_MEDIA_ENABLED": "1",
+        "WORKBENCH_MEDIA_STORE": "filesystem",
+        "WORKBENCH_MEDIA_DIR": str(media_dir),
         "DB_ASYNC_POOL_MAX": "2",
         "SESSION_SECRET": secret,
         "SESSION_COOKIE_NAME": "gga_session",
@@ -122,6 +125,7 @@ def _fixture(dsn: str) -> dict[str, str]:
         "TABLE_BROWSER_SESSION": session.id,
         "TABLE_BROWSER_PUBLIC_DOCUMENT": shared,
         "TABLE_BROWSER_OWNER_COOKIE": encode_session(SessionData(world.owner, "dm"), secret),
+        "TABLE_BROWSER_OTHER_GM_COOKIE": encode_session(SessionData(world.other_owner, "dm"), secret),
         "TABLE_BROWSER_PLAYER_COOKIE": encode_session(SessionData(player, "player"), secret),
         "TABLE_BROWSER_PENDING_COOKIE": encode_session(SessionData(pending, "player"), secret),
         "TABLE_BROWSER_OFFERED_COOKIE": encode_session(SessionData(offered, "player"), secret),
@@ -131,7 +135,9 @@ def _fixture(dsn: str) -> dict[str, str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Verify live player tables across two local services.")
+    parser = argparse.ArgumentParser(
+        description="Verify live player tables and private GM media across two local services."
+    )
     parser.add_argument("--browser", choices=("chromium", "webkit"), default="chromium")
     args = parser.parse_args()
     _require_local_database()
@@ -139,8 +145,8 @@ def main() -> None:
     if bun is None or not (ROOT / "ui/dist/table.html").is_file():
         raise SystemExit("Build the mobile frontend in ui/ with bun run build before running the profile.")
     with throwaway_database("table_browser") as dsn, TemporaryDirectory(prefix="table-browser-") as scratch:
-        env = _fixture(dsn)
         root = Path(scratch)
+        env = _fixture(dsn, root / "media")
         with _service(env, root / "player-port") as player, _service(env, root / "screen-port") as screen:
             subprocess.run(
                 [bun, "run", "test:e2e", "--config", "playwright.table-stream.config.ts"],

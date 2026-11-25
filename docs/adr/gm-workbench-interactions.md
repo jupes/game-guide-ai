@@ -1230,3 +1230,96 @@ stands, and the spec is incomplete or depends on it.
 | LIB-L2 | A GM searches uploaded documents and asks about them in the current campaign. Answers cite passages from that campaign. Resolve any GM @-mention within the same campaign. Keep private notes and search terms out of URLs and browser storage. | X-7, ED-L1, LORE-3 and LORE-4 |
 | LIB-L3 | A confirmed Verified player can submit seat notes and search them in their seat-linked conversation. Explain at upload that the campaign GM can read the notes. Only expose player-visible citations authorized for that seat. | ED-L3, IDA-L1, LORE-5 |
 | LIB-L4 | If Phase C is approved, Share opens a confirmation with the exact content, version and recipients. Later recipients need a new Share. Expose Unshare from the shelf. Use “Share it instead” for an over-limit table-slot Reveal only when Share is available. | X-2, REVEAL-7, ED-L2 and ED-L4–L5, LORE-6 and LORE-7 |
+
+### 19.3 Free-tier entry and table states on phones
+
+Draft for design round 2 (`agent-forge-harness-cub`). Bracketed text in the
+layouts denotes a control. At 320 CSS px, use a single column, wrap text
+without clipping, and stack actions in reading order with 44 px touch targets.
+Keep the focused control visible when the on-screen keyboard opens.
+
+#### F-4 · Locked Start Session
+
+```text
+Running a live table is part of Loremaster
+You can still prepare this campaign and open its
+documents, versions, and notes.
+
+Live sessions and seats for your players
+{Plan details and current price when available}
+
+[Become a Loremaster]
+[Keep prepping]
+```
+
+Open the same modal from the campaign card or Workbench. Give it an accessible
+name from its heading. Focus the heading on open so the first announcement
+includes why the dialog appeared. Keep Tab and Shift+Tab inside the modal.
+Escape and **Keep prepping** close it and return focus to the invoking
+**Start Session** button. If the card has disappeared, return focus to the
+campaign list heading, or to the Workbench heading when opened there.
+On phones, keep the modal inside the visual viewport, scroll its contents when
+needed, and place both buttons in the same scroll and focus order. Display
+pricing and actions according to the existing entitlement and checkout
+decisions.
+
+#### F-6 · Taking an offered seat
+
+```text
+Take your seat
+{Campaign name}
+Your name at this table
+[Name field]
+[Take your seat]
+[Decline]  [Block]
+```
+
+Show this panel inside **Your seats** only after the signed-in Verified player
+has read their own offer (D-12, IDA-2). The route remains the Tavern without
+a seat or campaign name in its address. The form's accessible field label is
+**Your name at this table**. Decline and Block remain separate actions.
+
+| State | Visible content and action | Focus and announcements |
+|---|---|---|
+| Signed out | **Sign in to see your seats.** Use the ordinary sign-in flow, then return to the Tavern and fetch offers for that session. | The first sign-in field receives focus when the user opens sign-in. |
+| Unverified | **Verify your email to see your seats.** Open the account page for verification and resend. | Use the account page heading and its existing verification actions. The page contains general account copy only. |
+| `AliasTaken` | **That name is already in use at this table. Choose another.** Keep the entered value editable. | Associate the inline error with the field, mark it invalid, and put focus back in the field. |
+| `SeatUnavailable` | **This seat is unavailable.** Remove the offer and let the player return to **Your seats**. | Announce the message and move focus to the resulting heading if the focused control was removed. |
+| Accepted, awaiting GM confirmation | **You took your seat.** The resulting seat card shows **Waiting for your GM to confirm your seat** (A-33). | Announce acceptance and move focus to the resulting card heading. |
+| Confirmed | The seat card can open its authorized table once the session is live. | On explicit navigation, read the table heading, then announce its loading status. |
+
+#### Player table
+
+```text
+Table
+This table is unavailable.
+
+[Back to your seats]
+```
+
+| State | Visible content and behavior |
+|---|---|
+| Opening (TABLE-1) | **Joining the table…** Use a polite status while loading the first authorized snapshot. The heading is **Table**. |
+| Unavailable (TABLE-9, SEC-46, identity §8.2) | **This table is unavailable.** Use this one screen for every inactive response. Clear all projections and their titles immediately. A signed-in player can use **Back to your seats**. |
+| Media paused during an authorized session | **Table media is paused.** Place a polite status immediately above the media area when the service explicitly reports a temporary suspension of media availability. Keep current authorized projections visible. Clear the status when availability returns or the session ends. Playback controls follow AUDIO-8. |
+| Full (TABLE-12) | **This table is full. Ask your GM to make room.** |
+| Ended after joining (TABLE-8) | **This session has ended. Thanks for playing.** Show this only on a confirmed End for an already joined player. A later cold visit uses the unavailable state. |
+
+Keep the table status region mounted as content changes. On an automatic state
+change, keep focus in place when its element remains. If redaction removes the
+focused element, move focus to the table heading. Keep the player table copy
+about the session and its controls, per the free-tier spec §1.6. TABLE-7 and
+TABLE-11 still control when content must be hidden on disconnect or when the
+phone is locked.
+
+#### Copy corrections for related entry screens
+
+| Conflict | Replacement |
+|---|---|
+| C-7, C-12, C-14 | Use **seat offer** for the invitation and **Your seats** for the way back to a table. Use the Full and Ended copy above. |
+| C-9 (S-4) | **Check your email for next steps.** Password reset is the way to recover an existing account (IDRC-10). |
+| C-10 (S-3) | Use one stale verification response per IDRC-1. **This link is invalid or has expired.** Offer **Request a new verification email**. |
+| C-13 (E-3) | **Campaign name** is required. Label the tone field **Tone (optional)**, per A-31. |
+| C-17 (S-3) | The existing client router reserves `/verify` for the verification flow. |
+| C-19 | Keep chat available at 100%. At the daily ceiling, display **Chat is paused until tomorrow.** Apply the pause between turns (D-11). |
+| C-20 (S-1) | Group **Month** and **Year** in the date-of-birth fieldset and associate one error with that fieldset, per IDA-1. |

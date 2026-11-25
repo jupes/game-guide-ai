@@ -29,6 +29,7 @@ import re
 import threading
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -37,7 +38,8 @@ import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
-from service import conversations_api
+import config
+from service import conversations_api, history
 from service import migrations as mig
 from service.campaign_store import InMemoryCampaignStore, MissingParent, PostgresCampaignStore
 from service.campaign_store import shared_rows as twin_table
@@ -49,7 +51,7 @@ from service.conversation_store import (
     new_conversation_id,
 )
 from service.db import Database, InMemoryDatabase, PoolSettings
-from service.history import PostgresMessageStore
+from service.history import AttachmentLimitReached, PostgresMessageStore
 from service.model_catalog import CATALOG_REVISION, enabled_profiles
 
 #: A fixed clock, so a test can place rows in a known order without sleeping.
@@ -1071,6 +1073,44 @@ def test_a_created_conversation_is_claimed_by_its_creator_and_binds_a_manual_mod
     assert messages.claim_conversation_strategy(
         made.id, strategy="manual", manual_alias=alias, catalog_revision=CATALOG_REVISION
     ) == ("manual", alias)
+
+
+@needs_db
+def test_attachment_context_and_metadata_for_older_rows(dsn: str, monkeypatch) -> None:
+    store = PostgresMessageStore(dsn)
+    conversation_id = str(uuid.uuid4())
+    store.claim_conversation(conversation_id, _an_owner(dsn))
+    for filename, text in [("first.txt", "Map"), ("second.txt", "Café at the crossroads")]:
+        store.append_attachment(conversation_id, filename, "text/plain", text)
+
+    # The conversation was written before the current text cap applied.
+    monkeypatch.setattr(config, "ATTACHMENT_MAX_CHARS", 9)
+    context = store.attachments_for(conversation_id)
+    assert [item.extracted_text for item in context] == ["Map", "Café"]
+    assert [(item.filename, item.chars) for item in store.attachment_summaries(conversation_id)] == [
+        ("first.txt", 3), ("second.txt", len("Café at the crossroads")),
+    ]
+
+
+@needs_db
+def test_concurrent_uploads_share_the_same_attachment_limit(dsn: str, monkeypatch) -> None:
+    monkeypatch.setattr(history, "MAX_CONVERSATION_ATTACHMENTS", 1)
+    store = PostgresMessageStore(dsn)
+    conversation_id = str(uuid.uuid4())
+    store.claim_conversation(conversation_id, _an_owner(dsn))
+    ready = threading.Barrier(2, timeout=PATIENCE)
+
+    def upload(filename: str) -> bool:
+        ready.wait()
+        try:
+            store.append_attachment(conversation_id, filename, "text/plain", "A note")
+        except AttachmentLimitReached:
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(upload, ("first.txt", "second.txt"))) == [False, True]
+    assert len(store.attachment_summaries(conversation_id)) == 1
 
 
 @needs_db
