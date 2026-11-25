@@ -1221,3 +1221,12 @@ stands, and the spec is incomplete or depends on it.
 | C-19 | "When the composer disables at zero credits…", against F-3's "never disabled" | D-7 and D-11: the composer stays live at 100%; chat pauses only at D-11's daily ceiling, between turns | **Superseded**; the pause is a new state to draw |
 | C-20 | "The date-of-birth error is one message on the fieldset", against S-1's checkbox | D-10: the question is a month and a year | **Stands**: the card's rule fits the §4.1 form |
 | C-21 | F-1 draws 96 of 500 left in the quiet style; §1.5's gold "Paid" marker is drawn as a lock | — (the spec against itself) | **Open**: the design lane |
+
+### 19.2 Campaign document uploads and search — proposed amendments for LORE-1
+
+| # | Amendment | Basis |
+|---|---|---|
+| LIB-L1 | The Documents category accepts an upload as a `reference` with name, summary and body. Replace file creates a version. The body supports up to 200,000 characters. Only the GM sees extraction metadata and the page map. Omit AI edit actions for this type in v1. | LIB-3, LIB-6, ED-L2, LORE-2 |
+| LIB-L2 | A GM searches uploaded documents and asks about them in the current campaign. Answers cite passages from that campaign. Resolve any GM @-mention within the same campaign. Keep private notes and search terms out of URLs and browser storage. | X-7, ED-L1, LORE-3 and LORE-4 |
+| LIB-L3 | A confirmed Verified player can submit seat notes and search them in their seat-linked conversation. Explain at upload that the campaign GM can read the notes. Only expose player-visible citations authorized for that seat. | ED-L3, IDA-L1, LORE-5 |
+| LIB-L4 | If Phase C is approved, Share opens a confirmation with the exact content, version and recipients. Later recipients need a new Share. Expose Unshare from the shelf. Use “Share it instead” for an over-limit table-slot Reveal only when Share is available. | X-2, REVEAL-7, ED-L2 and ED-L4–L5, LORE-6 and LORE-7 |

@@ -30,6 +30,7 @@ KNOBS = (
     ("RAG_DEFAULT_MODEL", "DEFAULT_MODEL", "gpt-4o-mini"),
     ("RAG_TEMPERATURE", "TEMPERATURE", 0.2),
     ("RAG_RERANK", "RAG_RERANK", False),
+    ("RAG_ADDITIVE_EVIDENCE", "RAG_ADDITIVE_EVIDENCE", False),
     ("RAG_HISTORY_LIMIT", "HISTORY_LIMIT", 50),
     ("RAG_ATTACHMENT_MAX_BYTES", "ATTACHMENT_MAX_BYTES", 2_000_000),
     ("RAG_ATTACHMENT_MAX_CHARS", "ATTACHMENT_MAX_CHARS", 6000),
@@ -59,6 +60,7 @@ OVERRIDES = {
     "RAG_DEFAULT_MODEL": ("gpt-4o", "DEFAULT_MODEL", "gpt-4o"),
     "RAG_TEMPERATURE": ("0.9", "TEMPERATURE", 0.9),
     "RAG_RERANK": ("1", "RAG_RERANK", True),
+    "RAG_ADDITIVE_EVIDENCE": ("1", "RAG_ADDITIVE_EVIDENCE", True),
     "RAG_HISTORY_LIMIT": ("200", "HISTORY_LIMIT", 200),
     "RAG_ATTACHMENT_MAX_BYTES": ("500000", "ATTACHMENT_MAX_BYTES", 500_000),
     "RAG_ATTACHMENT_MAX_CHARS": ("2500", "ATTACHMENT_MAX_CHARS", 2500),
@@ -82,11 +84,26 @@ def test_documented_defaults(monkeypatch):
 
 def test_env_overrides_every_knob(monkeypatch):
     """Setting each RAG_* var overrides the corresponding constant."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
     for var, (raw, _attr, _value) in OVERRIDES.items():
         monkeypatch.setenv(var, raw)
     cfg = importlib.reload(config)
     for _var, (_raw, attr, value) in OVERRIDES.items():
         assert getattr(cfg, attr) == value, attr
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+def test_additive_evidence_opt_in_is_local(monkeypatch, hosted):
+    try:
+        with monkeypatch.context() as env:
+            env.setenv("RAG_ADDITIVE_EVIDENCE", "1")
+            if hosted:
+                env.setenv("K_SERVICE", "test-service")
+            else:
+                env.delenv("K_SERVICE", raising=False)
+            assert importlib.reload(config).RAG_ADDITIVE_EVIDENCE is (not hosted)
+    finally:
+        importlib.reload(config)
 
 
 def test_bool_knob_truthy_set(monkeypatch):

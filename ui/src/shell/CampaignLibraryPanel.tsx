@@ -2,8 +2,8 @@
  * CampaignLibraryPanel -- the Campaign Library (agent-forge-harness-1kg.6.4; brief 2.4;
  * interactions ADR LIB-1 to LIB-26, section 12.2).
  *
- * A 320 px NON-MODAL panel beside the navigation, holding four tabs (NPCs, Bestiary,
- * Documents, Session log; no Cues tab, I-1) over server-side lists: search, sort, the
+ * A 320 px NON-MODAL panel beside the navigation, with four document tabs and
+ * a Cues tab when media is available. Lists support server-side search, sort, the
  * Active / Archived filter, the Documents type filter and Load more. A row opens its
  * document into the canvas; Archived rows can be Restored; a category can make a new
  * document by hand (everything except a stat block, I-2).
@@ -27,19 +27,23 @@
 
 import * as React from 'react'
 import { documentTypeRead } from '../gm/canvasStatus'
-import { SEARCH_MAX_CHARS, type DocumentTypeId } from '../gm/contracts'
+import { SEARCH_MAX_CHARS, type Cue, type DocumentTypeId } from '../gm/contracts'
+import { attachCue, CueApiError } from '../gm/cueApi'
 import { archiveDocument, createDocument, unarchiveDocument } from '../gm/documentApi'
 import { REGISTRY } from '../gm/registry'
 import { liveOf } from '../gm/revealFields'
+import { useAppNav } from './AppNav'
 import type { ShellLayout } from './breakpoints'
 import { useCampaign } from './campaignContext'
+import { useCampaignThreads } from './campaignThreads'
 import { PendingButton, useRetrying } from './CampaignPicker'
+import { CueLibrary } from './CueLibrary'
 import { useCanvasActions, useCanvasState, type CanvasDoc } from './canvasContext'
 import { DeleteDocumentDialog, LiveArchiveDialog, StatBlockDialog, type DeleteOutcome, type StatBlockValues } from './LibraryDialogs'
-import { LIBRARY_HEADING_ID, LIBRARY_PANEL_ID, LIBRARY_TABS, useLibraryPanel, type LibraryCategoryId } from './libraryPanel'
+import { LIBRARY_HEADING_ID, LIBRARY_PANEL_ID, useLibraryPanel, type LibraryCategoryId } from './libraryPanel'
 import { useReveals } from './revealContext'
 import { mintCommandId } from './tableSessionApi'
-import { useLibraryList, type LibraryListState } from './useLibraryList'
+import { useLibraryList, type LibraryCategoryId as DocumentCategoryId, type LibraryListState } from './useLibraryList'
 import { LIBRARY_COPY, WORKBENCH_COPY } from './workbenchCopy'
 import { TextField } from '../ds/TextField'
 import { Chip } from '../ds/Chip'
@@ -71,17 +75,35 @@ export interface CampaignLibraryPanelProps {
 
 /** The panel renders only while open (the shell decides); it focuses its heading when it mounts. */
 export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: CampaignLibraryPanelProps): React.JSX.Element {
-  const { category, setCategory, closeLibrary } = useLibraryPanel()
+  const { category, tabs, setCategory, closeLibrary } = useLibraryPanel()
   const { guardDialog, doc } = useCanvasState()
   const { bumpDocumentsVersion, refreshDocument } = useCanvasActions()
-  const { scope } = useCampaign()
+  const { scope, isCurrentScope } = useCampaign()
   const campaignId = scope?.campaignId ?? null
+  const scopeKey = scope?.key ?? null
+  const nav = useAppNav()
+  const currentNav = React.useRef(nav)
+  React.useLayoutEffect(() => { currentNav.current = nav }, [nav])
+  const { ensureThread, reportCueAttachment } = useCampaignThreads()
   const headingRef = React.useRef<HTMLHeadingElement>(null)
   const tabRefs = React.useRef(new Map<LibraryCategoryId, HTMLButtonElement>())
   const [announcement, setAnnouncement] = React.useState({ text: '', tick: 0 })
   const announce = React.useCallback((text: string): void => {
     setAnnouncement((now) => ({ text, tick: now.tick + 1 }))
   }, [])
+
+  async function addToThread(cue: Cue): Promise<void> {
+    if (scope === null || nav.mode !== 'gm' || cue.campaign_id !== scope.campaignId) return
+    const selected = nav.conversationId
+    const thread = selected ?? await ensureThread()
+    if (!isCurrentScope(scope.key) || currentNav.current.mode !== 'gm') return
+    if (thread === null) throw new CueApiError("Couldn't open a GM thread. Try again.")
+    const entry = await attachCue(cue, thread, fetchImpl ?? fetch)
+    if (!isCurrentScope(scope.key) || currentNav.current.mode !== 'gm') return
+    reportCueAttachment(thread, entry)
+    if (selected === null && currentNav.current.conversationId === null) nav.setConversationId(thread)
+    announce(`Added ${cue.title} to the GM thread`)
+  }
 
   React.useEffect(() => {
     headingRef.current?.focus()
@@ -134,7 +156,7 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
   }, [suspended, closeLibrary])
 
   function handleTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number): void {
-    const last = LIBRARY_TABS.length - 1
+    const last = tabs.length - 1
     let next: number
     if (event.key === 'ArrowRight') next = index === last ? 0 : index + 1
     else if (event.key === 'ArrowLeft') next = index === 0 ? last : index - 1
@@ -142,7 +164,7 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
     else if (event.key === 'End') next = last
     else return
     event.preventDefault()
-    const target = LIBRARY_TABS[next]
+    const target = tabs[next]
     setCategory(target)
     tabRefs.current.get(target)?.focus()
   }
@@ -181,8 +203,8 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
         )}
       </div>
 
-      <div role="tablist" aria-label={LIBRARY_COPY.tabs} className="library-panel__tabs">
-        {LIBRARY_TABS.map((id, index) => {
+      <div role="tablist" aria-label={LIBRARY_COPY.tabs} className="library-panel__tabs" data-cues={tabs.includes('cues') || undefined}>
+        {tabs.map((id, index) => {
           const selected = id === category
           return (
             <button
@@ -201,22 +223,27 @@ export function CampaignLibraryPanel({ layout, inert = false, fetchImpl }: Campa
               onClick={() => setCategory(id)}
               onKeyDown={(event) => handleTabKeyDown(event, index)}
             >
-              {LIBRARY_COPY.category[id].tab}
+              {id === 'cues' ? 'Cues' : LIBRARY_COPY.category[id].tab}
             </button>
           )
         })}
       </div>
 
       <div role="tabpanel" id={TABPANEL_ID} aria-labelledby={tabId(category)} className="library-panel__body">
-        <LibraryTabBody
-          key={category}
-          category={category}
-          layout={layout}
-          announce={announce}
-          offerUndo={offerUndo}
-          headingRef={headingRef}
-          fetchImpl={fetchImpl}
-        />
+        {category === 'cues' ? (
+          campaignId && <CueLibrary key={scopeKey} campaign={campaignId} announce={announce}
+            fetchImpl={fetchImpl} onAttach={addToThread} />
+        ) : (
+          <LibraryTabBody
+            key={category}
+            category={category}
+            layout={layout}
+            announce={announce}
+            offerUndo={offerUndo}
+            headingRef={headingRef}
+            fetchImpl={fetchImpl}
+          />
+        )}
       </div>
 
       {undo !== null && (
@@ -311,7 +338,7 @@ const STAT_BLOCK: DocumentTypeId = 'statblock'
 type CreateError = 'full' | 'throttled' | 'failed' | 'refused'
 
 interface LibraryTabBodyProps {
-  category: LibraryCategoryId
+  category: DocumentCategoryId
   layout: ShellLayout
   announce: (text: string) => void
   /** Offers the 8 s Undo of an archive (LIB-16). */
@@ -890,7 +917,7 @@ function EmptyBlock({
   state, category, archived, onClear,
 }: {
   state: Extract<LibraryListState, { status: 'ready' }>
-  category: LibraryCategoryId
+  category: DocumentCategoryId
   archived: boolean
   onClear: () => void
 }): React.JSX.Element {

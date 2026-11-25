@@ -56,6 +56,9 @@ import { toSpellCardProps, toStatBlockCardProps } from './adapters'
 import type { ChatMode } from '../api'
 import type { DocumentLink } from './contracts'
 import { DIVIDER_COPY, formatDividerTime } from './gmTimeline'
+import { CuePreview } from './CuePreview'
+import { CUE_REMOVED_EVENT, readCue } from './cueApi'
+import type { Cue } from './contracts'
 import type { AnswerState, DividerTurn, ExchangeTurn, GmTurn, LaneAnswer } from './gmTimeline'
 import { LANE_COPY } from './laneState'
 import { toolById } from './registry'
@@ -76,6 +79,7 @@ const noCanvas = (): void => {}
 
 export interface GmThreadProps {
   turns: readonly GmTurn[]
+  campaignId?: string
   /** CANVAS-3: Open in canvas. */
   onOpenDocument?: (link: DocumentLink) => void
   toolLaneProps?: (turn: Extract<GmTurn, { kind: 'tool' }>) => Partial<Pick<AssistantLaneProps,
@@ -96,6 +100,7 @@ export interface GmThreadProps {
 
 export function GmThread({
   turns,
+  campaignId,
   onOpenDocument = noCanvas,
   toolLaneProps,
   hasEarlier = false,
@@ -165,7 +170,7 @@ export function GmThread({
             ref={index === 0 ? firstExchangeRef : undefined}
           >
             <Narration turn={turn} />
-            <Outcome turn={turn} onOpenDocument={onOpenDocument} toolLaneProps={toolLaneProps} />
+            <Outcome turn={turn} onOpenDocument={onOpenDocument} toolLaneProps={toolLaneProps} campaignId={campaignId} />
           </div>
         ),
       )}
@@ -266,10 +271,12 @@ function Outcome({
   turn,
   onOpenDocument,
   toolLaneProps,
+  campaignId,
 }: {
   turn: ExchangeTurn
   onOpenDocument: (link: DocumentLink) => void
   toolLaneProps?: GmThreadProps['toolLaneProps']
+  campaignId?: string
 }): React.JSX.Element | null {
   switch (turn.kind) {
     case 'chat':
@@ -289,6 +296,17 @@ function Outcome({
       )
     case 'unreadable':
       return <AssistantLane invocation={null} onOpenDocument={onOpenDocument} />
+    case 'attached_cue':
+      return (
+        <div className="gm-thread__attached-cue">
+          <ChatMessage role="dm" author="You · attached">
+            <span className="gm-thread__tool">AUDIO CUE</span>
+            {campaignId
+              ? <AttachedCueCard key={campaignId} campaignId={campaignId} cueId={turn.cueId} />
+              : <p>This audio cue is unavailable.</p>}
+          </ChatMessage>
+        </div>
+      )
     case 'unsupported':
       return (
         <LaneFrame state="done">
@@ -296,6 +314,33 @@ function Outcome({
         </LaneFrame>
       )
   }
+}
+
+function AttachedCueCard({ campaignId, cueId }: { campaignId: string; cueId: string }): React.JSX.Element {
+  const [cue, setCue] = React.useState<Cue | null | undefined>()
+  const [revision, refresh] = React.useReducer((value: number) => value + 1, 0)
+  React.useEffect(() => {
+    const abort = new AbortController()
+    void readCue(campaignId, cueId, abort.signal, fetch).then(
+      (found) => { if (!abort.signal.aborted) setCue(found) },
+      () => { if (!abort.signal.aborted) setCue(null) },
+    )
+    const removed = (event: Event): void => {
+      if (!(event instanceof CustomEvent) || event.detail !== cueId) return
+      abort.abort()
+      setCue(null)
+    }
+    window.addEventListener(CUE_REMOVED_EVENT, removed)
+    window.addEventListener('focus', refresh)
+    return () => {
+      abort.abort()
+      window.removeEventListener(CUE_REMOVED_EVENT, removed)
+      window.removeEventListener('focus', refresh)
+    }
+  }, [campaignId, cueId, revision])
+  if (cue === undefined) return <p>Loading audio cue…</p>
+  if (cue === null) return <p>This audio cue is unavailable.</p>
+  return <CuePreview cue={cue} fetchImpl={fetch} />
 }
 
 /** The lane's chrome, shared with `AssistantLane` through its stylesheet. */

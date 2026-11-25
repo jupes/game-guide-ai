@@ -14,7 +14,7 @@
  */
 
 import * as React from 'react'
-import type { Conversation } from '../gm/contracts'
+import type { AttachedCueEntry, Conversation } from '../gm/contracts'
 import { createCampaignThread, listCampaignThreads, renameThread } from './campaignApi'
 import type { CampaignScope } from './campaignContext'
 
@@ -26,6 +26,7 @@ export interface ThreadRow {
 }
 
 export type RenameOutcome = 'renamed' | 'invalid' | 'failed' | 'gone'
+type CueListener = (conversationId: string, entry: AttachedCueEntry) => void
 
 export interface CampaignThreadsValue {
   readonly threads: readonly ThreadRow[]
@@ -38,6 +39,8 @@ export interface CampaignThreadsValue {
   /** The thread the next send posts to: this scope's created-but-unopened one,
    * or a new one (single-flight per scope). `null` when none could be made. */
   ensureThread(): Promise<string | null>
+  reportCueAttachment(conversationId: string, entry: AttachedCueEntry): void
+  onCueAttachment(listener: CueListener): () => void
 }
 
 /** I-18: replaceable copy. */
@@ -75,6 +78,7 @@ export interface ThreadHost {
 export class ThreadStore {
   private lists: ReadonlyMap<string, ThreadList> = new Map()
   private readonly listeners = new Set<() => void>()
+  private readonly cueListeners = new Set<CueListener>()
   private readonly creating = new Map<string, Promise<string | null>>()
   /** Made by a send and not opened yet: the next send of its scope reuses it. */
   private fresh: { readonly key: string; readonly id: string } | null = null
@@ -92,6 +96,16 @@ export class ThreadStore {
   }
 
   getSnapshot = (): ReadonlyMap<string, ThreadList> => this.lists
+
+  onCueAttachment = (listener: CueListener): (() => void) => {
+    this.cueListeners.add(listener)
+    return () => { this.cueListeners.delete(listener) }
+  }
+
+  reportCueAttachment(scope: CampaignScope, id: string, entry: AttachedCueEntry): void {
+    if (!this.host.isCurrentScope(scope.key)) return
+    for (const listener of this.cueListeners) listener(id, entry)
+  }
 
   private put(key: string, list: ThreadList): void {
     const next = new Map(this.lists)
@@ -207,6 +221,8 @@ const NO_THREADS: CampaignThreadsValue = {
   retry: () => {},
   rename: () => Promise.resolve('failed'),
   ensureThread: () => Promise.resolve(null),
+  reportCueAttachment: () => {},
+  onCueAttachment: noSubscription,
 }
 
 /** The current scope's GM threads. Mounting a consumer while a campaign is
@@ -231,6 +247,8 @@ export function useCampaignThreads(): CampaignThreadsValue {
       retry: () => store.retry(scope),
       rename: (id, title) => store.rename(scope, id, title),
       ensureThread: () => store.ensureThread(scope),
+      reportCueAttachment: (id, entry) => store.reportCueAttachment(scope, id, entry),
+      onCueAttachment: store.onCueAttachment,
     }
   }, [store, scope, lists])
 }

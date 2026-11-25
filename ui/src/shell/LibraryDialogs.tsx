@@ -18,7 +18,7 @@
 
 import * as React from 'react'
 import { codePointLength, INTEGER_FIELD_BOUNDS, PASSWORD_MAX_CHARS, TEXT_FIELD_MAX_CHARS, trimWire } from '../gm/contracts'
-import { deleteDocument } from '../gm/documentApi'
+import { deleteDocument, type DeleteResult } from '../gm/documentApi'
 import { TextField } from '../ds/TextField'
 import { LibraryDialog } from './LibraryDialog'
 import { LIBRARY_COPY } from './workbenchCopy'
@@ -59,6 +59,25 @@ export interface DeleteDocumentDialogProps {
 export function DeleteDocumentDialog({
   campaignId, documentId, title, fetchImpl, onCancel, onDone,
 }: DeleteDocumentDialogProps): React.JSX.Element {
+  return (
+    <PasswordDeleteDialog
+      title={title}
+      body={LIBRARY_COPY.deleteBody(title)}
+      failure={LIBRARY_COPY.deleteFailed(title)}
+      remove={(password) => deleteDocument(campaignId, documentId, password, fetchImpl)}
+      onCancel={onCancel}
+      onDone={onDone}
+    />
+  )
+}
+
+export function PasswordDeleteDialog({
+  title, body, failure, remove, onCancel, onDone,
+}: Pick<DeleteDocumentDialogProps, 'title' | 'onCancel' | 'onDone'> & {
+  body: string
+  failure: string
+  remove: (password: string) => Promise<DeleteResult>
+}): React.JSX.Element {
   const [password, setPassword] = React.useState('')
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -81,7 +100,7 @@ export function DeleteDocumentDialog({
     }
     setBusy(true)
     setError(null)
-    const result = await deleteDocument(campaignId, documentId, password, fetchImpl)
+    const result = await remove(password)
     setBusy(false)
     switch (result.kind) {
       case 'ok':
@@ -100,7 +119,7 @@ export function DeleteDocumentDialog({
         setError(LIBRARY_COPY.throttled)
         break
       case 'failed':
-        setError(LIBRARY_COPY.deleteFailed(title))
+        setError(failure)
         break
     }
     fieldRef.current?.focus()
@@ -109,7 +128,7 @@ export function DeleteDocumentDialog({
   return (
     <LibraryDialog
       heading={LIBRARY_COPY.deleteHeading(title)}
-      body={LIBRARY_COPY.deleteBody(title)}
+      body={body}
       confirmLabel={busy ? LIBRARY_COPY.deleting : LIBRARY_COPY.delete}
       cancelLabel={LIBRARY_COPY.cancel}
       busy={busy}

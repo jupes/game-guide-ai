@@ -20,12 +20,14 @@
  */
 
 import * as React from 'react'
+import { cueCapability } from '../gm/cueApi'
 import { useCampaign } from './campaignContext'
 import { useWorkbenchActive } from './canvasContext'
-import { LIBRARY_TABS, type LibraryCategoryId } from './useLibraryList'
+import { LIBRARY_TABS, type LibraryCategoryId as DocumentCategoryId } from './useLibraryList'
 
 export { LIBRARY_TABS }
-export type { LibraryCategoryId }
+export type LibraryCategoryId = DocumentCategoryId | 'cues'
+const TABS_WITH_CUES: readonly LibraryCategoryId[] = [...LIBRARY_TABS, 'cues']
 
 export const LIBRARY_PANEL_ID = 'workbench-library-panel'
 export const LIBRARY_HEADING_ID = 'workbench-library-heading'
@@ -36,6 +38,7 @@ export interface LibraryPanelState {
   readonly participantsOpen: boolean
   /** The tab shown while open, and the one the next open starts on. */
   readonly category: LibraryCategoryId
+  readonly tabs: readonly LibraryCategoryId[]
 }
 
 export interface LibraryPanelActions {
@@ -57,6 +60,7 @@ const INERT: LibraryPanelState & LibraryPanelActions = {
   open: false,
   participantsOpen: false,
   category: 'npcs',
+  tabs: LIBRARY_TABS,
   openLibrary: () => {},
   toggleLibrary: () => {},
   closeLibrary: () => {},
@@ -87,6 +91,17 @@ export function LibraryPanelProvider({ children, fallback }: LibraryPanelProvide
   const { scope } = useCampaign()
   const active = useWorkbenchActive()
   const scopeKey = scope?.key ?? null
+  const campaign = scope?.campaignId ?? null
+  const [cueScope, setCueScope] = React.useState<string | null>(null)
+  const tabs: readonly LibraryCategoryId[] = active && scopeKey !== null && cueScope === scopeKey ? TABS_WITH_CUES : LIBRARY_TABS
+  React.useEffect(() => {
+    if (!active || campaign === null || scopeKey === null) return
+    const abort = new AbortController()
+    void cueCapability(campaign, abort.signal, fetch).then((enabled) => {
+      if (!abort.signal.aborted) setCueScope(enabled ? scopeKey : null)
+    })
+    return () => abort.abort()
+  }, [active, campaign, scopeKey])
   const [stored, setStored] = React.useState<Stored | null>(null)
   /** The tab the next open starts on: the last one shown (the first time, NPCs). */
   const [last, setLast] = React.useState<LibraryCategoryId>('npcs')
@@ -99,7 +114,8 @@ export function LibraryPanelProvider({ children, fallback }: LibraryPanelProvide
   const panel = active && stored?.scopeKey === scopeKey ? stored : null
   const open = panel?.kind === 'library'
   const participantsOpen = panel?.kind === 'participants'
-  const category = panel?.kind === 'library' ? panel.category : last
+  const selected = panel?.kind === 'library' ? panel.category : last
+  const category = tabs.includes(selected) ? selected : 'npcs'
 
   const openLibrary = React.useCallback(
     (next: LibraryCategoryId, opener: HTMLElement | null): void => {
@@ -159,8 +175,8 @@ export function LibraryPanelProvider({ children, fallback }: LibraryPanelProvide
   }, [kind, rail, participantsRail, main])
 
   const value = React.useMemo(
-    () => ({ open, participantsOpen, category, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory }),
-    [open, participantsOpen, category, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory],
+    () => ({ open, participantsOpen, category, tabs, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory }),
+    [open, participantsOpen, category, tabs, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory],
   )
   return <LibraryPanelContext.Provider value={value}>{children}</LibraryPanelContext.Provider>
 }

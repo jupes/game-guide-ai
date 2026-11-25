@@ -13,6 +13,7 @@ import pytest
 from service.campaign_identity import (
     ASSET,
     CAMPAIGN,
+    CUE,
     DEVICE_CREDENTIAL,
     DIGEST_CHARS,
     DISCLOSURE,
@@ -80,6 +81,7 @@ def test_every_prefix_is_distinct_and_the_registry_is_the_whole_set():
         DOCUMENT,
         SEAT_OFFER,
         ASSET,
+        CUE,
         DISCLOSURE,
         REVEAL_SLOT,
         GROUP,

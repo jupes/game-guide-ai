@@ -27,6 +27,7 @@
     "Asset",
     "TableAssetRef",
     "Cue",
+    "CueAttachRequest",
     "CueCreateRequest",
     "CueRenameRequest",
     "CueListQuery",

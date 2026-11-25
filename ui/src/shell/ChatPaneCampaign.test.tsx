@@ -152,6 +152,34 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
+it('draws an acknowledged cue after the live turn in the current GM thread only', async () => {
+  const cueId = 'cue_LiveAttachment00000001'
+  const when = '2026-01-01T00:00:00Z'
+  await mount({
+    tools: async (url) => String(url) === `/campaigns/cmp_A/cues/${cueId}`
+      ? jsonReply({
+        schema_version: 1, cue_id: cueId, campaign_id: 'cmp_A', asset_id: 'ast_LiveAttachment00000001',
+        title: 'Rain on the roof', kind: 'one_shot', duration_ms: 1200, archived: false, created_at: when, updated_at: when,
+      })
+      : jsonReply(availableTools),
+  })
+  await sendTurn()
+  await screen.findByText('An answer')
+  await waitFor(() => expect(live.nav.conversationId).not.toBeNull())
+  const thread = live.nav.conversationId
+  if (thread === null) throw new Error('Expected a campaign thread')
+  const entry = {
+    schema_version: 1, entry_kind: 'attached_cue', entry_id: 'ent_LiveAttachment00000001', cue_id: cueId, created_at: when,
+  } as const
+  act(() => live.threads.reportCueAttachment('cnv_another_thread', entry))
+  expect(screen.queryByText('AUDIO CUE')).toBeNull()
+  act(() => live.threads.reportCueAttachment(thread, entry))
+  const badge = await screen.findByText('AUDIO CUE')
+  const answer = screen.getByText('An answer')
+  expect(answer.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(await screen.findByRole('button', { name: 'Play preview of Rain on the roof' })).toBeVisible()
+})
+
 describe('the GM tool composer', () => {
   it('arms a draft, keeps it in GM through a channel switch, and cites the live result only on Send', async () => {
     const posted: Record<string, unknown>[] = []

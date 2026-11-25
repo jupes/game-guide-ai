@@ -1,0 +1,65 @@
+.cue-library,
+.cue-library__form,
+.cue-library__list,
+.cue-library__list > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--aether-space-2);
+  min-width: 0;
+}
+
+.cue-library {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--aether-space-3);
+  overflow-wrap: anywhere;
+}
+
+.cue-library__form {
+  padding: var(--aether-space-3);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-card);
+}
+
+.cue-library__field {
+  display: grid;
+  gap: var(--aether-space-1);
+  min-width: 0;
+  font-size: 13px;
+}
+
+.cue-library__field :is(input, select) {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--aether-touch-min);
+  padding: var(--aether-space-2);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--aether-radius-field);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+}
+
+.cue-library__filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--aether-space-2);
+}
+
+.cue-library__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+}
+
+.cue-library__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cue-library__list .aether-btn__label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

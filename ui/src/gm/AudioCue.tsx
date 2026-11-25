@@ -84,8 +84,8 @@ export interface AudioCueProps {
   onPreviewMute: (muted: boolean) => void
   /** Absent for a one-shot (AUDIO-3). */
   onLoopChange?: (loop: boolean) => void
-  onPlayToTable: () => void
-  onStop: () => void
+  onPlayToTable?: () => void
+  onStop?: () => void
   onRetryPush?: () => void
   /** §12.2: offered beside `This file couldn't be processed`. */
   onReplace?: () => void
@@ -121,7 +121,12 @@ export function AudioCue({
   const positionMs = clampPositionMs(preview.positionMs, durationMs)
   const volume = clampUnit(preview.volume)
   const looping = isLoopable(cue.kind) && loop
-  const bars = peaks && peaks.length > 0 ? peaks : fallbackPeaks(BAR_COUNT, durationMs)
+  const recorded = peaks?.length ? peaks : fallbackPeaks(BAR_COUNT, durationMs)
+  const bars = recorded.length <= BAR_COUNT ? recorded : Array.from({ length: BAR_COUNT }, (_, index) => {
+    const start = Math.floor(index * recorded.length / BAR_COUNT)
+    const end = Math.floor((index + 1) * recorded.length / BAR_COUNT)
+    return Math.max(...recorded.slice(start, end))
+  })
   const played = durationMs > 0 ? Math.round((bars.length * positionMs) / durationMs) : 0
   const playable = playability === 'ready'
 
@@ -276,7 +281,7 @@ export function AudioCue({
       )}
 
       {/* ── The table's two controls (AUDIO-8) ── */}
-      <div className="gm-audio-cue__table" role="group" aria-label="Table controls">
+      {onPlayToTable && onStop && <div className="gm-audio-cue__table" role="group" aria-label="Table controls">
         <Button
           variant="filled"
           size="small"
@@ -311,7 +316,7 @@ export function AudioCue({
             Retry
           </Button>
         )}
-      </div>
+      </div>}
 
       {/* STATE-7: the one polite region on this surface. Its text is derived
           from discrete state only, so no tick and no seek step announces. */}

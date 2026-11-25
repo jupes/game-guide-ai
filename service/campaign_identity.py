@@ -62,6 +62,7 @@ SEAT_OFFER: Final = "sof_"
 #: SEC-4 names this one too: a GM-side media asset (1kg.8.1.1). The row holds
 #: object keys, never bytes, and a table client never sees this id (SEC-15).
 ASSET: Final = "ast_"
+CUE: Final = "cue_"
 #: One Confirm's worth of display (1kg.7.1, O-3): a document, its pinned
 #: version, a mask and an audience kind. GM-side only; a table client never
 #: sees it (SEC-15).
@@ -84,6 +85,7 @@ PREFIXES: Final[tuple[str, ...]] = (
     DOCUMENT,
     SEAT_OFFER,
     ASSET,
+    CUE,
     DISCLOSURE,
     REVEAL_SLOT,
     GROUP,
@@ -100,6 +102,7 @@ _KINDS: Final[dict[str, str]] = {
     DOCUMENT: "document identifier",
     SEAT_OFFER: "seat-offer identifier",
     ASSET: "asset identifier",
+    CUE: "cue identifier",
     DISCLOSURE: "disclosure identifier",
     REVEAL_SLOT: "reveal-slot identifier",
     GROUP: "group identifier",

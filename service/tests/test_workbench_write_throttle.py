@@ -76,6 +76,7 @@ T0 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 #: be exactly this set (agent-forge-harness-531x alignment plan, section 1).
 EXEMPT: dict[tuple[str, str], str] = {
     ("POST", "/campaigns/{campaign_id}/library"): "reads only (X-7): a search sent by POST",
+    ("POST", "/campaigns/{campaign_id}/cues/list"): "reads only (X-7): private cue search sent by POST",
     ("POST", "/table/leave"): "screen principal, revoke only, never a new row (SEC-49)",
 }
 _STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -111,7 +112,7 @@ def _unthrottled_mutations(
 
 def test_every_state_changing_workbench_route_carries_the_write_throttle() -> None:
     """The pin. Every state-changing `WorkbenchRoute` on the real app spends
-    from the write throttle, except the two named exemptions — and the
+    from the write throttle, apart from the named exemptions. The
     exemption set is exact, so a stale one (a route that turns out to write
     after all) fails this too."""
     rows = api_route_dependants(app)

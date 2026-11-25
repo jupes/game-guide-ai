@@ -534,10 +534,19 @@ export async function deleteDocument(
   fetchImpl: typeof fetch = fetch,
 ): Promise<DeleteResult> {
   if (!isOpaqueId(campaignId) || !isOpaqueId(documentId)) return { kind: 'unavailable' }
+  return deleteArchivedResource(`${documentPath(campaignId, documentId)}/delete`, password, fetchImpl, 'document_not_archived')
+}
+
+export async function deleteArchivedResource(
+  path: string,
+  password: string,
+  fetchImpl: typeof fetch,
+  notArchivedCode: 'document_not_archived' | 'conflict',
+): Promise<DeleteResult> {
   const request = DocumentDeleteRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, password })
   // A password the contract refuses cannot be the right one, and no request is made for it.
   if (!request.success) return { kind: 'reauth_failed' }
-  const res = await send(fetchImpl, `${documentPath(campaignId, documentId)}/delete`, {
+  const res = await send(fetchImpl, path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ schema_version: CONTRACT_VERSION, password }),
@@ -550,6 +559,6 @@ export async function deleteDocument(
   if (res.status === FORBIDDEN) return (await errorCode(res)) === 'reauth_failed' ? { kind: 'reauth_failed' } : { kind: 'unavailable' }
   if (res.status === NOT_FOUND) return { kind: 'unavailable' }
   if (res.status === TOO_MANY_REQUESTS) return { kind: 'throttled' }
-  if (res.status === CONFLICT) return (await errorCode(res)) === 'document_not_archived' ? { kind: 'not_archived' } : { kind: 'failed' }
+  if (res.status === CONFLICT) return (await errorCode(res)) === notArchivedCode ? { kind: 'not_archived' } : { kind: 'failed' }
   return res.ok ? { kind: 'ok' } : { kind: 'failed' }
 }

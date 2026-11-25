@@ -211,6 +211,7 @@ fails CI if either front end is missing one; see also the proxy invariant in
 | `RAG_FALLBACK_DISTANCE` | `0.42` | ipl filtered→unfiltered retry — **eval-only**, never used live |
 | `RAG_EMBED_REQUEST_TIMEOUT_S` | `10` | per-wait bound on one query-embedding attempt; the service makes 2 attempts on a transient fault, no SDK retries (30.5 s worst case against a silent provider) |
 | `RAG_EMBED_CONNECT_TIMEOUT_S` | `5` | connect bound for the same embeddings client |
+| `RAG_ADDITIVE_EVIDENCE` | `0` | local opt-in to continue with available evidence after a stage-local retrieval fault. Cloud Run uses the default until per-account rollout in `xiu.5.6`. |
 | `RAG_DEFAULT_MODEL` | `gpt-4o-mini` | generation model |
 | `RAG_TEMPERATURE` | `0.2` | generation temperature |
 | `RAG_LLM_REQUEST_TIMEOUT_S` | `60` | per-attempt provider request timeout (agent-forge-harness-ihz); must be finite and > 0 |

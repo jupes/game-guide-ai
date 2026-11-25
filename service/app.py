@@ -44,6 +44,7 @@ from . import (
     campaigns_api,
     card_executors,
     conversations_api,
+    cues_api,
     document_lifecycle_api,
     documents_api,
     gcp_logging,
@@ -439,7 +440,9 @@ def _build_rag(db: Database) -> None:
     # Build the service once (loads corpus vocabulary). Guarded so the app can
     # still start for endpoint tests that override the dependency without a DB.
     try:
-        _state["rag"] = RagService(reranker=build_reranker(), connect=db.connection)
+        _state["rag"] = RagService(
+            reranker=build_reranker(), connect=db.connection, additive_evidence=config.RAG_ADDITIVE_EVIDENCE,
+        )
     except Exception:  # pragma: no cover - depends on live DB
         log.warning(
             "startup: RagService unavailable; /chat will 503 until ready", exc_info=True
@@ -2028,6 +2031,9 @@ app.include_router(seats_api.build_router(require_session, get_timeline_database
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
 app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
 app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
+app.include_router(
+    cues_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled, reauthenticator, _job_driver)
+)
 app.include_router(
     asset_serving_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled, _job_driver)
 )

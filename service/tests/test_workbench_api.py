@@ -1031,12 +1031,20 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/link/{participant_id}"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unlink"),
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}/link"),
-    # The status route reports media capability. Upload commands are gated by it.
-    ("GET", "/campaigns/{campaign_id}/assets/upload-capability"),
+    # Capability reads report availability. Media commands require it.
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
+    ("GET", "/campaigns/{campaign_id}/assets/upload-capability"),
+    ("GET", "/campaigns/{campaign_id}/assets/{asset_id}/status"),
     # 1kg.8.1.3's media reads and deletes: two more, dark the same way
     # (`service/asset_serving_api.py`).
     ("GET", "/campaigns/{campaign_id}/assets/{asset_id}"), ("DELETE", "/campaigns/{campaign_id}/assets/{asset_id}"),
+    ("GET", "/campaigns/{campaign_id}/cues/capability"), ("POST", "/campaigns/{campaign_id}/cues/list"),
+    ("POST", "/campaigns/{campaign_id}/cues"), ("PATCH", "/campaigns/{campaign_id}/cues/{cue_id}"),
+    ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/archive"),
+    ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/restore"),
+    ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/delete"),
+    ("GET", "/campaigns/{campaign_id}/cues/{cue_id}"),
+    ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/attach"),
     ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
     # 1kg.7.2 PR-1: the GM's reveal picture, Confirm and Stop.
@@ -1126,8 +1134,8 @@ def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:
     install_spa(target, tmp_path)
     everything = sorted((m, p) for p, r in api_routes(target) for m in (r.methods or set()) - {"HEAD"})
     assert everything == [
-        ("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/table"), ("GET", "/table.html"),
-        ("GET", "/tavern"), ("GET", "/workspace"),
+        ("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/table"),
+        ("GET", "/table.html"), ("GET", "/tavern"), ("GET", "/workspace"),
     ]
     assert _census(target) == ({("GET", "/healthz")}, set())
 
@@ -1400,6 +1408,7 @@ def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
         (REPO_ROOT / "service" / "document_lifecycle_api.py").resolve(),
         (REPO_ROOT / "service" / "assets_api.py").resolve(),
         (REPO_ROOT / "service" / "asset_serving_api.py").resolve(),
+        (REPO_ROOT / "service" / "cues_api.py").resolve(),
         (REPO_ROOT / "service" / "table_session_api.py").resolve(),
         (REPO_ROOT / "service" / "reveals_api.py").resolve(),
         (REPO_ROOT / "service" / "table_api.py").resolve(),

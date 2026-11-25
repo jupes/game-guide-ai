@@ -18,6 +18,8 @@ from __future__ import annotations
 import io
 import threading
 from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime
 from typing import Any, cast
 
@@ -27,14 +29,16 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from service import app as appmod
-from service import assets_api
+from service import asset_jobs, assets_api
 from service import migrations as mig
-from service.app import app, get_timeline_database, require_session
-from service.asset_store import PostgresAssetStore
+from service.app import app, get_timeline_database, get_timeline_store, require_session
+from service.asset_store import PostgresAssetStore, new_object_key, new_tmp_key
 from service.db import Database, PoolSettings
-from service.jobs import PostgresJobQueue
-from service.media_objects import InMemoryObjectStore, MediaSettings, ObjectPage, ObjectStat
+from service.jobs import JobRunner, PostgresJobQueue
+from service.media_objects import WAVEFORM_NAME, InMemoryObjectStore, MediaSettings, ObjectPage, ObjectStat
 from service.session import SessionData
+from service.timeline_store import PostgresTimelineStore
+from service.workbench_api import reauth_failed
 
 pytestmark = needs_db
 
@@ -156,3 +160,237 @@ def test_no_connection_is_held_while_an_upload_moves_bytes(
         db.close()
     assert objects.probes >= 3, "the stream in, the copy out and the processed write were each probed"
     assert objects.failures == []
+
+
+def test_cues_are_private_idempotent_paginated_and_follow_the_asset(
+    dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from service import campaign_identity as ident
+    from service.conversation_store import new_conversation_id
+
+    first, second, long, pending, foreign = (ident.new_id(ident.ASSET) for _ in range(5))
+    other = ident.new_id(ident.CAMPAIGN)
+    second_campaign = ident.new_id(ident.CAMPAIGN)
+    thread, second_thread, legacy_thread, other_campaign_thread = (new_conversation_id() for _ in range(4))
+    with connect(dsn) as conn:
+        outsider = int(conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('other@example.com', 'x') RETURNING id"
+        ).fetchone()[0])
+        conn.execute("INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Other')", (other, outsider))
+        conn.execute("INSERT INTO campaign.campaigns (id, owner_id, name) VALUES (%s, %s, 'Next')",
+                     (second_campaign, owner))
+        for conversation, campaign in [(thread, CAMPAIGN), (second_thread, CAMPAIGN),
+                                       (legacy_thread, None), (other_campaign_thread, second_campaign)]:
+            conn.execute(
+                "INSERT INTO chat.conversations (conversation_id, user_id, campaign_id, started_mode) "
+                "VALUES (%s,%s,%s,'gm')",
+                (conversation, owner, campaign),
+            )
+        for asset, campaign, duration in [(first, CAMPAIGN, 900), (second, CAMPAIGN, 1500),
+                                         (long, CAMPAIGN, 31_000), (foreign, other, 900)]:
+            conn.execute(
+                "INSERT INTO campaign.assets (id, campaign_id, kind, state, declared_media_type, declared_size_bytes, "
+                "media_type, size_bytes, duration_ms, object_key, tmp_key) "
+                "VALUES (%s,%s,'audio','ready','audio/mpeg',100,'audio/mpeg',100,%s,%s,%s)",
+                (asset, campaign, duration, new_object_key(), new_tmp_key()),
+            )
+        conn.execute(
+            "INSERT INTO campaign.assets (id, campaign_id, kind, state, declared_media_type, declared_size_bytes, "
+            "object_key, tmp_key) VALUES (%s,%s,'audio','uploading','audio/mpeg',100,%s,%s)",
+            (pending, CAMPAIGN, new_object_key(), new_tmp_key()),
+        )
+    db = Database(dsn, PoolSettings(async_max=0))
+    runtime = assets_api.MediaRuntime(InMemoryObjectStore(), PostgresAssetStore(PostgresJobQueue(db)))
+    principal = SessionData(user_id=owner, role="dm")
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+    monkeypatch.setitem(app.dependency_overrides, get_timeline_database, lambda: db)
+    monkeypatch.setitem(app.dependency_overrides, get_timeline_store, PostgresTimelineStore)
+    monkeypatch.setitem(app.dependency_overrides, appmod._media, lambda: runtime)
+    monkeypatch.setitem(app.dependency_overrides, require_session, lambda: principal)
+    prefix = f"/campaigns/{CAMPAIGN}/cues"
+    try:
+        with closing(TestClient(app)) as client:
+            def post(asset: str, title: str, command: str):
+                return client.post(prefix, json={
+                    "schema_version": 1, "campaign_id": CAMPAIGN, "asset_id": asset,
+                    "command_id": command, "title": title, "kind": "one_shot",
+                })
+
+            def listed(**overrides: object):
+                return client.post(prefix + "/list", json={
+                    "schema_version": 1, "campaign_id": CAMPAIGN, "search": "", "sort": "name",
+                    "archived": False, **overrides,
+                })
+
+            assert client.get(prefix + "/capability").status_code == 204
+            assert client.get(f"/campaigns/{CAMPAIGN}/assets/{pending}/status").json()["state"] == "uploading"
+            assert post(foreign, "Private foreign sound", "cmd-cue-foreign-01").status_code == 404
+            assert post(pending, "An unfinished sound", "cmd-cue-pending-01").status_code == 409
+            assert post(long, "Long sound", "cmd-cue-too-long-01").status_code == 422
+            made = post(first, "Storm % at dusk", "cmd-cue-created-01")
+            assert made.status_code == 201, made.text
+            assert made.headers["cache-control"] == "no-store"
+            cue_id = made.json()["cue_id"]
+            assert made.json()["duration_ms"] == 900
+            assert post(first, "Storm % at dusk", "cmd-cue-created-01").json()["cue_id"] == cue_id
+
+            def attach(conversation: str):
+                return client.post(f"{prefix}/{cue_id}/attach", json={
+                    "schema_version": 1, "conversation_id": conversation,
+                })
+
+            assert attach(legacy_thread).status_code == 404
+            assert attach(other_campaign_thread).status_code == 404
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first_attach, second_attach = list(executor.map(attach, [thread, thread]))
+            assert first_attach.status_code == 200, first_attach.text
+            assert first_attach.json() == second_attach.json()
+            attached = first_attach.json()
+            assert attached["entry_kind"] == "attached_cue" and attached["cue_id"] == cue_id
+            assert set(attached) == {"schema_version", "entry_kind", "entry_id", "cue_id", "created_at"}
+            assert client.get(f"/conversations/{thread}/timeline").json()["items"] == [attached]
+            assert client.get(f"/conversations/{second_thread}/timeline").json()["items"] == []
+            assert client.get(f"{prefix}/{cue_id}").json()["title"] == "Storm % at dusk"
+            assert post(first, "Duplicate", "cmd-cue-created-02").status_code == 409
+            assert post(second, "Bell", "cmd-cue-created-03").status_code == 201
+            page = listed(limit=1).json()
+            assert [cue["title"] for cue in page["items"]] == ["Bell"]
+            assert [cue["title"] for cue in listed(limit=1, cursor=page["next_cursor"]).json()["items"]] == [
+                "Storm % at dusk"
+            ]
+            assert [cue["cue_id"] for cue in listed(search="% at").json()["items"]] == [cue_id]
+            rename = client.patch(f"{prefix}/{cue_id}", json={"schema_version": 1, "title": "Rain"})
+            assert rename.json()["kind"] == "one_shot"
+            assert rename.json()["title"] == "Rain"
+            assert client.post(f"{prefix}/{cue_id}/archive").json()["archived"] is True
+            assert attach(second_thread).status_code == 404
+            assert client.get(f"{prefix}/{cue_id}").json()["title"] == "Rain"
+            assert [cue["title"] for cue in listed(archived=True).json()["items"]] == ["Rain"]
+            assert client.post(f"{prefix}/{cue_id}/restore").json()["archived"] is False
+
+            principal = SessionData(user_id=outsider, role="dm")
+            assert listed().status_code == 404
+            assert attach(thread).status_code == 404
+            assert client.get(f"{prefix}/{cue_id}").status_code == 404
+            assert client.get(f"/conversations/{thread}/timeline").status_code == 404
+            assert client.get(f"/campaigns/{CAMPAIGN}/assets/{first}/status").status_code == 404
+            assert client.post(f"{prefix}/{cue_id}/archive").status_code == 404
+            principal = SessionData(user_id=owner, role="dm")
+            with connect(dsn) as conn:
+                conn.execute("DELETE FROM campaign.assets WHERE id = %s", (first,))
+            assert [cue["title"] for cue in listed().json()["items"]] == ["Bell"]
+            assert client.post(f"{prefix}/{cue_id}/archive").status_code == 404
+            assert client.get(f"{prefix}/{cue_id}").status_code == 404
+            assert client.get(f"/conversations/{thread}/timeline").json()["items"] == [attached]
+            monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=False, store="memory"))
+            dark = listed()
+            missing = client.post(f"{prefix}/missing", json={})
+            assert (dark.status_code, dark.content) == (missing.status_code, missing.content)
+    finally:
+        db.close()
+
+
+def test_archived_cue_delete_reauthenticates_and_cleans_up_audio_and_waveform(
+    dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from service import campaign_identity as ident
+
+    asset, object_key, tmp_key = ident.new_id(ident.ASSET), new_object_key(), new_tmp_key()
+    waveform_key = f"{object_key}/{WAVEFORM_NAME}"
+    with connect(dsn) as conn:
+        outsider = int(conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('other@example.com', 'x') RETURNING id"
+        ).fetchone()[0])
+        conn.execute(
+            "INSERT INTO campaign.assets (id, campaign_id, kind, state, declared_media_type, declared_size_bytes, "
+            "media_type, size_bytes, duration_ms, object_key, tmp_key) "
+            "VALUES (%s,%s,'audio','ready','audio/mpeg',100,'audio/mpeg',100,1000,%s,%s)",
+            (asset, CAMPAIGN, object_key, tmp_key),
+        )
+        conn.execute(
+            "UPDATE campaign.media_usage SET bytes_reserved = 100, asset_count = 1 WHERE campaign_id = %s", (CAMPAIGN,),
+        )
+    objects = InMemoryObjectStore()
+    objects.put_stream(object_key, [b"test audio"], max_bytes=100)
+    objects.put_stream(waveform_key, [b'{"schema_version":1,"peaks":[0,1]}'], max_bytes=100)
+
+    db = Database(dsn, PoolSettings(async_max=0))
+    queue = PostgresJobQueue(db)
+    runtime = assets_api.MediaRuntime(objects, PostgresAssetStore(queue))
+    principal = SessionData(user_id=owner, role="dm")
+    checking = threading.Event()
+    restored = threading.Event()
+
+    def check_password(password: str) -> None:
+        if password == "restore race":
+            checking.set()
+            assert restored.wait(5)
+        elif password != "correct password":
+            reauth_failed()
+
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+    monkeypatch.setitem(app.dependency_overrides, get_timeline_database, lambda: db)
+    monkeypatch.setitem(app.dependency_overrides, appmod._media, lambda: runtime)
+    monkeypatch.setitem(app.dependency_overrides, appmod._job_driver, lambda: None)
+    monkeypatch.setitem(app.dependency_overrides, appmod.reauthenticator, lambda: check_password)
+    monkeypatch.setitem(app.dependency_overrides, require_session, lambda: principal)
+    prefix = f"/campaigns/{CAMPAIGN}"
+    try:
+        with closing(TestClient(app)) as client:
+            created = client.post(f"{prefix}/cues", json={
+                "schema_version": 1, "campaign_id": CAMPAIGN, "command_id": "cmd-cue-remove-0001",
+                "asset_id": asset, "title": "Private bell", "kind": "one_shot",
+            })
+            assert created.status_code == 201, created.text
+            path = f"{prefix}/cues/{created.json()['cue_id']}"
+
+            def remove(password: str):
+                return client.post(f"{path}/delete", json={"schema_version": 1, "password": password})
+
+            assert remove("correct password").status_code == 409
+            assert client.post(f"{path}/archive").status_code == 200
+            wrong = remove("wrong password")
+            assert wrong.status_code == 403 and wrong.json()["detail"]["code"] == "reauth_failed"
+            assert client.delete(f"{prefix}/assets/{asset}").status_code == 404
+            principal = SessionData(user_id=outsider, role="dm")
+            assert remove("correct password").status_code == 404
+            principal = SessionData(user_id=owner, role="dm")
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(remove, "restore race")
+                try:
+                    assert checking.wait(5)
+                    assert client.post(f"{path}/restore").status_code == 200
+                finally:
+                    restored.set()
+                assert pending.result(timeout=5).status_code == 409
+
+            assert client.post(f"{path}/archive").status_code == 200
+            removed = remove("correct password")
+            assert removed.status_code == 204 and removed.headers["cache-control"] == "no-store"
+            assert remove("correct password").status_code == 404
+            assert client.post(f"{path}/restore").status_code == 404
+            assert client.get(f"{prefix}/assets/{asset}").status_code == 404
+            assert client.get(f"{prefix}/assets/{asset}?rendition=waveform").status_code == 404
+
+        with connect(dsn) as conn:
+            assert conn.execute("SELECT state FROM campaign.assets WHERE id = %s", (asset,)).fetchone() == ("deleted",)
+            assert conn.execute("SELECT id FROM campaign.audio_cues WHERE asset_id = %s", (asset,)).fetchone() is None
+            assert conn.execute(
+                "SELECT bytes_reserved, asset_count FROM campaign.media_usage WHERE campaign_id = %s", (CAMPAIGN,),
+            ).fetchone() == (0, 0)
+            assert conn.execute(
+                "SELECT detail FROM audit.events WHERE action = 'asset.deleted' AND object_ref = %s", (asset,),
+            ).fetchall() == [({"asset_id": asset},)]
+            jobs = conn.execute(
+                "SELECT id FROM app.jobs WHERE kind = 'asset.delete' AND dedupe_key = %s", (asset,),
+            ).fetchall()
+            assert len(jobs) == 1
+        runner = JobRunner(queue)
+        asset_jobs.register_jobs(runner, db=db, queue=queue, objects=objects)
+        runner.run_job(int(jobs[0][0]))
+        assert objects.stat_object(object_key) is None and objects.stat_object(waveform_key) is None
+        with connect(dsn) as conn:
+            assert conn.execute("SELECT id FROM campaign.assets WHERE id = %s", (asset,)).fetchone() is None
+    finally:
+        db.close()

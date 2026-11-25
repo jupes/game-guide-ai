@@ -80,6 +80,7 @@ class RagService:
         factory: ProviderClientFactory | None = None,
         secondary_retriever=None,
         connect=None,
+        additive_evidence: bool = False,
     ):
         # `connect`: the service's gated connection factory (service/db.py).
         self.retriever = retriever or RagRetriever(dsn, connect=connect)
@@ -94,6 +95,7 @@ class RagService:
             client_builders={model: llm_client} if llm_client is not None else None,
         )
         self.secondary = secondary_retriever or StubSecondaryRetriever()
+        self.additive_evidence = additive_evidence
         self._graph: Any = None  # compiled LangGraph pipeline (lazy; see _compiled_graph)
 
     def _merge_results(
@@ -179,6 +181,7 @@ class RagService:
             {
                 "prompt": prompt, "mode": mode,
                 "attachment_context": attachment_context, "attachment_label": attachment_label,
+                "additive_evidence": self.additive_evidence,
             },
             config=config,
         )
