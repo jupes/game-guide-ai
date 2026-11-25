@@ -129,10 +129,6 @@ class ChangeRecord:
 ChangeRecorder = Callable[[UnitOfWork, ChangeRecord], None]
 
 
-def no_record(unit: UnitOfWork, record: ChangeRecord) -> None:
-    """The recorder until the route bead writes audit rows: nothing is kept."""
-
-
 class EligibilityRefusal(Exception):
     """What the mutations refuse, beside the store's own refusals. Every
     message is fixed and names nothing a caller supplied."""

@@ -523,20 +523,6 @@ def check_ref(name: str, value: str | None) -> str | None:
     raise ValueError(f"an audit row's {name} is a minted identifier or a user id, never text")
 
 
-def check_field_key(what: str, value: str) -> str:
-    """ED-2's flat key: `passive_perception`, `motives` — a key of a Workbench
-    field, never a name and never a sentence.
-
-    A **shape**, which is all a field key can be: the set of keys belongs to a
-    document type, and this module does not know the types. That is why neither
-    the object kind nor the reason code goes through it any more — for those two
-    a closed vocabulary exists, and a shape would admit `rook`.
-    """
-    if not isinstance(value, str) or FIELD_KEY.fullmatch(value) is None:
-        raise ValueError(f"{what} is a lowercase key of at most 40 characters, never text")
-    return value
-
-
 def check_object_kind(object_kind: ObjectKind | str) -> str:
     """What the row is about, as a member. Wrapped like `check_action` so that
     the refusal does not repeat the value — `ObjectKind('the_hooded_stranger')`

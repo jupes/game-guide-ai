@@ -37,7 +37,6 @@ from service.eligibility import (
     Change,
     EligibilityMutations,
     NotAppliedYet,
-    no_record,
     no_table_namespace,
 )
 from service.eligibility_store import (
@@ -167,7 +166,7 @@ def _service(plan: list[type[Exception] | None]) -> tuple[EligibilityMutations, 
         documents=documents,
         sessions=InMemoryTableSessionStore(db, slot_clear=no_slots),
         table_namespace=no_table_namespace,
-        record=no_record,
+        record=lambda _unit, _change: None,
     )
     return service, flaky, {"campaign": campaign, "seat": seat, "sheet": sheet}
 
