@@ -30,6 +30,7 @@ from service.auth_store import (
     EmailTaken,
     GoogleAlreadyLinked,
     GoogleIdentityTaken,
+    GooglePasswordRequired,
     IdentityRefused,
     InMemoryAuthStore,
     PostgresAuthStore,
@@ -312,6 +313,29 @@ def test_link_adds_one_identity_once(h):
     assert (status.linked, status.email, status.has_password) == (True, email, True)
     assert h.events(user.id) == [("link", "allowed", None)], "only a new row writes an event"
     assert h.store.sign_in_with_google(sub) == user
+
+
+def test_unlink_removes_only_the_owners_identity_and_audits_once(h):
+    owner, other = h.password_user(_email()), h.password_user(_email())
+    subject, other_subject = _unique("subject"), _unique("other")
+    h.store.link_google(owner.id, subject, _email())
+    h.store.link_google(other.id, other_subject, _email())
+
+    assert h.store.unlink_google(owner.id) is True
+    assert h.store.unlink_google(owner.id) is False
+    assert h.store.sign_in_with_google(subject) is None
+    assert h.store.sign_in_with_google(other_subject) == other
+    assert h.store.get_credentials(owner.email) is not None
+    assert h.events(owner.id) == [("link", "allowed", None), ("unlink", "allowed", None)]
+
+
+def test_unlink_refuses_to_remove_an_accounts_only_sign_in_method(h):
+    subject = _unique("google-only")
+    owner = h.store.redeem_invite_with_google(h.invite(), _email(), subject, "unusable-hash")
+    with pytest.raises(GooglePasswordRequired):
+        h.store.unlink_google(owner.id)
+    assert h.store.sign_in_with_google(subject) == owner
+    assert h.events(owner.id) == [("sign_up", "allowed", None), ("sign_in", "allowed", None)]
 
 
 def test_link_refuses_another_accounts_google_and_a_second_google(h):

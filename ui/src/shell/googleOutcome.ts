@@ -38,6 +38,9 @@ export const GOOGLE_OUTCOME_CODES = [
   'already_linked',
   'linked',
   'reauth_failed',
+  'unlinked',
+  'unlink_reauth_failed',
+  'unlink_password_required',
 ] as const
 
 export type GoogleOutcomeCode = (typeof GOOGLE_OUTCOME_CODES)[number]
@@ -64,6 +67,9 @@ const MESSAGES: Readonly<Record<GoogleOutcomeCode, string>> = {
   already_linked: 'Your account is already linked to a different Google account.',
   linked: 'Google account linked. You can now sign in with Google.',
   reauth_failed: "That password isn't right, so Google wasn't linked.",
+  unlinked: 'Google account unlinked. Sign in with your password.',
+  unlink_reauth_failed: "That password isn't right, so Google wasn't unlinked.",
+  unlink_password_required: 'You need a password to unlink Google from this account.',
 }
 
 export interface GoogleOutcome {
@@ -71,7 +77,7 @@ export interface GoogleOutcome {
   code: GoogleOutcomeCode
   /** The sentence to show. Plain text: render it as a React text child. */
   message: string
-  /** `linked` is good news (a polite status); every other code is an alert. */
+  /** Successful changes use a polite status. Other outcomes use an alert. */
   role: 'alert' | 'status'
   /** Which page the server sent the browser to. The link flow lands on
    * `/profile`; every other flow lands on `/`. */
@@ -99,7 +105,7 @@ export function readGoogleOutcome(search: string, pathname: string): GoogleOutco
   return {
     code,
     message: MESSAGES[code],
-    role: code === 'linked' ? 'status' : 'alert',
+    role: code === 'linked' || code === 'unlinked' ? 'status' : 'alert',
     arrivedOn: pathname === '/profile' ? 'profile' : 'home',
   }
 }

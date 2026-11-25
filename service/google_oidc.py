@@ -97,6 +97,9 @@ class Outcome(str, Enum):
     ALREADY_LINKED = "already_linked"
     LINKED = "linked"
     REAUTH_FAILED = "reauth_failed"
+    UNLINKED = "unlinked"
+    UNLINK_REAUTH_FAILED = "unlink_reauth_failed"
+    UNLINK_PASSWORD_REQUIRED = "unlink_password_required"
 
 
 # ── Settings: OFF unless configured ──────────────────────────────────────────

@@ -5,19 +5,14 @@
  * account's link status; if either answer is missing (the feature is off, signed
  * out, a 5xx), nothing is drawn -- "unknown" is never shown as "not linked".
  *
- *  - linked            "Linked to <address>". No unlink control: removing a
- *                      sign-in method is its own re-authenticated flow, not here.
- *  - linked, no password   also says the account signs in with Google.
- *  - not linked        a native form POST (no script) with the account's CURRENT
- *                      PASSWORD: linking a sign-in method is as sensitive as the
- *                      actions that already ask for it (SEC-40), so a stolen
- *                      session alone cannot do it. The password goes in the
- *                      request body only -- it is never held in React state.
+ * Linking and unlinking both use a native form with the current password.
+ * A Google-only account needs its linked identity to sign in.
  */
 
 import * as React from 'react'
 import * as api from '../api'
 import type { GoogleLinkStatus } from '../api'
+import { Button } from '../ds/Button'
 import { GoogleSignInButton, GOOGLE_START_PATH } from './GoogleSignInButton'
 import { useGoogleAvailable } from './googleAvailability'
 import './ProfilePage.css'
@@ -49,14 +44,15 @@ export function ProfileGoogleSection(): React.JSX.Element | null {
       <h2 id="profile-google-title" className="profile-page__section-title">
         Google account
       </h2>
-      {status.linked ? (
-        <>
-          <p className="profile-page__google-line">Linked to {status.email ?? 'your Google account'}</p>
-          {!status.hasPassword && <p className="profile-page__google-line">You sign in with Google.</p>}
-        </>
-      ) : (
-        <form method="post" action={GOOGLE_START_PATH} className="profile-page__google-form">
-          <input type="hidden" name="intent" value="link" />
+      {status.linked && <p className="profile-page__google-line">Linked to {status.email ?? 'your Google account'}</p>}
+      {!status.hasPassword && <p className="profile-page__google-line">You sign in with Google.</p>}
+      {status.hasPassword && (
+        <form
+          method="post"
+          action={status.linked ? '/auth/google/unlink' : GOOGLE_START_PATH}
+          className="profile-page__google-form"
+        >
+          {!status.linked && <input type="hidden" name="intent" value="link" />}
           <label htmlFor={passwordId} className="profile-page__field-label">
             Current password
           </label>
@@ -70,9 +66,13 @@ export function ProfileGoogleSection(): React.JSX.Element | null {
             required
           />
           <p id={hintId} className="profile-page__google-hint">
-            We ask for your password so that nobody else can add a Google account to yours.
+            {status.linked
+              ? 'After unlinking, use your password to sign in.'
+              : 'We ask for your password so that nobody else can add a Google account to yours.'}
           </p>
-          <GoogleSignInButton kind="link" />
+          {status.linked
+            ? <Button variant="outlined" type="submit">Unlink Google</Button>
+            : <GoogleSignInButton kind="link" />}
         </form>
       )}
     </section>

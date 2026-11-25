@@ -38,6 +38,9 @@ const TABLE: Record<string, string> = {
   already_linked: 'Your account is already linked to a different Google account.',
   linked: 'Google account linked. You can now sign in with Google.',
   reauth_failed: "That password isn't right, so Google wasn't linked.",
+  unlinked: 'Google account unlinked. Sign in with your password.',
+  unlink_reauth_failed: "That password isn't right, so Google wasn't unlinked.",
+  unlink_password_required: 'You need a password to unlink Google from this account.',
 }
 
 afterEach(() => {
@@ -58,10 +61,10 @@ describe('readGoogleOutcome', () => {
     })
   }
 
-  it('only `linked` is a status; every other code is an alert', () => {
-    expect(readGoogleOutcome('?google=linked', '/profile')?.role).toBe('status')
-    for (const code of Object.keys(TABLE).filter((c) => c !== 'linked')) {
-      expect(readGoogleOutcome(`?google=${code}`, '/')?.role, code).toBe('alert')
+  it('announces successful link changes as a status', () => {
+    for (const code of Object.keys(TABLE)) {
+      const role = ['linked', 'unlinked'].includes(code) ? 'status' : 'alert'
+      expect(readGoogleOutcome(`?google=${code}`, '/profile')?.role, code).toBe(role)
     }
   })
 

@@ -139,6 +139,7 @@ ROUTES = (
     ("POST", "/auth/google/start"),
     ("GET", "/auth/google/callback"),
     ("GET", "/auth/google/link"),
+    ("POST", "/auth/google/unlink"),
 )
 
 
@@ -801,6 +802,36 @@ def test_linking_may_use_a_google_email_that_differs_from_the_accounts(store, cl
     assert client.get("/auth/google/link").json()["email"] == "someone.else@example.com"
     assert client.get("/auth/me").json()["email"] == "pw@example.com"
 
+
+def test_unlink_requires_fresh_password_and_rejects_cross_site_forms(store, client, google):
+    _password_account(store)
+    _sign_in_password(client, "pw@example.com")
+    assert _location(_link_to_google(client, google)) == "/profile?google=linked"
+    path = "/auth/google/unlink"
+    assert client.post(path, data={"password": PASSWORD}, headers={"sec-fetch-site": "cross-site"}).status_code == 403
+    wrong = client.post(path, data={"password": "wrong"})
+    assert _location(wrong) == "/profile?google=unlink_reauth_failed"
+    assert client.get("/auth/google/link").json()["linked"] is True
+
+    removed = client.post(path, data={"password": PASSWORD})
+    assert _location(removed) == "/profile?google=unlinked"
+    assert removed.headers["cache-control"] == "no-store"
+    assert not _sets_session_cookie(removed)
+    assert client.get("/auth/google/link").json() == {"linked": False, "email": None, "has_password": True}
+    assert client.get("/auth/me").json()["email"] == "pw@example.com"
+    assert store.identity_events[-2:] == [
+        (1, "unlink", "refused", "reauth_failed"), (1, "unlink", "allowed", None),
+    ]
+    assert _location(_google_sign_in(client, google)) == "/?google=no_account"
+
+
+def test_google_only_account_cannot_unlink_its_sign_in_method(store, client, google):
+    store.redeem_invite_with_google(_invite(store), GOOGLE_EMAIL, GOOGLE_SUB, "unusable-hash")
+    assert _location(_google_sign_in(client, google)) == "/"
+    path = "/auth/google/unlink"
+    assert _location(client.post(path, data={"password": PASSWORD})) == "/profile?google=unlink_password_required"
+    assert client.get("/auth/google/link").json()["linked"] is True
+    assert store.identity_events[-1] == (1, "unlink", "refused", "password_required")
 
 def test_linking_the_same_google_account_again_is_idempotent(store, client, google):
     _password_account(store)

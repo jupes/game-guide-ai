@@ -43,6 +43,10 @@ class GoogleAlreadyLinked(Exception):
     """This account already has a (different) Google identity."""
 
 
+class GooglePasswordRequired(Exception):
+    """Removing Google would leave the account without a sign-in method."""
+
+
 class AccountGone(Exception):
     """The account an identity was to be linked to no longer exists."""
 
@@ -64,9 +68,9 @@ IDENTITY_SUBJECT_MAX: Final = 255
 IDENTITY_EMAIL_MIN: Final = 3
 IDENTITY_EMAIL_MAX: Final = 254
 IDENTITY_REASON_MAX: Final = 40
-IdentityAction = Literal["sign_in", "sign_up", "link"]
+IdentityAction = Literal["sign_in", "sign_up", "link", "unlink"]
 IdentityDecision = Literal["allowed", "refused"]
-IDENTITY_ACTIONS: Final[tuple[str, ...]] = ("sign_in", "sign_up", "link")
+IDENTITY_ACTIONS: Final[tuple[str, ...]] = ("sign_in", "sign_up", "link", "unlink")
 IDENTITY_DECISIONS: Final[tuple[str, ...]] = ("allowed", "refused")
 
 
@@ -183,6 +187,10 @@ class AuthStore(Protocol):
         ...  # pragma: no cover - structural type
 
     def google_link_status(self, user_id: int) -> GoogleLinkStatus:
+        ...  # pragma: no cover - structural type
+
+    def unlink_google(self, user_id: int) -> bool:
+        """Remove Google's identity and record it atomically if a password remains."""
         ...  # pragma: no cover - structural type
 
     def record_identity_event(
@@ -348,6 +356,19 @@ class InMemoryAuthStore:
                 linked=linked is not None, email=linked,
                 has_password=user_id not in self._passwordless,
             )
+
+    def unlink_google(self, user_id: int) -> bool:
+        with self._lock:
+            if self.get_user_by_id(user_id) is None:
+                raise AccountGone("The account no longer exists.")
+            if user_id in self._passwordless:
+                raise GooglePasswordRequired()
+            subject = next((sub for sub, (owner, _) in self._identities.items() if owner == user_id), None)
+            if subject is None:
+                return False
+            del self._identities[subject]
+            self.identity_events.append((user_id, "unlink", "allowed", None))
+            return True
 
     def record_identity_event(
         self, user_id: int | None, action: str, decision: str, reason_code: str | None = None,
@@ -601,6 +622,29 @@ class PostgresAuthStore:
             email=linked[0] if linked is not None else None,
             has_password=True if account is None else bool(account[0]),
         )
+
+    def unlink_google(self, user_id: int) -> bool:
+        with self._connect() as conn:
+            account = conn.execute(
+                "SELECT has_password FROM auth.users WHERE id = %s FOR UPDATE",
+                (user_id,),
+            ).fetchone()
+            if account is None:
+                raise AccountGone("The account no longer exists.")
+            if not account[0]:
+                raise GooglePasswordRequired()
+            removed = conn.execute(
+                "DELETE FROM auth.identities WHERE provider = 'google' AND user_id = %s RETURNING user_id",
+                (user_id,),
+            ).fetchone()
+            if removed is None:
+                return False
+            conn.execute(
+                "INSERT INTO auth.identity_events (user_id, provider, action, decision) "
+                "VALUES (%s, 'google', 'unlink', 'allowed')",
+                (user_id,),
+            )
+            return True
 
     def record_identity_event(
         self, user_id: int | None, action: str, decision: str, reason_code: str | None = None,
