@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -27,6 +28,7 @@ import pytest
 from _pg import connect, needs_db, throwaway_database
 from langchain_core.messages import AIMessage
 
+import config
 from ingestion.retrieval import RetrievalResult, RetrievedChunk
 from service import card_executors as ce
 from service import migrations as mig
@@ -34,6 +36,8 @@ from service import ratelimit, tool_invocations
 from service.campaign_store import PostgresCampaignStore
 from service.conversation_store import PostgresConversationStore
 from service.db import Database, PoolSettings
+from service.document_store import PostgresDocumentStore
+from service.documents_api import DocumentStores, promote_stat_block
 from service.history import PostgresMessageStore
 from service.model_catalog import DEFAULT_ALIAS
 from service.providers import ProviderClientFactory
@@ -175,6 +179,32 @@ def _attempt(world: World, invocation_id: str, tool: ToolId, now: datetime) -> A
     ctx = _ctx(world, admitted, now)
     outcome = tool_invocations.execute(world.executors[tool], ctx, available=lambda t: True)
     return tool_invocations.complete(world.db, world.stores, world.executors[tool], admitted, outcome, ctx, now=now)
+
+
+def test_promoting_the_same_completed_monster_card_concurrently_creates_one_document(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    done = _attempt(world, "inv_carddb_promote", ToolId.MONSTER, T0)
+    stores = DocumentStores(world.stores.campaigns, PostgresDocumentStore())
+
+    def save():
+        return promote_stat_block(
+            world.db, stores, (PostgresConversationStore(), PostgresTimelineStore()),
+            campaign_id=world.campaign, conversation_id=world.conversation, entry_id=done.entry_id,
+            owner_id=world.owner, now=T0,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(save)
+        second = executor.submit(save)
+        a, b = first.result(timeout=10), second.result(timeout=10)
+    assert a.document_id == b.document_id
+    assert a.model_dump(mode="json")["data"] == fx.MONSTER_FIELDS
+    assert a.version.number == 1
+    assert world.count("documents") == world.count("document_versions") == 1
+    monkeypatch.setattr(config, "WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", 0)
+    assert save().document_id == a.document_id
+    assert world.llm.calls == 1
 
 
 @pytest.mark.parametrize("tool", CARD_TOOLS)

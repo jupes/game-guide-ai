@@ -38,14 +38,18 @@ import {
   DocumentHistoryPageSchema,
   DocumentVersionSnapshotSchema,
   ErrorBodySchema,
+  FieldPatchRequestSchema,
   LibraryPageSchema,
   LibraryQuerySchema,
+  RestoreRequestSchema,
   parseDocument,
   type CharacterSheetLink,
+  type ConflictInfo,
   type Document,
   type DocumentTypeId,
   type DocumentHistoryPage,
   type DocumentVersionSnapshot,
+  type FieldValue,
   type LibraryPage,
   type LibraryQuery,
 } from './contracts'
@@ -175,6 +179,69 @@ export async function getDocument(
   return readDocumentAnswer(await send(fetchImpl, documentPath(campaignId, documentId)), campaignId, documentId)
 }
 
+export type FieldSaveResult =
+  | { kind: 'ok'; document: Document }
+  | { kind: 'conflict'; conflict: ConflictInfo }
+  | { kind: 'failed'; retryable: boolean; message?: string }
+
+export async function saveDocumentField(
+  document: Document,
+  field: string,
+  value: FieldValue,
+  baseWriteRevision: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<FieldSaveResult> {
+  const { campaign_id: campaignId, document_id: documentId, type, type_version: typeVersion } = document
+  const request = FieldPatchRequestSchema.safeParse({
+    schema_version: CONTRACT_VERSION,
+    type,
+    type_version: typeVersion,
+    base_write_revision: baseWriteRevision,
+    fields: { [field]: value },
+  })
+  if (!request.success) return { kind: 'failed', retryable: false, message: 'Check the value in this field' }
+  const response = await send(fetchImpl, documentPath(campaignId, documentId), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request.data),
+  })
+  if (response !== null && !response.ok && response.status !== UNAUTHORIZED) {
+    const error = ErrorBodySchema.safeParse(await bodyOf(response))
+    if (error.success) {
+      const { code, conflict, retryable, message } = error.data.detail
+      if (response.status === CONFLICT && code === 'conflict' && conflict?.fields.includes(field)) {
+        return { kind: 'conflict', conflict }
+      }
+      return { kind: 'failed', retryable, message }
+    }
+  }
+  const result = await readDocumentAnswer(response, campaignId, documentId)
+  if (result.kind === 'ok' && result.document.type === type && result.document.write_revision >= baseWriteRevision) {
+    return result
+  }
+  return { kind: 'failed', retryable: result.kind === 'failed' || result.kind === 'ok' }
+}
+
+export async function restoreDocumentVersion(
+  document: Document,
+  versionNumber: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DocumentReadResult> {
+  const { campaign_id: campaignId, document_id: documentId } = document
+  const request = RestoreRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, version_number: versionNumber })
+  if (!request.success) return { kind: 'failed' }
+  const response = await send(fetchImpl, `${documentPath(campaignId, documentId)}/restore`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request.data),
+  })
+  const result = await readDocumentAnswer(response, campaignId, documentId)
+  if (result.kind === 'ok' && (result.document.type !== document.type || result.document.write_revision < document.write_revision)) {
+    return { kind: 'failed' }
+  }
+  return result
+}
+
 /**
  * `POST /campaigns/{cid}/documents/{did}/seal` (1kg.7.3): seal the current text as a
  * version a reveal can pin (CANVAS-34). Idempotent on the server, which reads no body;
@@ -251,6 +318,33 @@ export async function getCharacterSheetLink(
   const link = CharacterSheetLinkSchema.safeParse(await bodyOf(res))
   if (!link.success || link.data.document_id !== documentId) return { kind: 'failed' }
   return { kind: 'ok', link: link.data }
+}
+
+/** Link an unassigned sheet to a seat, or unlink the sheet selected by the GM. */
+export async function setCharacterSheetLink(
+  campaignId: string,
+  documentId: string,
+  participantId: string | null,
+  fetchImpl: typeof fetch = fetch,
+): Promise<LifecycleResult | { kind: 'link_taken' }> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(documentId) || (participantId !== null && !isOpaqueId(participantId))) {
+    return { kind: 'unavailable' }
+  }
+  const suffix = participantId === null ? '/unlink' : `/link/${encodeURIComponent(participantId)}`
+  const res = await send(fetchImpl, documentPath(campaignId, documentId) + suffix, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  if (res === null) return { kind: 'failed' }
+  if (res.status === UNAUTHORIZED) {
+    notifyUnauthorized()
+    return { kind: 'unauthorized' }
+  }
+  if (res.status === FORBIDDEN || res.status === NOT_FOUND) return { kind: 'unavailable' }
+  if (res.status === TOO_MANY_REQUESTS) return { kind: 'throttled' }
+  if (res.status === CONFLICT && (await errorCode(res)) === 'link_taken') return { kind: 'link_taken' }
+  return res.ok ? { kind: 'ok' } : { kind: 'failed' }
 }
 
 /** `GET /campaigns/{cid}/documents/{did}/versions?limit=20[&cursor=…]`, newest first. */
@@ -342,6 +436,31 @@ export async function createDocument(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request.data),
   })
+  return readCreatedDocument(res, campaignId, input.type)
+}
+
+/** Take only a reference to the source. The server owns the card and its idempotency key. */
+export async function promoteMonsterCard(
+  campaignId: string,
+  conversationId: string,
+  entryId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CreateResult> {
+  if (!isOpaqueId(campaignId) || !isOpaqueId(conversationId) || !isOpaqueId(entryId)) return { kind: 'unavailable' }
+  const base = `/campaigns/${encodeURIComponent(campaignId)}/conversations/${encodeURIComponent(conversationId)}`
+  const res = await send(fetchImpl, `${base}/timeline/${encodeURIComponent(entryId)}/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
+  return readCreatedDocument(res, campaignId, 'statblock')
+}
+
+async function readCreatedDocument(
+  res: Response | null,
+  campaignId: string,
+  docType: DocumentTypeId,
+): Promise<CreateResult> {
   if (res === null) return { kind: 'failed' }
   if (res.status === UNAUTHORIZED) {
     notifyUnauthorized()
@@ -361,7 +480,7 @@ export async function createDocument(
   const parsed = parseDocument(raw)
   if (parsed.kind === 'unknown') return { kind: 'failed' }
   const document = parsed.value
-  if (document.campaign_id !== campaignId || document.type !== input.type) return { kind: 'failed' }
+  if (document.campaign_id !== campaignId || document.type !== docType) return { kind: 'failed' }
   return { kind: 'ok', document }
 }
 

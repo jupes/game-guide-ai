@@ -21,11 +21,12 @@ import random
 import traceback
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 
 from service import timeline
-from service.timeline_store import LegacyMessageRow, StoredEntryRow
+from service.timeline_store import LegacyMessageRow, StoredEntryRow, TimelineStore
 from service.workbench_contracts import CONTRACT_VERSION, Cursor, OpaqueId, OpaqueReason
 
 _T0 = datetime(2026, 9, 16, 19, 20, 11, tzinfo=UTC)
@@ -505,7 +506,7 @@ def _stored(seq: int, at: datetime, payload: object = None, *, user: int | None 
 
 
 def _page(stub: _Stub, limit: int = 100, cursor: str | None = None) -> timeline.TimelinePage:
-    return timeline.read_page(stub, None, "conv", limit=limit,
+    return timeline.read_page(cast(TimelineStore, stub), None, "conv", limit=limit,
                               cursor=None if cursor is None else timeline.decode_cursor(cursor))
 
 

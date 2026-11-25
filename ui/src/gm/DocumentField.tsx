@@ -348,12 +348,15 @@ export interface DocumentFieldProps {
   /** MS-7: the campaign an asset is served under. */
   campaignId: string
   onDraft?: (key: string, value: FieldValue) => void
+  onInvalidDraft?: (key: string) => void
+  onCancel?: (key: string) => void
   onCommit?: (key: string, value: FieldValue) => void
   onRetry?: (key: string) => void
   onKeepMine?: (key: string, value: FieldValue) => void
   onUseLatest?: (key: string) => void
   /** CANVAS-21's field-scope arming gesture. It arms; it never runs. */
   onArmEdit?: (key: string) => void
+  selectionEnabled?: boolean
   /** CANVAS-23: the bar lives here so it follows the field in the tab order. */
   selectionBar?: React.ReactNode
   className?: string
@@ -370,11 +373,14 @@ export function DocumentField({
   documentName,
   campaignId,
   onDraft,
+  onInvalidDraft,
+  onCancel,
   onCommit,
   onRetry,
   onKeepMine,
   onUseLatest,
   onArmEdit,
+  selectionEnabled = true,
   selectionBar,
   className,
 }: DocumentFieldProps): React.JSX.Element {
@@ -396,14 +402,10 @@ export function DocumentField({
   const committed = value === undefined ? clearedValue(field.kind) : value
   const signature = React.useMemo(() => JSON.stringify(committed ?? null), [committed])
   const [edits, setEdits] = React.useState<Edits | null>(null)
-  /**
-   * The draft belongs to ONE committed value. When a save lands, when `Use
-   * latest` resolves a conflict, or when an AI edit changes the field, the
-   * committed value — and with it the signature — changes, and the draft falls
-   * away by itself. No effect and no ref: the edit is simply no longer about
-   * the value in front of the GM.
-   */
-  const live = edits !== null && edits.signature === signature ? edits : null
+  const heldOpen =
+    status.state === 'editing' || status.state === 'saving' || status.state === 'error' || status.state === 'conflict'
+  // A write response can advance the committed value while the GM is still typing.
+  const live = edits !== null && (edits.signature === signature || heldOpen) ? edits : null
   const draft = live === null ? committed : live.value
   const typed = live === null ? NO_TYPING : live.typed
   const problem = live === null ? null : live.problem
@@ -426,8 +428,6 @@ export function DocumentField({
   }, [focusRequest])
 
   const editable = field.editable && !assistantEditing
-  const heldOpen =
-    status.state === 'editing' || status.state === 'saving' || status.state === 'error' || status.state === 'conflict'
   const editing = editable && EDITABLE_KINDS.has(field.kind) && (open || heldOpen)
   const singleControl = editing && SINGLE_CONTROL_KINDS.has(field.kind)
 
@@ -461,7 +461,7 @@ export function DocumentField({
   function edit(change: Partial<Omit<Edits, 'signature'>>): void {
     setEdits((was) => {
       const base: Edits =
-        was !== null && was.signature === signature
+        was !== null && (was.signature === signature || heldOpen)
           ? was
           : { signature, value: committed, typed: NO_TYPING, problem: null, problemSlot: null }
       return { ...base, ...change, signature }
@@ -486,7 +486,13 @@ export function DocumentField({
 
   function change(next: FieldValue): void {
     edit({ value: next, problem: null, problemSlot: null })
-    onDraft?.(field.key, next)
+    if (field.kind === 'text_list') {
+      onDraft?.(field.key, nonemptyItems(next))
+    } else if (field.kind === 'entry_list') {
+      onDraft?.(field.key, nonemptyEntries(next))
+    } else {
+      onDraft?.(field.key, next)
+    }
   }
 
   /** A structural change — add, remove, reorder — has no blur to wait for. */
@@ -500,6 +506,14 @@ export function DocumentField({
   function cancel(): void {
     setEdits(null)
     setOpen(false)
+  }
+
+  function nonemptyItems(value: FieldValue): string[] {
+    return asTextList(value).filter((item) => trimWire(item) !== '')
+  }
+
+  function nonemptyEntries(value: FieldValue): Entry[] {
+    return asEntryList(value).filter((entry) => trimWire(entry.name) !== '' || trimWire(entry.text) !== '')
   }
 
   function typedIn(slot: string, fallback: string): string {
@@ -544,7 +558,7 @@ export function DocumentField({
   function commitTextList(): boolean {
     // An empty row is not an item on the wire (each one is 1 to 2,000
     // characters), so a row left blank is dropped rather than sent and refused.
-    const items = asTextList(draft).filter((item) => trimWire(item) !== '')
+    const items = nonemptyItems(draft)
     for (const item of items) {
       const read = readBoundedText(item, LIST_ITEM_MAX_CHARS)
       if (!read.ok) return refuse(read.message)
@@ -559,7 +573,7 @@ export function DocumentField({
     // An entry with neither a name nor a text is an empty row, not an entry.
     // One with a text and no name is a mistake the GM has to see: the wire
     // needs a name of at least one character.
-    const entries = asEntryList(draft).filter((entry) => trimWire(entry.name) !== '' || trimWire(entry.text) !== '')
+    const entries = nonemptyEntries(draft)
     for (const entry of entries) {
       if (trimWire(entry.name) === '') return refuse('Every entry needs a name')
       const name = readBoundedText(entry.name, TEXT_FIELD_MAX_CHARS)
@@ -580,6 +594,7 @@ export function DocumentField({
    * and never while the value is invalid, because that would drop typed text.
    */
   function commit(): boolean {
+    if (live === null) return true
     switch (field.kind) {
       case 'text':
       case 'prose':
@@ -601,7 +616,10 @@ export function DocumentField({
   function onKeyDown(event: React.KeyboardEvent): void {
     if (event.key === 'Escape') {
       event.stopPropagation()
-      cancel()
+      if (status.state !== 'conflict') {
+        cancel()
+        onCancel?.(field.key)
+      }
       return
     }
     if ((event.ctrlKey || event.metaKey) && (event.key === 's' || event.key === 'S')) {
@@ -677,13 +695,14 @@ export function DocumentField({
         onKeyDown={onKeyDown}
         onBlur={onControlBlur}
         onChange={(event) => {
-          const raw = event.target.value
+          const raw = event.target.validity.badInput ? '−' : event.target.value
           const read = readIntegerInput(raw, INTEGER_BOUNDS)
           // A half-typed number is kept as text and says nothing yet; the
           // complaint waits for the commit, so a lone minus sign is not an
           // error the GM has to read.
           settle({ typed: { ...typed, '': raw }, ...(read.ok ? { value: read.value } : {}) })
           if (read.ok) onDraft?.(field.key, read.value)
+          else onInvalidDraft?.(field.key)
         }}
       />
     )
@@ -728,11 +747,14 @@ export function DocumentField({
                 onKeyDown={onKeyDown}
                 onBlur={onControlBlur}
                 onChange={(event) => {
-                  const raw = event.target.value
+                  const raw = event.target.validity.badInput ? '−' : event.target.value
                   const read = readIntegerInput(raw, ABILITY_BOUNDS)
                   const next = read.ok ? blockOrNull(withScore(current, key, read.value)) : null
                   settle({ typed: { ...typed, [key]: raw }, ...(read.ok ? { value: next } : {}) })
-                  if (read.ok) onDraft?.(field.key, next)
+                  if (read.ok && Object.entries(typed).every(([slot, value]) =>
+                    slot === key || readIntegerInput(value, ABILITY_BOUNDS).ok
+                  )) onDraft?.(field.key, next)
+                  else onInvalidDraft?.(field.key)
                 }}
               />
               <span className="gm-field__modifier" id={modifierId}>
@@ -787,7 +809,8 @@ export function DocumentField({
           onClick={() => {
             const next = [...items, '']
             settle({ value: next })
-            onDraft?.(field.key, next)
+            if (onInvalidDraft !== undefined) onInvalidDraft(field.key)
+            else onDraft?.(field.key, next)
             askFocus(`item-${next.length - 1}`)
           }}
         >
@@ -847,7 +870,8 @@ export function DocumentField({
           onClick={() => {
             const next = [...entries, { name: '', text: '' }]
             settle({ value: next })
-            onDraft?.(field.key, next)
+            if (onInvalidDraft !== undefined) onInvalidDraft(field.key)
+            else onDraft?.(field.key, next)
             askFocus(`item-${next.length - 1}`)
           }}
         >
@@ -935,7 +959,7 @@ export function DocumentField({
 
   const asset = asAsset(committed)
   const stateNote = status.state === 'saving' ? 'Saving…' : status.state === 'saved' ? 'Saved' : null
-  const selectable = field.kind === 'prose' && editable && !isBlankValue(field.kind, committed)
+  const selectable = selectionEnabled && field.kind === 'prose' && editable && !isBlankValue(field.kind, committed)
 
   return (
     <div
@@ -1047,7 +1071,7 @@ export function DocumentField({
       {status.state === 'error' && (
         <p className="gm-field__problem" id={errorId}>
           {status.message ?? "Couldn't save"}
-          {onRetry !== undefined && (
+          {onRetry !== undefined && status.retryable !== false && (
             <button
               type="button"
               className="gm-field__text-button"
@@ -1068,8 +1092,10 @@ export function DocumentField({
             <p className="gm-field__conflict-label" id={mineId}>
               Mine
             </p>
-            {view(draft, mineId, false)}
-            <Button variant="tonal" size="small" onClick={() => onKeepMine?.(field.key, draft)}>
+            {view(status.mine === undefined ? draft : status.mine, mineId, false)}
+            <Button variant="tonal" size="small" onClick={() => {
+              if (field.kind === 'asset' || commit()) onKeepMine?.(field.key, draft)
+            }}>
               Keep mine
             </Button>
           </div>
@@ -1078,7 +1104,10 @@ export function DocumentField({
               Latest
             </p>
             {view(status.latest === undefined ? clearedValue(field.kind) : status.latest, latestId, false)}
-            <Button variant="outlined" size="small" onClick={() => onUseLatest?.(field.key)}>
+            <Button variant="outlined" size="small" onClick={() => {
+              cancel()
+              onUseLatest?.(field.key)
+            }}>
               Use latest
             </Button>
           </div>

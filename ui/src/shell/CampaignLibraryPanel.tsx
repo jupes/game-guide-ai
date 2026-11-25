@@ -326,7 +326,7 @@ const SEARCH_FIELD = 'search'
 function LibraryTabBody({ category, layout, announce, offerUndo, headingRef, fetchImpl }: LibraryTabBodyProps): React.JSX.Element {
   const { scope } = useCampaign()
   const { doc } = useCanvasState()
-  const { openDocument, bumpDocumentsVersion, refreshDocument } = useCanvasActions()
+  const { openDocument, bumpDocumentsVersion, refreshDocument, flushBeforeLeaving } = useCanvasActions()
   const reveals = useReveals()
   const { closeLibrary } = useLibraryPanel()
   const campaignId = scope?.campaignId ?? null
@@ -429,6 +429,7 @@ function LibraryTabBody({ category, layout, announce, offerUndo, headingRef, fet
   // stops the reveal and archives in one transaction, so the client sends nothing more than the archive.
   const onArchive = async (id: string, title: string): Promise<void> => {
     if (campaignId === null || busyId !== null) return
+    if (current === id && !(await flushBeforeLeaving())) return
     const wasLive = liveOf(reveals.state, id) !== null
     setRowOp({ kind: 'busy', id })
     const result = await archiveDocument(campaignId, id, fetchImpl)

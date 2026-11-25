@@ -11,7 +11,7 @@
  * (timeline, documents, reveal, audio) adds its adapters here beside its schemas.
  */
 
-import type { CardContent, ChatAnswer, InvocationStatus, ToolSuggestion } from './contracts'
+import type { CardContent, ChatAnswer, HooksContent, InvocationStatus, LootContent, NamesContent, RulesContent, ToolSuggestion } from './contracts'
 import type { SpellCardProps } from '../ds/SpellCard'
 import type { StatBlockCardProps } from '../ds/StatBlockCard'
 
@@ -54,6 +54,38 @@ export function suggestionFor(
 /** Taken from the contract rather than re-declared, so it cannot drift from the wire. */
 type StatBlockContent = Extract<CardContent, { card_kind: 'stat_block' }>['stat_block']
 type SpellContent = NonNullable<ChatAnswer['spell_content']>
+
+export function toLootCardProps(loot: LootContent) {
+  return {
+    title: loot.title,
+    items: loot.items.map(({ name, quantity, value, note }) => ({
+      name, quantity: quantity ?? undefined, value: value ?? undefined, note: note ?? undefined,
+    })),
+  }
+}
+
+export function toNamesCardProps(names: NamesContent) {
+  return {
+    title: names.title,
+    entries: names.entries.map(({ name, note }) => ({ name, note: note ?? undefined })),
+  }
+}
+
+export function toHooksCardProps(hooks: HooksContent) {
+  return {
+    title: hooks.title,
+    entries: hooks.entries.map(({ title, text }) => ({ name: title, text })),
+  }
+}
+
+export function toRulesCardProps(rules: RulesContent) {
+  return {
+    title: rules.title,
+    answer: rules.answer,
+    numbers: rules.citations.map(({ n }) => n),
+    sources: rules.citations.map(({ source }) => source),
+  }
+}
 
 /**
  * A spell answer as `SpellCard` wants it. It lived privately in `ChatPane` until

@@ -42,6 +42,7 @@ from service.campaigns_api import (
     guarded,
     offer_seat,
     remove_seat,
+    rename_seat,
 )
 from service.db import AdvisoryLock, CampaignLockSettings, Database, PoolSettings, advisory_key
 from service.jobs import JobRunner, PostgresJobQueue
@@ -187,6 +188,33 @@ def _seats(db: Database, stores: CampaignStores, count: int, campaign: str = CAM
     """`count` open seats, each under an alias no other seat of this test has."""
     with db.transaction() as unit:
         return [stores.participants.add(unit, campaign, alias=f"Seat {next(_ALIASES)}").id for _ in range(count)]
+
+
+def test_rename_uses_the_same_normalized_index_and_never_reassigns_the_seat(dsn: str, owner: int) -> None:
+    db, stores = _database(dsn), _stores()
+    player = _account(dsn, "rename-player@example.com")
+    try:
+        with db.transaction() as unit:
+            seat = stores.participants.add(unit, CAMPAIGN, alias="Vale", now=NOW)
+            stores.participants.add(unit, CAMPAIGN, alias="Other", now=NOW)
+            stores.participants.offer(unit, CAMPAIGN, seat.id, user_id=player)
+            assert stores.participants.accept(unit, CAMPAIGN, seat.id, user_id=player, now=NOW)
+            assert stores.participants.confirm(unit, CAMPAIGN, seat.id, now=NOW)
+        kwargs = {"campaign_id": CAMPAIGN, "participant_id": seat.id, "owner_id": owner, "now": NOW}
+        with pytest.raises(HTTPException) as duplicate:
+            rename_seat(db, stores, alias="ＯＴＨＥＲ", **kwargs)
+        assert duplicate.value.status_code == 409 and duplicate.value.detail["code"] == "alias_taken"
+        renamed, _ = rename_seat(db, stores, alias="VALE", **kwargs)
+        assert renamed.id == seat.id and renamed.user_id == player
+        assert renamed.alias == "VALE" and renamed.accepted_at == NOW and renamed.confirmed_at == NOW
+        assert rename_seat(db, stores, alias="VALE", **kwargs)[0] == renamed
+        with connect(dsn) as conn:
+            row = conn.execute(
+                "SELECT detail, authz_revision FROM audit.events WHERE action = 'participant.renamed'",
+            ).fetchall()
+        assert row == [({"participant_id": seat.id}, None)]
+    finally:
+        db.close()
 
 
 def _count(dsn: str, sql: str, params: tuple = ()) -> int:

@@ -934,6 +934,18 @@ def bound_before_locking(transaction: PgTransaction, transaction_timeout_s: floa
     )
 
 
+def read_campaign_asset(unit: UnitOfWork, campaign_id: str, asset_id: str, owner_id: int) -> AssetRecord | None:
+    """Read owner-scoped asset metadata without requiring a job queue."""
+    _check_types(campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id)
+    found = pg(unit).conn.execute(
+        f"SELECT {_COLUMNS} FROM campaign.assets "
+        f"WHERE id = %(asset_id)s AND campaign_id = %(campaign_id)s AND campaign_id IN ({GM_CAMPAIGNS}) "
+        f"AND state <> 'deleted'",
+        {"asset_id": asset_id, "campaign_id": campaign_id, "owner_id": owner_id},
+    ).fetchone()
+    return None if found is None else record_of(row_from_tuple(found))
+
+
 class PostgresAssetStore(_Transitions):
     """`campaign.assets` and `campaign.media_usage`."""
 
@@ -1051,14 +1063,7 @@ class PostgresAssetStore(_Transitions):
         raise _missing()
 
     def get(self, unit: UnitOfWork, campaign_id: str, asset_id: str, *, owner_id: int) -> AssetRecord | None:
-        _check_types(campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id)
-        found = pg(unit).conn.execute(
-            f"SELECT {_COLUMNS} FROM campaign.assets "
-            f"WHERE id = %(asset_id)s AND campaign_id = %(campaign_id)s AND campaign_id IN ({GM_CAMPAIGNS}) "
-            f"AND state <> 'deleted'",
-            {"asset_id": asset_id, "campaign_id": campaign_id, "owner_id": owner_id},
-        ).fetchone()
-        return None if found is None else record_of(row_from_tuple(found))
+        return read_campaign_asset(unit, campaign_id, asset_id, owner_id)
 
     def resolve_ready(
         self, unit: UnitOfWork, campaign_id: str, asset_id: str, *, owner_id: int

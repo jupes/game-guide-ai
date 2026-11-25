@@ -291,6 +291,28 @@
   }
 }
 
+@media (height <= 460px) {
+  .workspace-shell:is([data-layout="medium"], [data-layout="wide"]) .workspace-shell__chrome {
+    .top-bar {
+      height: auto;
+      min-height: 48px;
+    }
+
+    .app-header {
+      padding-block: var(--aether-space-1);
+    }
+
+    .workbench-switch {
+      margin-block: 0;
+    }
+  }
+
+  .workspace-shell__main:not([data-canvas]),
+  .workspace-shell[data-layout] .workbench[data-canvas] .workbench__chat:not([data-concealed]) {
+    padding-block: var(--aether-space-1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .workspace-shell__skip-link {
     transition: none;

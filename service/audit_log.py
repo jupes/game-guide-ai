@@ -11,7 +11,7 @@ than trusting it.
 reviewer sees, not a string a caller invents, so the ledger cannot quietly grow
 a vocabulary nobody agreed to. The export actions are not here: ED-18(a) makes
 the table shared, and they belong to `1kg.5.2`, which adds its own members
-without a migration. Nor is there one writer for the thirty-one that are here:
+without a migration. Nor is there one writer for the thirty-two that are here:
 the session and screen rows are written by `service/table_sessions.py`
 (`1kg.2.3`), the campaign's Conclude and Reopen by the tavern's route (bead cfx),
 `asset.deleted` by the media bead's delete route (`1kg.8.1.3`), reveal's three
@@ -126,6 +126,7 @@ class AuditAction(str, Enum):
     SESSION_EXPIRED = "session.expired"
     SESSION_ROTATED = "session.rotated"
     PARTICIPANT_ADDED = "participant.added"
+    PARTICIPANT_RENAMED = "participant.renamed"
     PARTICIPANT_REMOVED = "participant.removed"
     PARTICIPANT_LINKED = "participant.linked"
     PARTICIPANT_UNLINKED = "participant.unlinked"
@@ -212,7 +213,7 @@ class ActorKind(str, Enum):
 
 
 class ObjectKind(str, Enum):
-    """What the decision was **about** — one of the seven things the thirty-one
+    """What the decision was **about** — one of the seven things the thirty-two
     actions act on, and nothing else. A table screen's `object_ref` is its
     grant's `tcr_` id, a document's its `doc_` id, and a group's its `grp_` id
     (`btb`).
@@ -388,6 +389,7 @@ ACTION_DETAIL: dict[AuditAction, dict[str, Kind]] = {
     AuditAction.SESSION_EXPIRED: _SESSION_CLOSED,
     AuditAction.SESSION_ROTATED: _SESSION_CLOSED,
     AuditAction.PARTICIPANT_ADDED: {"participant_id": _PARTICIPANT},
+    AuditAction.PARTICIPANT_RENAMED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_REMOVED: {"participant_id": _PARTICIPANT},
     AuditAction.PARTICIPANT_LINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
     AuditAction.PARTICIPANT_UNLINKED: {"participant_id": _PARTICIPANT, "document_id": _DOCUMENT},
@@ -438,6 +440,7 @@ ACTION_REASONS: dict[AuditAction, frozenset[str]] = {
     AuditAction.SESSION_EXPIRED: frozenset(),
     AuditAction.SESSION_ROTATED: frozenset(),
     AuditAction.PARTICIPANT_ADDED: frozenset(),
+    AuditAction.PARTICIPANT_RENAMED: frozenset(),
     AuditAction.PARTICIPANT_REMOVED: frozenset({"gm_removed"}),
     AuditAction.PARTICIPANT_LINKED: frozenset(),
     AuditAction.PARTICIPANT_UNLINKED: frozenset(),

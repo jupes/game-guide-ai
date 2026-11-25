@@ -22,6 +22,7 @@
 }
 
 .gm-tool-rail__tools {
+  position: relative; /* Keep hidden tool descriptions inside the scroller. */
   display: flex;
   align-items: center;
   gap: 7px;

@@ -37,12 +37,14 @@ export interface LibraryDialogProps {
   fieldRef?: React.RefObject<HTMLElement | null>
   /** A refusal, shown and read out inside the dialog. */
   error?: string | null
+  returnFocus?: () => void
   onConfirm: () => void
   onCancel: () => void
 }
 
 export function LibraryDialog({
-  heading, body, children, confirmLabel, cancelLabel, busy, destructive = false, initialFocus, fieldRef, error = null, onConfirm, onCancel,
+  heading, body, children, confirmLabel, cancelLabel, busy, destructive = false, initialFocus, fieldRef,
+  error = null, returnFocus, onConfirm, onCancel,
 }: LibraryDialogProps): React.JSX.Element {
   const id = React.useId()
   const headingId = `${id}-heading`
@@ -57,9 +59,10 @@ export function LibraryDialog({
     const target = first === 'field' ? (field?.current ?? null) : null
     ;(target ?? cancelRef.current)?.focus()
     return () => {
-      if (opener !== null && opener.isConnected) opener.focus()
+      if (returnFocus) returnFocus()
+      else if (opener !== null && opener.isConnected) opener.focus()
     }
-  }, [])
+  }, [returnFocus])
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
     if (event.key === 'Escape') {

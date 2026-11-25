@@ -12,7 +12,7 @@
  */
 
 import { ToolInvocationSchema } from './contracts'
-import type { ToolInvocation, ToolSuggestion } from './contracts'
+import type { CardContent, ToolInvocation, ToolSuggestion } from './contracts'
 import { toolAvailability } from './registry'
 import type { LaneTimer } from './laneState'
 
@@ -78,6 +78,27 @@ export function cardResult(overrides: Record<string, unknown> = {}): Record<stri
     ...overrides,
   }
 }
+
+export const TOOL_CARD_FIXTURES = {
+  loot: { card_kind: 'loot', loot: {
+    title: 'The offering box',
+    items: [{ name: 'Tarnished silver censer', quantity: 2, value: '30 gp', note: 'Smells of cedar.' }, { name: 'Wax seal' }],
+  } },
+  names: { card_kind: 'names', names: {
+    title: 'Names for the coast', entries: [{ name: 'Ilyra', note: 'A family name from the north.' }, { name: 'Meren' }],
+  } },
+  hooks: { card_kind: 'hooks', hooks: {
+    title: 'Riverside hooks', entries: [{ title: 'A missing bell', text: 'The ferryman wants someone to find it.' }],
+  } },
+  rules: { card_kind: 'rules', rules: {
+    title: 'Using cover', answer: 'Take half cover [2].\nCheck the attack [4].', citations: [
+      { n: 2, source: { book: 'Core Rules', chapter: 'Combat', section: null, page: 34, entity: 'Half cover',
+        snippet: 'A low wall can provide cover.' } },
+      { n: 4, source: { book: 'Core Rules', chapter: 'Combat', section: null, page: 37, entity: 'Attacks',
+        snippet: 'Check the path to the target.' } },
+    ],
+  } },
+} satisfies Record<Exclude<CardContent['card_kind'], 'stat_block'>, CardContent>
 
 export function mediaResult(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {

@@ -1187,6 +1187,11 @@ messages with reply pointers.
 - An entry has one id. That id is what a suggestion's `source_entry_id` names
   (RAIL-8) and what makes *Save to Bestiary* idempotent (LIB-11).
 
+*Save to Bestiary* sends `POST /campaigns/{campaign_id}/conversations/{conversation_id}/timeline/{entry_id}/promote`
+with an empty JSON object. The server uses the completed monster card in that
+GM-owned conversation to create an editable stat block. A repeat returns the
+same document with its current edits.
+
 | `entry_kind` | Carries | Notes |
 | --- | --- | --- |
 | `chat` | `mode`, `prompt`, `answer` | A plain message and its answer, in any mode (RAIL-14). `answer` is `null` while no answer is stored: the turn failed, or is still running elsewhere. `prompt` is `null` only for an old answer whose prompt was never recorded; one of the two is always present |

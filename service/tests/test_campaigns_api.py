@@ -541,6 +541,39 @@ def test_only_the_owner_confirms_an_accepted_seat_and_it_is_audited_once(client:
     assert client.post(url).json() == NOT_FOUND
 
 
+def test_rename_changes_the_label_for_both_views_without_changing_the_seat(client: TestClient, world: _World) -> None:
+    campaign = world.campaign()
+    participant_id = world.accepted(campaign, "Rook", PLAYER, "Wren@example.com")
+    foreign_seat = world.seat(world.campaign(GM_B), "Marsh")
+    world.seat(campaign, "Other")
+    detail = f"/campaigns/{campaign}/participants"
+    url = f"{detail}/{participant_id}"
+    assert client.post(url + "/confirm").status_code == 200
+    revision = world.revision(campaign)
+    initial = next(row for row in _seats(client, campaign) if row["participant_id"] == participant_id)
+    body = {"schema_version": 1, "alias": "  Marsh  "}
+
+    _as(GM_B)
+    assert client.patch(url, json=body).json() == NOT_FOUND
+    _as(PLAYER, "player")
+    assert client.patch(url, json=body).status_code == 403
+    _as(GM_A)
+    assert client.patch(f"{detail}/{foreign_seat}", json=body).json() == NOT_FOUND
+    refused = client.patch(url, json={**body, "alias": "ｏＴＨＥＲ"})
+    assert refused.status_code == 409 and refused.json()["detail"]["code"] == "alias_taken"
+    assert client.patch(url, json={**body, "alias": "\u200d"}).status_code == 422
+    answer = client.patch(url, json=body)
+    assert answer.status_code == 200 and answer.json() == {**initial, "alias": "Marsh"}
+    assert client.patch(url, json=body).json() == answer.json()
+    assert world.revision(campaign) == revision
+    assert world.ledger(campaign).count("participant.renamed") == 1
+    _as(PLAYER, "player")
+    assert client.get("/seats").json()["items"][0]["alias"] == "Marsh"
+    _as(GM_A)
+    assert _remove(client, campaign, participant_id).status_code == 204
+    assert client.patch(url, json=body).json() == NOT_FOUND
+
+
 # ── Remove, behind the password (SEC-40, RQ-5) ───────────────────────────────
 
 
@@ -652,6 +685,7 @@ def _every_gm_route(campaign: str, seat: str) -> list[tuple[str, str, dict[str, 
         ("POST", f"{base}/reopen", None),
         ("GET", f"{base}/participants", None),
         ("POST", f"{base}/participants", {"schema_version": 1, "alias": "Rook"}),
+        ("PATCH", f"{base}/participants/{seat}", {"schema_version": 1, "alias": "Heron"}),
         ("POST", f"{base}/participants/{seat}/offer", {"schema_version": 1, "email": "x@example.com"}),
         ("POST", f"{base}/participants/{seat}/confirm", None),
         ("POST", f"{base}/participants/{seat}/remove", {"schema_version": 1, "password": PASSWORD[GM_B]}),
@@ -757,11 +791,11 @@ def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) 
     # 1kg.2.2's ten, bead cfx's conclude and reopen, 1kg.5.2's ten
     # document paths nested under a campaign, 1kg.2.3's two table-session
     # paths (agent-forge-harness-1kg.2.10), whose answers carry no secret either,
-    # 1kg.4.1's three tool-invocation paths nested under a campaign, btb's
+    # the three invocation paths and tool availability nested under a campaign, btb's
     # five group paths (their answers name seats by id, never an account), and
     # q156's three character-sheet link paths (also nested under a campaign), and
     # 1kg.7.2's two reveal paths (a picture, Confirm and Stop carry no field text).
-    assert len(family) == 37
+    assert len(family) == 40
     schemas = document["components"]["schemas"]
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
                 "PlayerSeatPage"}

@@ -940,7 +940,7 @@ def test_the_twin_and_the_postgres_store_offer_the_same_methods():
 
     assert surface(docs.InMemoryDocumentStore) == surface(docs.PostgresDocumentStore)
     assert surface(docs.InMemoryDocumentStore) == [
-        "create", "delete", "get", "history", "hold", "link_character_sheet", "list_documents",
+        "create", "created_by_command", "delete", "get", "history", "hold", "link_character_sheet", "list_documents",
         "restore", "seal", "set_archived", "sheet_for_participant", "snapshot", "stored_bytes",
         "unlink_character_sheet", "write_fields",
     ]

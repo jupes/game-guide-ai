@@ -37,6 +37,7 @@ export interface CustomiseRailDialogProps {
   onSave: (pins: ToolId[]) => void
   /** Cancel, Escape and the scrim all land here; nothing is committed. */
   onCancel: () => void
+  returnFocus?: () => void
 }
 
 const FOCUSABLE = 'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -54,6 +55,7 @@ export function CustomiseRailDialog({
   availability,
   onSave,
   onCancel,
+  returnFocus,
 }: CustomiseRailDialogProps): React.JSX.Element | null {
   const id = React.useId()
   const titleId = `${id}-title`
@@ -79,9 +81,10 @@ export function CustomiseRailDialog({
     dialogRef.current?.focus()
     const opener = openerRef.current
     return () => {
-      opener?.focus()
+      if (returnFocus) returnFocus()
+      else opener?.focus()
     }
-  }, [open])
+  }, [open, returnFocus])
 
   if (!open) return null
 

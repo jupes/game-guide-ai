@@ -44,6 +44,7 @@ from service.app import app, get_auth_store, get_timeline_database, require_sess
 from service.audit_log import AuditEvent, InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
 from service.campaign_store import InMemoryCampaignStore, MissingParent, shared_rows
+from service.conversation_store import InMemoryConversationStore
 from service.db import InMemoryDatabase, InMemoryTransaction
 from service.document_store import (
     SEAL_IDLE_S,
@@ -56,9 +57,11 @@ from service.document_store import (
 )
 from service.document_wire import encode_history_cursor, encode_library_cursor
 from service.hashing import HashingCapacityError, hash_password
+from service.history import InMemoryMessageStore
 from service.ratelimit import RateLimited
 from service.session import SessionData
 from service.table_session_store import InMemoryTableSessionStore, TableSession, no_slots
+from service.timeline_store import InMemoryTimelineStore, new_entry_id
 from service.workbench_api import (
     FORBIDDEN_ORIGIN_DETAIL,
     FORBIDDEN_ROLE_DETAIL,
@@ -1037,11 +1040,70 @@ def test_no_private_text_reaches_a_refusal_or_a_log_line(
 
 
 def test_the_openapi_of_the_document_routes_names_no_owner() -> None:
-    paths = {path: item for path, item in app.openapi()["paths"].items() if "/documents" in path or "/library" in path}
-    # 1kg.5.2's ten, plus q156's three: link, unlink and the read.
-    assert len(paths) == 13
+    paths = {
+        path: item for path, item in app.openapi()["paths"].items()
+        if "/documents" in path or "/library" in path or path.endswith("/promote")
+    }
+    assert len(paths) == 14
     text = json.dumps(paths)
     assert "owner_id" not in text and "password" not in text
+
+
+def test_promoting_reads_the_owned_monster_entry_and_replays_the_same_document(
+    client: TestClient, world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign, foreign = world.campaign(), world.campaign(GM_B)
+    messages = InMemoryMessageStore()
+    conversations = InMemoryConversationStore(world.db)
+    timeline = InMemoryTimelineStore(world.db, messages=messages)
+    monkeypatch.setitem(
+        app.dependency_overrides, documents_api.get_promotion_readers, lambda: (conversations, timeline),
+    )
+    entry_id = new_entry_id()
+    with world.db.transaction() as unit:
+        thread = conversations.create(unit, owner_id=GM_A, campaign_id=campaign, title=None, started_mode="gm").id
+        another = conversations.create(unit, owner_id=GM_A, campaign_id=campaign, title=None, started_mode="gm").id
+        messages.claim_conversation(thread, GM_A)
+        timeline.append(unit, thread, {
+            "schema_version": 1, "entry_kind": "tool", "entry_id": entry_id, "brief": "A creature",
+            "created_at": T0, "invocation": {
+                "schema_version": 1, "invocation_id": "inv_cardapi_000001", "tool_id": "monster",
+                "status": "done", "created_at": T0, "updated_at": T0,
+                "attempt": 1, "cancel_requested": False, "error": None, "result": {
+                    "tool_id": "monster", "result_kind": "card", "prose": "GM-only lane commentary", "suggestions": [],
+                    "card": {"card_kind": "stat_block", "stat_block": {
+                        "name": "Flood sentinel", "ac": 14, "hp": 30, "type": "construct",
+                        "cr": 2, "abilities": {"int": 6},
+                    }},
+                },
+            },
+        }, T0, owner_id=GM_A)
+
+    def url(cid: str, tid: str, eid: str = entry_id) -> str:
+        return f"/campaigns/{cid}/conversations/{tid}/timeline/{eid}/promote"
+
+    _as(GM_B)
+    assert client.post(url(campaign, thread), json={}).json() == NOT_FOUND
+    assert client.post(url(foreign, thread), json={}).json() == NOT_FOUND
+    _as(PLAYER, "player")
+    assert client.post(url(campaign, thread), json={}).status_code == 403
+    _as(GM_A)
+    assert client.post(url(campaign, another), json={}).json() == NOT_FOUND
+    assert client.post(url(campaign, thread, new_entry_id()), json={}).json() == NOT_FOUND
+    created = client.post(url(campaign, thread), json={"data": {"name": "Untrusted override"}})
+    assert created.status_code == 200 and created.headers["cache-control"] == "no-store"
+    answer = created.json()
+    assert answer["type"] == "statblock" and answer["version"]["author"] == "assistant"
+    assert answer["data"] == {
+        "name": "Flood sentinel", "ac": 14, "hp": 30, "creature_type": "construct",
+        "challenge_rating": "2", "abilities": {"int": 6},
+    }
+    assert "GM-only lane commentary" not in created.text
+    assert client.post(url(campaign, thread), json={}).json() == answer
+    assert _titles(_library(client, campaign, "bestiary")) == ["Flood sentinel"]
+    edited = _patch(client, campaign, answer["document_id"], answer["write_revision"], {"hp": 38}, "statblock")
+    assert edited.status_code == 200 and edited.json()["data"]["hp"] == 38
+    assert client.post(url(campaign, thread), json={}).json() == edited.json()
 
 
 # ── A-23 to A-25: no campaign lock; a store's refusal rolls back ─────────────

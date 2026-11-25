@@ -65,6 +65,8 @@ export interface PendingEntry {
   readonly cancelling: boolean
   /** When it was last sent, on the caller's clock. */
   readonly submittedAt: number
+  /** The original position in the thread, kept when the request is retried. */
+  readonly placedAt: number
 }
 
 export interface PendingWork {
@@ -81,6 +83,8 @@ export interface PendingWork {
 export type PendingEvent =
   /** A start was sent: a new run, or a Try again of a held one. */
   | { type: 'submitted'; request: ToolInvocationRequest; at: number }
+  /** A stored run becomes available for checking and cancellation after reload. */
+  | { type: 'adopt'; request: ToolInvocationRequest; invocation: ToolInvocation; at: number }
   /** A start, status or cancel answer, or a GM realtime frame. */
   | { type: 'answered'; invocation: ToolInvocation }
   /** A start refused before any attempt started (an HTTP error, or a request that never left). */
@@ -89,6 +93,9 @@ export type PendingEvent =
   | { type: 'lost'; invocationId: string }
   /** The GM pressed Cancel. */
   | { type: 'cancel-requested'; invocationId: string }
+  /** The cancel endpoint could not confirm the request. */
+  | { type: 'cancel-failed'; invocationId: string }
+  | { type: 'cap-check'; at: number }
 
 export type LaneIntent =
   /** POST the request — for Try again, the held one, byte for byte. */
@@ -169,7 +176,10 @@ function submitted(state: PendingWork, request: ToolInvocationRequest, at: numbe
     return put(state, id, { ...held, submittedAt: at, lost: false, awaiting: true })
   }
   const entries = new Map(state.entries)
-  entries.set(id, { request, invocation: null, refusal: null, awaiting: true, lost: false, cancelling: false, submittedAt: at })
+  entries.set(id, {
+    request, invocation: null, refusal: null, awaiting: true, lost: false, cancelling: false,
+    submittedAt: at, placedAt: at,
+  })
   return withEntries(state, entries, [...state.order, id])
 }
 
@@ -230,11 +240,35 @@ function requestCancel(state: PendingWork, id: string): PendingWork {
   return put(state, id, { ...held, cancelling: true })
 }
 
+function adopt(
+  state: PendingWork,
+  request: ToolInvocationRequest,
+  invocation: ToolInvocation,
+  at: number,
+): PendingWork {
+  const id = invocation.invocation_id
+  if (id !== request.invocation_id || invocation.tool_id !== request.tool_id || state.entries.has(id)) return state
+  const entries = new Map(state.entries)
+  entries.set(id, {
+    request,
+    invocation,
+    refusal: null,
+    awaiting: false,
+    lost: invocation.status === 'working',
+    cancelling: false,
+    submittedAt: at,
+    placedAt: at,
+  })
+  return withEntries(state, entries, [...state.order, id])
+}
+
 /** The one way the model changes. Returns `state` itself when nothing did. */
 export function reducePendingWork(state: PendingWork, event: PendingEvent): PendingWork {
   switch (event.type) {
     case 'submitted':
       return submitted(state, event.request, event.at)
+    case 'adopt':
+      return adopt(state, event.request, event.invocation, event.at)
     case 'answered':
       return answered(state, event.invocation)
     case 'refused':
@@ -243,6 +277,14 @@ export function reducePendingWork(state: PendingWork, event: PendingEvent): Pend
       return markLost(state, event.invocationId)
     case 'cancel-requested':
       return requestCancel(state, event.invocationId)
+    case 'cancel-failed': {
+      const entry = state.entries.get(event.invocationId)
+      return entry?.cancelling ? put(state, event.invocationId, { ...entry, cancelling: false }) : state
+    }
+    case 'cap-check':
+      return state.capBlockedUntil !== null && event.at >= state.capBlockedUntil
+        ? { ...state, ...CAP_CLEAR }
+        : state
   }
 }
 
@@ -399,12 +441,12 @@ export function turnsWithPendingWork(
       turn: {
         kind: 'tool',
         key: `live:${id}`,
-        entryId: null,
+        entryId: entry.invocation?.entry_id ?? null,
         brief: entry.request.brief,
         invocation: drawnInvocation(entry),
         live: { lost: entry.lost },
       },
-      submittedAt: entry.submittedAt,
+      submittedAt: entry.placedAt,
     })
   }
   return { turns, liveTools }

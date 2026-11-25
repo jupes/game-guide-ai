@@ -17,11 +17,20 @@ import { StatBlockCard } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
 import { SuggestionCards } from '../components/SuggestionCards'
 import { Markdown } from '../components/Markdown'
-import { CHAT_TEXT_MAX_CHARS, codePointLength, type DocumentLink } from '../gm/contracts'
+import { CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, codePointLength, type DocumentLink } from '../gm/contracts'
 import { useChat } from '../useChat'
 import { exportChat } from '../exportChat'
 import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
-import { GmThread } from '../gm/GmThread'
+import { GmThread, type GmThreadProps } from '../gm/GmThread'
+import { ToolComposer, type ToolInvocation } from '../gm/ToolComposer'
+import { useConversationDrafts, type DraftStore } from '../gm/drafts'
+import type { ArmedSuggestion, LaneActionId } from '../gm/laneState'
+import { composerGate, requestFromEntry, turnsWithPendingWork } from '../gm/pendingWork'
+import { usePins } from '../gm/pins'
+import { toolAvailability, toolById } from '../gm/registry'
+import { armDraft, parseDraft } from '../gm/slash'
+import { loadToolAvailability } from '../gm/toolInvocationApi'
+import { useToolInvocations, type ToolInvocations } from '../gm/useToolInvocations'
 import {
   collapseSessionSpans,
   exchangesForExport,
@@ -42,6 +51,7 @@ import {
   uploadAttachment as defaultUploadAttachment,
 } from '../api'
 import { useCampaign } from './campaignContext'
+import { CurrentUserContext } from './currentUser'
 import { useCanvasActions } from './canvasContext'
 import { useCampaignThreads } from './campaignThreads'
 import type {
@@ -128,6 +138,7 @@ export interface ChatPaneProps {
   loadTimeline?: LoadTimelinePageFn
   uploadAttachment?: UploadAttachmentFn
   getAttachments?: GetAttachmentsFn
+  onCustomiseRailOpenChange?: (open: boolean) => void
 }
 
 /** Which side of the GM boundary a pane is on: the GM channel reads the typed
@@ -135,6 +146,11 @@ export interface ChatPaneProps {
 type Side = 'gm' | 'chat'
 
 export function ChatPane(props: ChatPaneProps): React.JSX.Element {
+  const account = React.useContext(CurrentUserContext)?.user.id
+  return <ChatPaneScoped key={account ?? 'guest'} {...props} account={account} />
+}
+
+function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string | undefined }): React.JSX.Element {
   // 1kg.3.4: the GM channel and the others read history from different
   // sources, so crossing between them remounts the pane. Turns one source
   // already holds are then never drawn again beside the other's copy of them,
@@ -145,7 +161,11 @@ export function ChatPane(props: ChatPaneProps): React.JSX.Element {
   // the side the turn was sent from until it settles, so the answer lands
   // there and is never drawn in the other side's lanes; then it crosses, and
   // the new side reads a history that now holds the turn.
-  const { mode } = useAppNav()
+  const { mode, conversationId } = useAppNav()
+  const activeConversation = React.useRef({ mode, conversationId })
+  React.useLayoutEffect(() => {
+    activeConversation.current = { mode, conversationId }
+  }, [mode, conversationId])
   const [held, setHeld] = React.useState<Side | null>(null)
   const side: Side = held ?? (mode === 'gm' ? 'gm' : 'chat')
   const holdWhilePending = React.useCallback((pending: boolean) => setHeld(pending ? side : null), [side])
@@ -159,6 +179,9 @@ export function ChatPane(props: ChatPaneProps): React.JSX.Element {
   // the pane stays the one it was drawn over: a refused turn keeps its prompt
   // and its announced failure until the next pick or a clear.
   const { selection, scope } = useCampaign()
+  const drafts = useConversationDrafts(conversationId ?? (scope === null ? null : `new:${scope.key}`))
+  const tools = useToolInvocations(selection.kind === 'selected' ? selection.campaign.campaign_id : null)
+  const pins = usePins(account)
   const owner = selection.kind === 'none' || selection.kind === 'unavailable'
     ? null
     : scope?.key ?? ('campaignId' in selection ? selection.campaignId : selection.kind)
@@ -171,6 +194,10 @@ export function ChatPane(props: ChatPaneProps): React.JSX.Element {
       {...props}
       side={side}
       onPendingChange={holdWhilePending}
+      drafts={drafts}
+      tools={tools}
+      pins={pins}
+      activeConversation={activeConversation}
     />
   )
 }
@@ -179,6 +206,10 @@ interface ChatPaneBodyProps extends ChatPaneProps {
   /** The mode's side of the GM boundary, or the side a turn in flight was sent from. */
   side: Side
   onPendingChange: (pending: boolean) => void
+  drafts: DraftStore
+  tools: ToolInvocations
+  pins: ReturnType<typeof usePins>
+  activeConversation: React.RefObject<{ mode: string; conversationId: string | null }>
 }
 
 function ChatPaneBody({
@@ -187,10 +218,15 @@ function ChatPaneBody({
   post,
   loadHistory,
   loadTimeline,
+  drafts,
+  tools,
+  pins,
+  activeConversation,
+  onCustomiseRailOpenChange,
   uploadAttachment = defaultUploadAttachment,
   getAttachments = defaultGetAttachments,
 }: ChatPaneBodyProps): React.JSX.Element {
-  const { mode, conversationId, setConversationId } = useAppNav()
+  const { mode, conversationId, setConversationId, openTavern } = useAppNav()
   const gm = side === 'gm'
   const conversationStore = useConversationStore()
   // agent-forge-harness-bta: the preference this conversation's next turn
@@ -211,6 +247,9 @@ function ChatPaneBody({
   // useChat's onTurnSettled seam — never from a recall, a conversation
   // switch or a re-render.
   const [arrival, setArrival] = React.useState('')
+  const announceSlash = React.useCallback((next: string, previous: string) => {
+    setArrival((spoken) => next !== '' || spoken === previous ? next : spoken)
+  }, [])
   const handleTurnSettled = React.useCallback(
     (outcome: 'done' | 'error', _sentFor: string | null, shown: boolean) => {
       // agent-forge-harness-swg (pr114 M-1, pr129 M-1): this component is
@@ -237,7 +276,7 @@ function ChatPaneBody({
   // by the next send until a turn in it is opened (I-12); the id the turn went
   // to is the one useChat adopts. A campaign thread's prompt never reaches the
   // local store (RAIL-26: `handleSend` below).
-  const { selection, scope, isCurrentScope } = useCampaign()
+  const { selection, scope, isCurrentScope, enabled } = useCampaign()
   const { ensureThread } = useCampaignThreads()
   const campaignPost = React.useMemo<PostFn | undefined>(() => {
     if (mode !== 'gm' || selection.kind === 'none') return undefined
@@ -286,10 +325,18 @@ function ChatPaneBody({
   // drawn list, so the pair still collapses once Load earlier prepends one
   // half above the other.
   const timeline = useGmTimeline(conversationId, gm, loadTimeline)
-  const gmTurns = React.useMemo(
-    () => (gm ? collapseSessionSpans([...turnsFromTimeline(timeline.items), ...exchanges.map(turnFromExchange)]) : []),
-    [gm, timeline.items, exchanges],
-  )
+  const gmTurns = React.useMemo(() => {
+    if (!gm) return []
+    const stored = turnsFromTimeline(timeline.items)
+    const { turns, liveTools } = conversationId === null
+      ? { turns: stored, liveTools: [] }
+      : turnsWithPendingWork(stored, tools.work, conversationId)
+    const live = [
+      ...exchanges.map((exchange) => ({ turn: turnFromExchange(exchange), submittedAt: exchange.submittedAt ?? 0 })),
+      ...liveTools,
+    ].sort((a, b) => a.submittedAt - b.submittedAt)
+    return collapseSessionSpans([...turns, ...live.map(({ turn }) => turn)])
+  }, [gm, timeline.items, exchanges, conversationId, tools.work])
   const threadError = gm ? timeline.error : historyError
   const threadLoading = gm ? timeline.loading : loadingHistory
   const threadLength = gm ? gmTurns.length : exchanges.length
@@ -312,6 +359,11 @@ function ChatPaneBody({
   // it silently refuses would clear the GM's text. `|| pending` keeps it never
   // looser than today. Sage, Spell and Rules keep today's lock (X-9).
   const gmLive = gm && mode === 'gm'
+  const showTools = gmLive && enabled
+  const inputDraft = showTools ? drafts.draft : draft
+  const parsedDraft = showTools ? parseDraft(inputDraft) : null
+  const overPlainLength = (parsedDraft === null || parsedDraft.kind === 'plain' || parsedDraft.kind === 'escaped')
+    && codePointLength(inputDraft) > CHAT_TEXT_MAX_CHARS
   const sendBlocked = gmLive ? inFlight || pending : pending
   // agent-forge-harness-8tt: announce the crossing itself — once when the
   // draft first goes over CHAT_TEXT_MAX_CHARS and once when it comes back
@@ -328,13 +380,13 @@ function ChatPaneBody({
   // updates every keystroke; the live region does not need to). No effect on
   // conversation switches or a `side` remount: `draft` resets to '' there, so
   // overLength starts false and matches this ref's own initial value.
-  const wasOverLengthRef = React.useRef(overLength)
+  const wasOverLengthRef = React.useRef(overPlainLength)
   React.useEffect(() => {
-    if (overLength !== wasOverLengthRef.current) {
-      setArrival(overLength ? OVER_LIMIT_ANNOUNCEMENT : UNDER_LIMIT_ANNOUNCEMENT)
-      wasOverLengthRef.current = overLength
+    if (overPlainLength !== wasOverLengthRef.current) {
+      setArrival(overPlainLength ? OVER_LIMIT_ANNOUNCEMENT : UNDER_LIMIT_ANNOUNCEMENT)
+      wasOverLengthRef.current = overPlainLength
     }
-  }, [overLength])
+  }, [overPlainLength])
   // Scoped like useChat's history state: derive "this scope's attachments" from
   // scopeId===conversationId rather than resetting via setState-in-effect (a
   // synchronous setState in an effect body triggers cascading renders).
@@ -345,6 +397,101 @@ function ChatPaneBody({
   const attachments = attachmentState.scopeId === conversationId ? attachmentState.attachments : []
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
+  const campaignId = selection.kind === 'selected' ? selection.campaign.campaign_id : null
+  const [availabilityAttempt, setAvailabilityAttempt] = React.useState(0)
+  const [capabilities, setCapabilities] = React.useState<{
+    key: string
+    tools: Awaited<ReturnType<typeof loadToolAvailability>>
+  } | null>(null)
+  const availabilityKey = gmLive && campaignId !== null ? `${campaignId}:${availabilityAttempt}` : null
+  const checked = capabilities !== null && capabilities.key === availabilityKey
+  const availability = checked ? capabilities.tools ?? toolAvailability(null) : toolAvailability(null)
+  React.useEffect(() => {
+    if (availabilityKey === null || campaignId === null) return
+    let left = false
+    void loadToolAvailability(campaignId).then((available) => {
+      if (!left) setCapabilities({ key: availabilityKey, tools: available })
+    })
+    return () => { left = true }
+  }, [availabilityKey, campaignId])
+
+  const [focusRequest, bumpFocusRequest] = React.useReducer((count: number) => count + 1, 0)
+  const { submit: submitTool, adopt: adoptTool, action: handleToolAction } = tools
+  const storedTools = React.useMemo(() => {
+    const entries = timeline.items.flatMap((item) =>
+      item.kind === 'ok' && item.value.entry_kind === 'tool'
+        ? [[item.value.invocation.invocation_id, item.value] as const]
+        : [])
+    return new Map(entries)
+  }, [timeline.items])
+  React.useEffect(() => {
+    if (!gmLive || campaignId === null || conversationId === null) return
+    for (const entry of storedTools.values()) {
+      if (entry.invocation.status !== 'working') continue
+      adoptTool(requestFromEntry(entry, { conversationCampaignId: campaignId, conversationId }), entry.invocation)
+    }
+  }, [adoptTool, campaignId, conversationId, gmLive, storedTools])
+
+  const armSuggestion = ({ toolId, brief, sourceEntryId }: ArmedSuggestion) => {
+    const tool = toolById(toolId)
+    if (!gmLive || !tool || !availability[toolId]?.enabled) return
+    drafts.setDraft(
+      brief === null ? armDraft(drafts.draft, tool) : `${tool.command} ${brief}`,
+      sourceEntryId === null ? null : { toolId, entryId: sourceEntryId },
+    )
+    bumpFocusRequest()
+  }
+  const toolLaneProps: GmThreadProps['toolLaneProps'] = (turn) => {
+    if (!gmLive || campaignId === null || conversationId === null) return {}
+    const id = turn.invocation.invocation_id
+    const entry = storedTools.get(id)
+    const request = tools.work.entries.get(id)?.request
+      ?? (entry ? requestFromEntry(entry, { conversationCampaignId: campaignId, conversationId }) : null)
+    if (!request || request.campaign_id !== campaignId) return {}
+    const act = (laneAction: LaneActionId) => {
+      const result = handleToolAction(request, entry?.invocation ?? turn.invocation, laneAction)
+      if (result?.type !== 'arm') return
+      const tool = toolById(result.toolId)
+      if (!tool) return
+      drafts.setDraft(`${tool.command} ${result.brief}`, null)
+      bumpFocusRequest()
+    }
+    return {
+      availability,
+      campaignId,
+      bestiary: { conversationId, onSaved: bumpDocumentsVersion },
+      onArmSuggestion: armSuggestion,
+      onRetry: () => act('try-again'),
+      onCancel: () => act('cancel'),
+      onCheckAgain: () => act('check-again'),
+      onEditBrief: () => act('edit-brief'),
+      onRunAgain: () => act('run-again'),
+    }
+  }
+  const handleToolSubmit = async ({ tool, brief }: ToolInvocation) => {
+    if (!gmLive || campaignId === null || scope === null) return
+    const thread = conversationId ?? await ensureThread()
+    if (!isCurrentScope(scope.key)) return
+    if (thread === null) {
+      drafts.restoreDraft(drafts.draft)
+      setArrival(THREAD_NOT_STARTED)
+      return
+    }
+    const current = activeConversation.current
+    if (conversationId === null && current.mode === 'gm' && current.conversationId === null) setConversationId(thread)
+    const sourceId = drafts.source?.toolId === tool.id ? drafts.source.entryId : null
+    const result = await submitTool({
+      schema_version: CONTRACT_VERSION,
+      invocation_id: crypto.randomUUID(),
+      tool_id: tool.id,
+      campaign_id: campaignId,
+      conversation_id: thread,
+      brief,
+      ...(sourceId === null ? {} : { source_entry_id: sourceId }),
+    })
+    if (result?.kind === 'refused' && result.error.code === 'cap_reached') drafts.restoreDraft(drafts.draft, thread)
+  }
+  const gate = composerGate(tools.work, { chatInFlight: sendBlocked, now: tools.now })
 
   // Autoscroll (pp6q.1.3). A fresh thread starts at the bottom by definition.
   const feedRef = React.useRef<HTMLDivElement>(null)
@@ -354,7 +501,7 @@ function ChatPaneBody({
   // so the canvas can return focus to the composer and the shell can skip to the
   // conversation without querying the DOM. These are the stable canvas ACTIONS, so a
   // document loading, opening or closing never re-renders this pane (C-13).
-  const { openDocument, composerRef, setChatRegion } = useCanvasActions()
+  const { openDocument, composerRef, setChatRegion, bumpDocumentsVersion } = useCanvasActions()
   const openFromLink = React.useCallback(
     (link: DocumentLink): void => {
       void openDocument({ documentId: link.document_id, title: link.title }, { gesture: true })
@@ -457,13 +604,12 @@ function ChatPaneBody({
     // content changes, not when the flag flips. Including it would re-scroll
     // the instant a reader scrolled back down, before new content arrived.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exchanges, conversationId, timeline.items])
+  }, [exchanges, conversationId, timeline.items, tools.work])
 
-  const handleSend = React.useCallback(() => {
-    const trimmed = draft.trim()
+  const sendText = React.useCallback((trimmed: string) => {
     // The same gate as Send's `disabled`, so Enter never clears a draft that
     // `send` would refuse (1kg.3.5, I-14).
-    if (!trimmed || sendBlocked || overLength) return
+    if (!trimmed || sendBlocked || codePointLength(trimmed) > CHAT_TEXT_MAX_CHARS) return
     if (conversationId !== null && campaignPost === undefined) {
       // bta: record what this first turn binds the conversation to — the same
       // value `send` posts below, both read from this render. Never for a
@@ -477,8 +623,12 @@ function ChatPaneBody({
     // already inside it — that shape is the defect 4oz fixed).
     setArrival(PENDING_ANNOUNCEMENT)
     send(trimmed)
+  }, [campaignPost, conversationId, conversationStore, modelPreference, sendBlocked, send])
+  const handleSend = React.useCallback(() => {
+    if (sendBlocked || overLength || draft.trim() === '') return
+    sendText(draft.trim())
     setDraft('')
-  }, [campaignPost, conversationId, conversationStore, draft, modelPreference, overLength, sendBlocked, send])
+  }, [draft, overLength, sendBlocked, sendText])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -538,6 +688,27 @@ function ChatPaneBody({
       )
     },
     [conversationId, uploadAttachment],
+  )
+
+  const attachmentControl = (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".txt,.md,.pdf"
+        aria-label="Attach file"
+        aria-hidden="true"
+        tabIndex={-1}
+        className="chat-pane__file-input"
+        onChange={handleFileSelected}
+      />
+      <IconButton
+        icon="attach_file"
+        ariaLabel="Attach file"
+        onClick={() => fileInputRef.current?.click()}
+        disabled={conversationId === null}
+      />
+    </>
   )
 
   return (
@@ -610,6 +781,7 @@ function ChatPaneBody({
             earlierError={timeline.earlierError}
             onLoadEarlier={handleLoadEarlier}
             onOpenDocument={openFromLink}
+            toolLaneProps={toolLaneProps}
           />
         ) : (
           exchanges.map((exchange) => (
@@ -788,39 +960,35 @@ function ChatPaneBody({
           that same node (see the `wasOverLengthRef` effect above), never
           through this counter — this paragraph stays conditionally rendered,
           exactly as before, and is never itself a live region. */}
-      {overLength && (
+      {!showTools && overLength && (
         <p id={counterId} className="chat-pane__composer-message">
           {chatPromptCounterMessage(draftLength)}
         </p>
       )}
+      {showTools ? (
+        <ToolComposer
+          key={conversationId ?? scope?.key ?? 'new'}
+          pins={pins.pins}
+          onPinsChange={pins.savePins}
+          availability={availability}
+          capabilitiesFailed={checked && capabilities.tools === null}
+          onRetryCapabilities={() => setAvailabilityAttempt((attempt) => attempt + 1)}
+          campaignSelected={campaignId !== null}
+          onChooseCampaign={openTavern}
+          draft={drafts.draft}
+          onDraftChange={drafts.setDraft}
+          onChat={sendText}
+          onInvoke={(command) => void handleToolSubmit(command)}
+          composerRef={composerRef}
+          focusRequest={focusRequest}
+          attachmentControl={attachmentControl}
+          onCustomiseOpenChange={onCustomiseRailOpenChange}
+          onSlashAnnouncement={announceSlash}
+          {...gate}
+        />
+      ) : (
       <div className="chat-pane__composer">
-        <input
-          ref={fileInputRef}
-          type="file"
-          // Mirrors the service's ATTACHMENT_TYPES allowlist (server-side check
-          // remains the source of truth; this only pre-filters the picker).
-          accept=".txt,.md,.pdf"
-          aria-label="Attach file"
-          // agent-forge-harness-vnx: this input and the visible IconButton
-          // below it used to share the accessible name "Attach file" — a
-          // screen-reader user tabbing the composer met two named controls,
-          // one of which does nothing on its own. `aria-hidden` takes it out
-          // of the accessibility tree and `tabIndex={-1}` takes it out of the
-          // tab order; the IconButton stays the only affordance. The label is
-          // kept (harmlessly unreachable) so existing `getByLabelText`
-          // queries keep working — Testing Library's `getByLabelText` does
-          // not consult the accessibility tree.
-          aria-hidden="true"
-          tabIndex={-1}
-          className="chat-pane__file-input"
-          onChange={handleFileSelected}
-        />
-        <IconButton
-          icon="attach_file"
-          ariaLabel="Attach file"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={conversationId === null}
-        />
+        {attachmentControl}
         <TextField
           ref={composerRef}
           multiline
@@ -842,6 +1010,7 @@ function ChatPaneBody({
           disabled={sendBlocked || draft.trim() === '' || overLength}
         />
       </div>
+      )}
     </div>
   )
 }

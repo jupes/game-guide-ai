@@ -15,6 +15,7 @@ Remove needs, and the job queue and driver its reconciliation needs.
 | `POST /campaigns/{campaign_id}/reopen` | the campaign, no longer concluded |
 | `GET /campaigns/{campaign_id}/participants` | the seats, oldest first |
 | `POST /campaigns/{campaign_id}/participants` | `201`, an open seat |
+| `PATCH …/participants/{participant_id}` | the seat with its updated display name |
 | `POST …/participants/{participant_id}/offer` | `204`, whatever the address holds |
 | `POST …/participants/{participant_id}/confirm` | the confirmed seat |
 | `POST …/participants/{participant_id}/remove` | `204`, behind the password |
@@ -721,6 +722,50 @@ def offer_seat(
         return True
 
 
+def rename_seat(
+    db: TransactionalDatabase, stores: CampaignStores, *,
+    campaign_id: str, participant_id: str, owner_id: int, alias: str, now: datetime,
+) -> tuple[Participant, SeatOffer | None]:
+    """Change the display name on the same seat, with its offer and access intact."""
+    with db.transaction() as unit:
+        if stores.campaigns.get(unit, campaign_id, owner_id=owner_id) is None:
+            not_found()
+        unit.lock_campaign(campaign_id, shared=False)
+        campaign = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
+        if campaign is None:
+            not_found()
+        if campaign.is_archived:
+            raise conflict(ErrorCode.CAMPAIGN_ARCHIVED, ARCHIVED_MESSAGE)
+        duplicate = False
+        outcome = None
+        try:
+            outcome = stores.participants.rename(unit, campaign_id, participant_id, alias=alias)
+        except AliasTaken:
+            duplicate = True
+        if duplicate:
+            raise conflict(ErrorCode.ALIAS_TAKEN, ALIAS_TAKEN_MESSAGE)
+        if outcome is None:
+            not_found()
+        seat, changed = outcome
+        if changed:
+            _audit(
+                stores, unit, campaign_id=campaign_id, owner_id=owner_id, action=AuditAction.PARTICIPANT_RENAMED,
+                object_kind=ObjectKind.PARTICIPANT, object_ref=participant_id,
+                detail={"participant_id": participant_id}, revision=None, now=now,
+            )
+        latest = stores.offers.latest_for_seats(unit, campaign_id, [participant_id]).get(participant_id)
+        return seat, latest
+
+
+def _seat_alias_request(raw: bytes) -> str:
+    request = parse_body(SeatCreateRequest, raw)
+    try:
+        return check_alias(request.alias)
+    except ValueError:
+        pass
+    raise invalid("alias")
+
+
 def confirm_seat(
     db: TransactionalDatabase,
     stores: CampaignStores,
@@ -1061,13 +1106,7 @@ def build_router(
         now: datetime = Depends(get_clock),
     ) -> Seat:
         """An open seat. A retried add of the same alias is `409 alias_taken`."""
-        request = parse_body(SeatCreateRequest, raw)
-        try:
-            alias = check_alias(request.alias)
-        except ValueError:
-            alias = ""
-        if not alias:
-            raise invalid("alias")
+        alias = _seat_alias_request(raw)
         live_db = _database(db)
         if not readable(ident.CAMPAIGN, campaign_id):
             not_found()
@@ -1075,6 +1114,26 @@ def build_router(
             lambda: add_seat(live_db, stores, campaign_id=campaign_id, owner_id=user.user_id, alias=alias, now=now)
         )
         return seat_to_wire(seat, None, now)
+
+    @router.patch("/campaigns/{campaign_id}/participants/{participant_id}", response_model=Seat)
+    def patch_participant(
+        campaign_id: str,
+        participant_id: str,
+        user: SessionData = Depends(gm),
+        raw: bytes = Depends(read_body),
+        stores: CampaignStores = Depends(get_campaign_stores),
+        db: TransactionalDatabase | None = Depends(database),
+        now: datetime = Depends(get_clock),
+    ) -> Seat:
+        alias = _seat_alias_request(raw)
+        live_db = _database(db)
+        if not (readable(ident.CAMPAIGN, campaign_id) and readable(ident.PARTICIPANT, participant_id)):
+            not_found()
+        seat, latest = guarded(lambda: rename_seat(
+            live_db, stores, campaign_id=campaign_id, participant_id=participant_id,
+            owner_id=user.user_id, alias=alias, now=now,
+        ))
+        return seat_to_wire(seat, latest, now)
 
     @router.post("/campaigns/{campaign_id}/participants/{participant_id}/offer", status_code=204)
     def offer(

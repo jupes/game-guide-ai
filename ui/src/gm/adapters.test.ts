@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { suggestionFor, toLaneStatus, toLaneSuggestions, toStatBlockCardProps } from './adapters'
+import { suggestionFor, toHooksCardProps, toLaneStatus, toLaneSuggestions, toLootCardProps, toNamesCardProps,
+  toRulesCardProps, toStatBlockCardProps } from './adapters'
 import { INVOCATION_STATUSES, ToolResultSchema } from './contracts'
 import type { ToolSuggestion } from './contracts'
-import { cardResult } from './laneFixtures'
+import { cardResult, TOOL_CARD_FIXTURES } from './laneFixtures'
 
 const SUGGESTIONS: ToolSuggestion[] = [
   { tool_id: 'npc', label: 'Write her up', icon: 'person_add', brief: 'the hooded stranger' },
@@ -44,6 +45,37 @@ describe('suggestionFor', () => {
 
   it('is undefined for an id this list never issued', () => {
     for (const id of ['3', '-1', 'npc', '', '1.5']) expect(suggestionFor(SUGGESTIONS, { id })).toBeUndefined()
+  })
+})
+
+describe('Workbench card adapters', () => {
+  it('preserves optional loot and name content and normalizes wire nulls', () => {
+    const loot = TOOL_CARD_FIXTURES.loot.loot
+    const item = { name: 'Bottle', quantity: null, value: null, note: null }
+    expect(toLootCardProps({ ...loot, items: [loot.items[0], item] })).toEqual({
+      title: loot.title,
+      items: [loot.items[0], { name: 'Bottle', quantity: undefined, value: undefined, note: undefined }],
+    })
+    const names = TOOL_CARD_FIXTURES.names.names
+    expect(toNamesCardProps({ ...names, entries: [names.entries[0], { name: 'Meren', note: null }] })).toEqual({
+      title: names.title,
+      entries: [names.entries[0], { name: 'Meren', note: undefined }],
+    })
+  })
+
+  it('maps hook titles and keeps authoritative rule source numbers aligned', () => {
+    const hooks = TOOL_CARD_FIXTURES.hooks.hooks
+    expect(toHooksCardProps(hooks)).toEqual({
+      title: hooks.title,
+      entries: [{ name: hooks.entries[0].title, text: hooks.entries[0].text }],
+    })
+    const rules = TOOL_CARD_FIXTURES.rules.rules
+    expect(toRulesCardProps(rules)).toEqual({
+      title: rules.title,
+      answer: rules.answer,
+      numbers: [2, 4],
+      sources: rules.citations.map((citation) => citation.source),
+    })
   })
 })
 

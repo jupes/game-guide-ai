@@ -90,6 +90,9 @@ PROTECTED_ROUTES: list[Route] = [
     ("GET", "/campaigns/{campaign_id}/participants", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants", None),
     ("POST", "/campaigns/{campaign_id}/participants", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants",
      {"schema_version": 1, "alias": "Rook"}),
+    ("PATCH", "/campaigns/{campaign_id}/participants/{participant_id}",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants/prt_aaaaaaaaaaaaaaaaaaaaaa",
+     {"schema_version": 1, "alias": "Heron"}),
     ("POST", "/campaigns/{campaign_id}/participants/{participant_id}/offer",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/participants/prt_aaaaaaaaaaaaaaaaaaaaaa/offer",
      {"schema_version": 1, "email": "wren@example.com"}),
@@ -109,6 +112,9 @@ PROTECTED_ROUTES: list[Route] = [
     ("POST", "/campaigns/{campaign_id}/documents", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents",
      {"schema_version": 1, "command_id": "cmd-guard-000000001", "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa",
       "type": "npc", "type_version": 1, "data": {"name": "Mira"}}),
+    ("POST", "/campaigns/{campaign_id}/conversations/{conversation_id}/timeline/{entry_id}/promote",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/conversations/cnv_aaaaaaaaaaaaaaaaaaaaaa"
+     "/timeline/ent_aaaaaaaaaaaaaaaaaaaaaa/promote", {}),
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/documents/doc_aaaaaaaaaaaaaaaaaaaaaa", None),
     ("PATCH", "/campaigns/{campaign_id}/documents/{document_id}",
@@ -172,6 +178,8 @@ PROTECTED_ROUTES: list[Route] = [
     # the table principal too, so it is listed for the same reason.
     ("GET", "/table/snapshot", "/table/snapshot?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
     # 1kg.4.1 slice B: the GM's tool invocations.
+    ("GET", "/campaigns/{campaign_id}/tool-availability",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-availability", None),
     ("POST", "/campaigns/{campaign_id}/tool-invocations", "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-invocations",
      {"schema_version": 1, "invocation_id": "inv_guard_0000000001", "tool_id": "npc", "brief": "a smith",
       "campaign_id": "cmp_aaaaaaaaaaaaaaaaaaaaaa", "conversation_id": "cnv_aaaaaaaaaaaaaaaaaaaaaa"}),

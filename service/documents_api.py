@@ -65,9 +65,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -77,7 +78,9 @@ from pydantic import BaseModel, ValidationError
 import config
 
 from . import campaign_identity as ident
+from .asset_store import AssetRecord, read_campaign_asset
 from .campaign_store import CampaignStore, MissingParent, PostgresCampaignStore
+from .conversation_store import ConversationStore, PostgresConversationStore
 from .conversations_api import read_body
 from .db import AdvisoryLock, TransactionalDatabase, UnitOfWork
 from .document_store import (
@@ -105,23 +108,33 @@ from .document_wire import (
     writable,
 )
 from .session import SessionData
+from .timeline_store import PostgresTimelineStore, TimelineStore, entry_id_check_regex
 from .workbench_api import SessionDependency, not_found, reads_by_post, workbench_router
 from .workbench_contracts import (
+    DOC_TYPE_VERSION,
     HISTORY_PAGE_MAX_ITEMS,
     VERSION_NUMBER_MAX,
+    AssetKind,
+    AssetState,
     Author,
+    CardResult,
     ConflictInfo,
     Document,
     DocumentCreateRequest,
     DocumentHistoryPage,
+    DocumentTypeId,
     DocumentVersionSnapshot,
     ErrorBody,
     ErrorCode,
     ErrorInfo,
     FieldPatchRequest,
+    InvocationStatus,
     LibraryPage,
     LibraryQuery,
     RestoreRequest,
+    StatBlockCard,
+    ToolEntry,
+    entry_or_opaque,
 )
 
 log = logging.getLogger(__name__)
@@ -159,11 +172,16 @@ class DocumentStores:
 
     campaigns: CampaignStore
     documents: DocumentStore
+    read_asset: Callable[[UnitOfWork, str, str, int], AssetRecord | None] = read_campaign_asset
 
 
 def get_document_stores() -> DocumentStores:
     """The stores every route uses. Tests override this dependency."""
     return DocumentStores(PostgresCampaignStore(), PostgresDocumentStore())
+
+
+def get_promotion_readers() -> tuple[ConversationStore, TimelineStore]:
+    return PostgresConversationStore(), PostgresTimelineStore()
 
 
 def get_clock() -> datetime:
@@ -315,6 +333,22 @@ def _owned(stores: DocumentStores, unit: UnitOfWork, campaign_id: str, owner_id:
         not_found()
 
 
+def _check_portrait(
+    stores: DocumentStores,
+    unit: UnitOfWork,
+    campaign_id: str,
+    owner_id: int,
+    fields: Mapping[str, Any],
+) -> None:
+    portrait = fields.get("portrait")
+    if portrait is None:
+        return
+    asset_id = portrait.get("asset_id") if isinstance(portrait, Mapping) else None
+    asset = stores.read_asset(unit, campaign_id, asset_id, owner_id) if isinstance(asset_id, str) else None
+    if asset is None or asset.kind is not AssetKind.IMAGE or asset.state is not AssetState.READY:
+        raise _invalid("portrait")
+
+
 # ── The compositions: one transaction each ──────────────────────────────────
 
 
@@ -371,6 +405,11 @@ def create_document(
         with db.transaction() as unit:
             _owned(stores, unit, campaign_id, owner_id)
             unit.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
+            if data.get("portrait") is not None:
+                existing = stores.documents.created_by_command(unit, campaign_id, request.command_id)
+                if existing is not None:
+                    return to_document(existing)
+                _check_portrait(stores, unit, campaign_id, owner_id, data)
             made = stores.documents.create(
                 unit, campaign_id, doc_type=request.type, type_version=request.type_version, data=data,
                 author=Author.GM, command_id=request.command_id, now=now,
@@ -379,6 +418,55 @@ def create_document(
             return to_document(made)
 
     return _guarded(work)
+
+
+def promote_stat_block(
+    db: TransactionalDatabase,
+    stores: DocumentStores,
+    readers: tuple[ConversationStore, TimelineStore],
+    *,
+    campaign_id: str,
+    conversation_id: str,
+    entry_id: str,
+    owner_id: int,
+    now: datetime,
+) -> Document:
+    """Save the completed, durable monster card once using its timeline id."""
+    conversations, timeline = readers
+
+    def work() -> Document:
+        with db.transaction() as unit:
+            _owned(stores, unit, campaign_id, owner_id)
+            conversation = conversations.get_for_owner(unit, conversation_id, owner_id=owner_id)
+            if conversation is None or conversation.campaign_id != campaign_id or conversation.archived_at is not None:
+                not_found()
+            row = timeline.get_entry(unit, conversation_id, entry_id)
+            if row is None:
+                not_found()
+            entry = entry_or_opaque(row.payload, entry_id=entry_id, created_at=row.created_at)
+            if not isinstance(entry, ToolEntry) or entry.invocation.status is not InvocationStatus.DONE:
+                not_found()
+            result = entry.invocation.result
+            if not isinstance(result, CardResult) or not isinstance(result.card, StatBlockCard):
+                not_found()
+            fields: dict[str, Any] = result.card.stat_block.model_dump(mode="json", by_alias=True, exclude_none=True)
+            if "type" in fields:
+                fields["creature_type"] = fields.pop("type")
+            if "cr" in fields:
+                fields["challenge_rating"] = str(fields.pop("cr"))
+
+            unit.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
+            doc_type = DocumentTypeId.STATBLOCK
+            promoted = stores.documents.create(
+                unit, campaign_id, doc_type=doc_type, type_version=DOC_TYPE_VERSION[doc_type], data=fields,
+                author=Author.ASSISTANT, now=now,
+                # The public create contract cannot send a colon in its command id.
+                command_id=f"promote:{entry_id}",
+                quota=ByteQuota(owner_id, config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX),
+            )
+            return to_document(promoted)
+
+    return _guarded(work, invalid_content_is_unsupported=True)
 
 
 def read_document(
@@ -436,6 +524,7 @@ def patch_document(
             changes = effective_fields(writable(record), request.fields)
             if not changes:
                 return to_document(record)
+            _check_portrait(stores, unit, campaign_id, owner_id, changes)
             written = stores.documents.write_fields(
                 unit, campaign_id, document_id, fields=changes, author=Author.GM,
                 base_write_revision=request.base_write_revision, now=now,
@@ -520,6 +609,8 @@ def restore_document(
                 unit, campaign_id, document_id, version_number=version_number, now=now,
                 quota=ByteQuota(owner_id, config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX),
             )
+            if restored.data.get("portrait") != record.data.get("portrait"):
+                _check_portrait(stores, unit, campaign_id, owner_id, restored.data)
             return to_document(restored)
 
     return _guarded(work, missing="version_number", invalid_content_is_unsupported=True)
@@ -548,7 +639,7 @@ def seal_document(
 
 
 def build_router(gm: SessionDependency, database: Callable[[], TransactionalDatabase | None]) -> APIRouter:
-    """The eight routes on a `workbench_router`, given the app's GM gate and
+    """The document routes on a `workbench_router`, given the app's GM gate and
     its database getter."""
     router = workbench_router(gm)
 
@@ -608,6 +699,30 @@ def build_router(gm: SessionDependency, database: Callable[[], TransactionalData
             raise _invalid("campaign_id")
         return create_document(live_db, stores, campaign_id=campaign_id, owner_id=user.user_id, request=request,
                                now=now)
+
+    @router.post(
+        "/campaigns/{campaign_id}/conversations/{conversation_id}/timeline/{entry_id}/promote",
+        response_model=Document,
+    )
+    def promote(
+        campaign_id: str,
+        conversation_id: str,
+        entry_id: str,
+        user: SessionData = Depends(gm),
+        stores: DocumentStores = Depends(get_document_stores),
+        readers: tuple[ConversationStore, TimelineStore] = Depends(get_promotion_readers),
+        db: TransactionalDatabase | None = Depends(database),
+        now: datetime = Depends(get_clock),
+    ) -> Document:
+        _shaped(campaign_id)
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", conversation_id) is None:
+            not_found()
+        if re.fullmatch(entry_id_check_regex(), entry_id) is None:
+            not_found()
+        return promote_stat_block(
+            _database(db), stores, readers, campaign_id=campaign_id, conversation_id=conversation_id,
+            entry_id=entry_id, owner_id=user.user_id, now=now,
+        )
 
     @router.get("/campaigns/{campaign_id}/documents/{document_id}", response_model=Document)
     def read(

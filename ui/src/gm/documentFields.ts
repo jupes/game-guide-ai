@@ -43,8 +43,11 @@ export interface FieldStatus {
   state: FieldState
   /** `error` only (CANVAS-14): what the server said, attached to this field. */
   message?: string
+  retryable?: boolean
   /** `conflict` only (CANVAS-20): the value that is now on the server. */
   latest?: FieldValue
+  /** The pending value when the owner of the save queue has it. */
+  mine?: FieldValue
 }
 
 /** One field of a document, as the shell renders it. */

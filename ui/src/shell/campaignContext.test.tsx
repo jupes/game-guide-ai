@@ -493,15 +493,15 @@ describe('restore', () => {
     expect(server.calls).toHaveLength(0)
   })
 
-  it('a campaign thread id never renders outside its GM channel, and leaving GM clears it (critic 7, I-13)', async () => {
+  it('keeps the campaign thread out of Sage and restores it when GM returns (RAIL-25)', async () => {
     await mount({ hash: '#campaign=cmp_A&conversation=cnv_1', restore: { campaignId: 'cmp_A', conversationId: 'cnv_1' } })
     await waitFor(() => expect(live.nav.conversationId).toBe('cnv_1'))
     act(() => live.nav.setMode('sage'))
     await flush()
     expect(rendered.filter((r) => r.mode !== 'gm' && r.id === 'cnv_1')).toEqual([])
-    act(() => live.nav.setMode('gm'))
     expect(live.nav.conversationId).toBeNull()
-    expect(rendered.some((r) => r.mode === 'gm' && r.id === 'cnv_1')).toBe(true)
+    act(() => live.nav.setMode('gm'))
+    await waitFor(() => expect(live.nav.conversationId).toBe('cnv_1'))
   })
 })
 

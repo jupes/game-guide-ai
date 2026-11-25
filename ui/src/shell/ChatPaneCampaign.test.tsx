@@ -13,11 +13,13 @@
 
 import * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import * as api from '../api'
 import type { ChatResult } from '../api'
-import { CampaignSchema } from '../gm/contracts'
+import { CampaignSchema, TOOL_IDS, parseTimelineEntry } from '../gm/contracts'
+import { documentResult, errorInfo, toolInvocation } from '../gm/laneFixtures'
+import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { AppNavProvider, useAppNav, type AppNavState } from './AppNav'
 import { CurrentUserProvider } from './currentUser'
 import { ConversationStoreProvider, useConversationStore } from './ConversationStoreContext'
@@ -85,10 +87,22 @@ function Probe(): null {
   return null
 }
 
-async function mount(options: { campaign?: Reply; create?: Reply; turns?: ChatResult[] } = {}) {
+const availableTools = Object.fromEntries(TOOL_IDS.map((tool) => [
+  tool, tool === 'npc' || tool === 'hooks' ? null : 'This tool is unavailable.',
+]))
+const jsonReply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+
+async function mount(options: {
+  campaign?: Reply
+  create?: Reply
+  turns?: ChatResult[]
+  tools?: typeof fetch
+  loadTimeline?: LoadTimelinePageFn
+} = {}) {
   vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
   const recordFirstPrompt = vi.spyOn(LocalStorageConversationStore.prototype, 'recordFirstPrompt')
   const server = serve(options.campaign, options.create)
+  vi.stubGlobal('fetch', options.tools ?? (async () => jsonReply(availableTools)))
   const turns = [...(options.turns ?? [])]
   const post = vi.fn<PostFn>(async (_prompt, _mode, id) => turns.shift() ?? { kind: 'ok', response: { answer: 'An answer', sources: [], answerable: true, conversation_id: id } })
   const read = { history: [] as string[], timeline: [] as string[], attachments: [] as string[] }
@@ -103,7 +117,7 @@ async function mount(options: { campaign?: Reply; create?: Reply; turns?: ChatRe
             <ChatPane
               post={post}
               loadHistory={async (id) => { read.history.push(id); return { kind: 'ok', messages: [] } }}
-              loadTimeline={async (id) => { read.timeline.push(id); return { kind: 'missing' } }}
+              loadTimeline={options.loadTimeline ?? (async (id) => { read.timeline.push(id); return { kind: 'missing' } })}
               getAttachments={async (id) => { read.attachments.push(id); return { kind: 'ok', attachments: [] } }}
             />
             <Probe />
@@ -132,9 +146,104 @@ function expectNothingStored(text: string): void {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   localStorage.clear()
   sessionStorage.clear()
   window.history.replaceState(null, '', '/')
+})
+
+describe('the GM tool composer', () => {
+  it('arms a draft, keeps it in GM through a channel switch, and cites the live result only on Send', async () => {
+    const posted: Record<string, unknown>[] = []
+    let finish: (response: Response) => void = () => {}
+    const toolFetch: typeof fetch = async (url, init) => {
+      if (String(url).endsWith('/tool-availability')) return jsonReply(availableTools)
+      if (init?.method !== 'POST') return jsonReply({}, 404)
+      const request = JSON.parse(String(init.body)) as Record<string, unknown>
+      posted.push(request)
+      if (posted.length > 1) return jsonReply({ detail: errorInfo({ code: 'invalid', retryable: false }) }, 422)
+      return new Promise((resolve) => { finish = resolve })
+    }
+    const { post } = await mount({ tools: toolFetch })
+    const rail = await screen.findByRole('group', { name: 'GM tools' })
+    const button = within(rail).getByRole('button', { name: 'NPC' })
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-disabled'))
+    await userEvent.click(button)
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'a rain-soaked ferryman')
+    expect(posted).toEqual([])
+
+    await act(async () => { live.stored.setMode('sage') })
+    expect(screen.getByPlaceholderText('Ask…')).toHaveValue('')
+    await act(async () => { live.stored.setMode('gm') })
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('/npc a rain-soaked ferryman')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Run NPC tool' })).toBeEnabled())
+    await userEvent.click(screen.getByRole('button', { name: 'Run NPC tool' }))
+    await waitFor(() => expect(posted).toHaveLength(1))
+    await screen.findByText('Writing the dossier…')
+    await sendTurn('An unrelated question for the GM')
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+
+    await act(async () => finish(jsonReply(toolInvocation({
+      invocation_id: posted[0].invocation_id,
+      entry_id: 'entry_ferryman',
+      status: 'done',
+      result: documentResult({ suggestions: [
+        { tool_id: 'hooks', label: 'Write three hooks', brief: 'around the ferry' },
+        { tool_id: 'portrait', label: 'Unavailable portrait' },
+      ] }),
+    }))))
+    expect(await screen.findByText('Ondrey the Ferryman')).toBeInTheDocument()
+    expect(screen.queryByText('Unavailable portrait')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Write three hooks' }))
+    expect(posted).toHaveLength(1)
+    const field = screen.getByRole('textbox', { name: 'Message' })
+    expect(field).toHaveFocus()
+    expect(field).toHaveValue('/hook around the ferry')
+    await userEvent.click(screen.getByRole('button', { name: 'Run Hooks tool' }))
+    await waitFor(() => expect(posted).toHaveLength(2))
+    expect(posted[1]).toMatchObject({ tool_id: 'hooks', source_entry_id: 'entry_ferryman' })
+  })
+
+  it('adopts a hydrated working run, recovers a failed cancel, then retries the original request', async () => {
+    const invocation = toolInvocation({ status: 'working' })
+    const history = parseTimelineEntry({
+      schema_version: 1, entry_kind: 'tool', entry_id: 'entry_hydrated',
+      source_entry_id: 'entry_prior', created_at: invocation.created_at,
+      brief: 'the night guard', invocation,
+    })
+    const writes: { url: string; body: unknown }[] = []
+    const toolFetch: typeof fetch = async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/tool-availability')) return jsonReply(availableTools)
+      if (init?.method === 'POST') {
+        writes.push({ url, body: JSON.parse(String(init.body)) })
+        if (url.endsWith('/cancel')) return jsonReply({}, 502)
+        return jsonReply(toolInvocation({ status: 'done', attempt: 2, result: documentResult() }))
+      }
+      return jsonReply(toolInvocation({
+        status: 'failed', error: errorInfo(), updated_at: '2026-09-21T12:00:00Z',
+      }))
+    }
+    const { server } = await mount({
+      tools: toolFetch,
+      loadTimeline: async (id) => ({ kind: 'ok', page: { conversation_id: id, items: [history], next_cursor: null } }),
+    })
+    await waitFor(() => expect(live.c.selection.kind).toBe('selected'))
+    await sendTurn('Open a conversation for the GM')
+    await screen.findByText('Checking on NPC…')
+    expect(writes).toHaveLength(0)
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(writes[0]?.url).toMatch(/\/cancel$/))
+    await userEvent.click(await screen.findByRole('button', { name: 'Check again' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Ondrey the Ferryman')).toBeInTheDocument()
+    expect(writes[1].body).toMatchObject({
+      invocation_id: invocation.invocation_id, tool_id: 'npc',
+      conversation_id: live.nav.conversationId, campaign_id: 'cmp_A', brief: 'the night guard',
+      source_entry_id: 'entry_prior',
+    })
+    expect(server.posts()).toHaveLength(1)
+  })
 })
 
 describe('the first turn of a campaign thread', () => {

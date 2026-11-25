@@ -234,7 +234,8 @@ def test_c6_a_stored_card_is_written_by_alias(monkeypatch: pytest.MonkeyPatch, p
         assert abilities["int"] == 9 and "int_" not in abilities
     assert entry["invocation"]["result"] == row.result
 
-    assert ToolInvocation.model_validate(entry["invocation"]) == answer
+    # The runtime answer also has an entry ID outside the public invocation.
+    assert ToolInvocation.model_validate(entry["invocation"]).model_dump() == answer.model_dump()
     assert wc.CardResult.model_validate(row.result).card.stat_block.abilities.int_ == 9  # type: ignore[union-attr]
 
 

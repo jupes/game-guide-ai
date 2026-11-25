@@ -62,6 +62,7 @@ export interface VersionListProps {
   onRestore?: (version: DocumentVersion) => void
   /** The version whose restore is in flight, if any. */
   restoringVersionNumber?: number | null
+  restoreError?: string | null
   /** Document type id — the registry's field labels for `changed_fields` (X-8). */
   documentType?: string
   /** BCP-47 tag(s) for the client-side time format. Defaults to the reader's. */
@@ -85,6 +86,7 @@ export function VersionList({
   onRetry,
   onRestore,
   restoringVersionNumber = null,
+  restoreError,
   documentType,
   locale,
   labelledBy,
@@ -201,6 +203,7 @@ export function VersionList({
             ? 'Loading older versions…'
             : ''}
       </p>
+      {restoreError != null && <p className="gm-versions__message" role="alert">{restoreError}</p>}
 
       <ul className="gm-versions__list" aria-labelledby={labelledBy}>
         {versions.map((version) => {

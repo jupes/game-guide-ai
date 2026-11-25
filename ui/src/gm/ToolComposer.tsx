@@ -14,9 +14,10 @@
  */
 
 import * as React from 'react'
+import { createPortal } from 'react-dom'
 import { IconButton } from '../ds/IconButton'
 import { TextField } from '../ds/TextField'
-import { BRIEF_MAX_CHARS } from './contracts'
+import { BRIEF_MAX_CHARS, CHAT_TEXT_MAX_CHARS, codePointLength } from './contracts'
 import type { ToolId } from './contracts'
 import type { Tool, ToolAvailability } from './registry'
 import { CustomiseRailDialog } from './CustomiseRailDialog'
@@ -56,6 +57,11 @@ export interface ToolComposerProps {
   onInvoke: (invocation: ToolInvocation) => void
   /** RAIL-14: a plain GM message is still an ordinary chat turn. */
   onChat: (text: string) => void
+  composerRef?: React.RefObject<HTMLInputElement | HTMLTextAreaElement | null>
+  focusRequest?: number
+  attachmentControl?: React.ReactNode
+  onCustomiseOpenChange?: (open: boolean) => void
+  onSlashAnnouncement?: (next: string, previous: string) => void
   /** RAIL-16: today's one-at-a-time `/chat` rule. */
   chatPending?: boolean
   /** RAIL-16: the client knows the Workbench cap is reached (X-5). */
@@ -81,6 +87,11 @@ export function ToolComposer({
   onDraftChange,
   onInvoke,
   onChat,
+  composerRef,
+  focusRequest = 0,
+  attachmentControl,
+  onCustomiseOpenChange,
+  onSlashAnnouncement,
   chatPending = false,
   workbenchBusy = false,
   slashEnabled = true,
@@ -92,9 +103,25 @@ export function ToolComposer({
   const rootRef = React.useRef<HTMLDivElement>(null)
   const fieldRef = React.useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const caretToEnd = React.useRef(false)
+  const lastFocusedRequest = React.useRef(focusRequest)
+  const opener = React.useRef<HTMLElement | null>(null)
   const [focused, setFocused] = React.useState(false)
   const [blocked, setBlocked] = React.useState<Extract<Submission, { kind: 'blocked' }> | null>(null)
   const [customising, setCustomising] = React.useState(false)
+  const messageId = React.useId()
+  const attachField = React.useCallback((field: HTMLInputElement | HTMLTextAreaElement | null) => {
+    fieldRef.current = field
+    if (composerRef) composerRef.current = field
+  }, [composerRef])
+  const returnFocus = React.useCallback(() => opener.current?.focus(), [])
+
+  const changeCustomising = (open: boolean) => {
+    if (open) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setCustomising(open)
+    onCustomiseOpenChange?.(open)
+  }
+
+  React.useEffect(() => () => onCustomiseOpenChange?.(false), [onCustomiseOpenChange])
 
   const parse = React.useMemo(() => parseDraft(draft, { slashEnabled }), [draft, slashEnabled])
   const armed = armedTool(parse)
@@ -124,13 +151,14 @@ export function ToolComposer({
   // RAIL-1: the caret sits at the end of the armed draft, so the next keystroke
   // is the brief. Layout effect, so the caret never flashes at position 0.
   React.useLayoutEffect(() => {
-    if (!caretToEnd.current) return
+    if (!caretToEnd.current && lastFocusedRequest.current === focusRequest) return
     caretToEnd.current = false
+    lastFocusedRequest.current = focusRequest
     const field = fieldRef.current
     if (!field) return
     field.focus()
     field.setSelectionRange(draft.length, draft.length)
-  }, [draft])
+  }, [draft, focusRequest])
 
   // SLASH-8: an outside click closes the menu. Blur covers most of it; this
   // also catches a press on something that never takes focus.
@@ -146,17 +174,24 @@ export function ToolComposer({
   // SLASH-12: a plain textbox announces its active descendant unreliably, so a
   // debounced polite region says the count and the active option out loud.
   const [announcement, setAnnouncement] = React.useState('')
+  const lastAnnouncement = React.useRef('')
   React.useEffect(() => {
-    const handle = window.setTimeout(() => setAnnouncement(menu.announcement), announceDelayMs)
+    const handle = window.setTimeout(() => {
+      if (onSlashAnnouncement) onSlashAnnouncement(menu.announcement, lastAnnouncement.current)
+      else setAnnouncement(menu.announcement)
+      lastAnnouncement.current = menu.announcement
+    }, announceDelayMs)
     return () => window.clearTimeout(handle)
-  }, [menu.announcement, announceDelayMs])
+  }, [menu.announcement, announceDelayMs, onSlashAnnouncement])
 
   const submit = React.useCallback(() => {
+    if (chatPending || workbenchBusy) return
     const outcome = submitDraft(draft, { availability, campaignSelected, slashEnabled })
     switch (outcome.kind) {
       case 'none':
         return
       case 'chat':
+        if (codePointLength(draft) > CHAT_TEXT_MAX_CHARS) return
         setBlocked(null)
         onChat(outcome.text)
         onDraftChange('')
@@ -170,7 +205,7 @@ export function ToolComposer({
         // SLASH-4: the draft stays. Nothing is sent, and nothing is discarded.
         setBlocked(outcome)
     }
-  }, [availability, campaignSelected, draft, onChat, onDraftChange, onInvoke, slashEnabled])
+  }, [availability, campaignSelected, chatPending, draft, onChat, onDraftChange, onInvoke, slashEnabled, workbenchBusy])
 
   const handleKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -186,9 +221,26 @@ export function ToolComposer({
   )
 
   const length = briefLength(parse)
-  const overLength = length > BRIEF_MAX_CHARS
+  const plainLength = parse.kind === 'plain' || parse.kind === 'escaped' ? codePointLength(draft) : 0
+  const plainOverLength = plainLength > CHAT_TEXT_MAX_CHARS
+  const overLength = length > BRIEF_MAX_CHARS || plainOverLength
   const sendUnavailable = chatPending || workbenchBusy
-  const message = overLength ? briefCounterMessage(length) : workbenchBusy ? WAITING_MESSAGE : (blocked?.message ?? null)
+  const message = plainOverLength
+    ? `${plainLength} of ${CHAT_TEXT_MAX_CHARS} characters — shorten your message to send it.`
+    : overLength ? briefCounterMessage(length) : workbenchBusy ? WAITING_MESSAGE : (blocked?.message ?? null)
+  const dialog = (
+    <CustomiseRailDialog
+      open={customising}
+      pins={pins}
+      availability={availability}
+      returnFocus={returnFocus}
+      onSave={(next) => {
+        changeCustomising(false)
+        onPinsChange(next)
+      }}
+      onCancel={() => changeCustomising(false)}
+    />
+  )
 
   return (
     <div className={['gm-composer', className].filter(Boolean).join(' ')} ref={rootRef}>
@@ -196,7 +248,7 @@ export function ToolComposer({
         pins={pins}
         availability={availability}
         onArm={arm}
-        onCustomise={() => setCustomising(true)}
+        onCustomise={() => changeCustomising(true)}
         campaignSelected={campaignSelected}
         onChooseCampaign={onChooseCampaign}
         capabilitiesFailed={capabilitiesFailed}
@@ -232,12 +284,13 @@ export function ToolComposer({
       )}
 
       {message && (
-        <p className="gm-composer__message" role="status">
+        <p className="gm-composer__message" id={messageId} role={plainOverLength ? undefined : 'status'}>
           {message}
         </p>
       )}
 
       <div className="gm-composer__row">
+        {attachmentControl}
         {/* The composer IS a combobox — it has had `aria-autocomplete="list"`,
             an `aria-controls` popup and `aria-activedescendant` since 1kg.3.3 —
             but it never said so, so assistive tech was never told a popup
@@ -288,7 +341,8 @@ export function ToolComposer({
             {...(menu.open ? { 'aria-controls': menu.listboxId } : {})}
             {...(menu.activeOptionId ? { 'aria-activedescendant': menu.activeOptionId } : {})}
             aria-invalid={overLength || undefined}
-            ref={fieldRef}
+            aria-describedby={overLength ? messageId : undefined}
+            ref={attachField}
           />
         </div>
         <IconButton
@@ -296,26 +350,17 @@ export function ToolComposer({
           // RAIL-3: the Send button says what it will run.
           ariaLabel={armed ? `Run ${armed.label} tool` : 'Send message'}
           onClick={submit}
-          disabled={sendUnavailable || draft.trim() === ''}
+          disabled={sendUnavailable || plainOverLength || draft.trim() === ''}
         />
       </div>
 
       {/* SLASH-12's live region. Polite, debounced, and the only thing that
           announces the menu — the options themselves are never focused. */}
-      <p className="gm-composer__sr-only" role="status" aria-live="polite">
-        {announcement}
-      </p>
+      {!onSlashAnnouncement && (
+        <p className="gm-composer__sr-only" role="status" aria-live="polite">{announcement}</p>
+      )}
 
-      <CustomiseRailDialog
-        open={customising}
-        pins={pins}
-        availability={availability}
-        onSave={(next) => {
-          setCustomising(false)
-          onPinsChange(next)
-        }}
-        onCancel={() => setCustomising(false)}
-      />
+      {onCustomiseOpenChange ? createPortal(dialog, document.body) : dialog}
     </div>
   )
 }

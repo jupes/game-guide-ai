@@ -695,6 +695,7 @@ export const ToolInvocationSchema = z
   .object({
     schema_version: z.literal(CONTRACT_VERSION),
     invocation_id: InvocationIdSchema,
+    entry_id: OpaqueIdSchema.nullish(),
     tool_id: ToolIdSchema,
     status: z.enum(INVOCATION_STATUSES),
     attempt: z.number().int().min(1).max(100),

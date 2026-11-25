@@ -16,12 +16,14 @@ import { useState } from 'react'
 import { Avatar } from '../ds/Avatar'
 import { Switch } from '../ds/Switch'
 import { useAppNav } from './AppNav'
+import { useCanvasActions } from './canvasContext'
 import { useCurrentUser } from './currentUser'
 import './UserMenu.css'
 
 export function UserMenu(): React.JSX.Element {
   const { user } = useCurrentUser()
   const { openProfile } = useAppNav()
+  const { flushBeforeLeaving } = useCanvasActions()
   const [open, setOpen] = useState(false)
   const [signOutError, setSignOutError] = useState<string | null>(null)
   const rootRef = React.useRef<HTMLDivElement>(null)
@@ -32,6 +34,7 @@ export function UserMenu(): React.JSX.Element {
   }
 
   async function handleSignOut(): Promise<void> {
+    if (!(await flushBeforeLeaving())) return
     setSignOutError(null)
     // Only the server can clear the httpOnly session cookie — if it refuses,
     // say so and stay signed in rather than showing a false "signed out".
@@ -43,7 +46,8 @@ export function UserMenu(): React.JSX.Element {
     }
   }
 
-  function handleOpenProfile(): void {
+  async function handleOpenProfile(): Promise<void> {
+    if (!(await flushBeforeLeaving())) return
     setOpen(false)
     openProfile()
   }

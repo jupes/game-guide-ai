@@ -21,7 +21,8 @@ import type { Conversation } from './conversationStore'
 import { modesForRole, accentClass } from './modes'
 import { useCampaign } from './campaignContext'
 import { LibraryNavGroup } from './LibraryNavGroup'
-import { useCanvasMounted, useWorkbenchActive } from './canvasContext'
+import { PARTICIPANTS_PANEL_ID, useLibraryPanel } from './libraryPanel'
+import { useCanvasActions, useCanvasMounted, useWorkbenchActive } from './canvasContext'
 import { useCampaignThreads } from './campaignThreads'
 import { PendingButton, useRetrying } from './CampaignPicker'
 import './LeftNav.css'
@@ -55,12 +56,14 @@ export interface LeftNavProps {
 
 export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): React.JSX.Element {
   const { mode, setMode, conversationId, setConversationId, openTavern } = useAppNav()
+  const { flushBeforeLeaving } = useCanvasActions()
   const { user } = useCurrentUser()
   const store = useConversationStore()
   const { selection, enabled } = useCampaign()
   // The Campaign Library group is the Workbench's, so it needs a canvas to open into (a bare LeftNav has none).
   const workbenchActive = useWorkbenchActive()
   const canvasMounted = useCanvasMounted()
+  const { participantsOpen, toggleParticipants } = useLibraryPanel()
   const workbench = workbenchActive && canvasMounted
   const campaignGm = mode === 'gm' && selection.kind !== 'none'
   const [renameState, setRenameState] = React.useState<{
@@ -96,8 +99,18 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
             label={label}
             selected={mode === m}
             onClick={() => {
-              setMode(m)
-              onNavigate?.()
+              if (mode === m) {
+                onNavigate?.()
+              } else if (mode !== 'gm') {
+                setMode(m)
+                onNavigate?.()
+              } else {
+                void flushBeforeLeaving().then((proceed) => {
+                  if (!proceed) return
+                  setMode(m)
+                  onNavigate?.()
+                })
+              }
             }}
             className={`left-nav__mode-chip ${accentClass(m)}`}
           />
@@ -183,6 +196,23 @@ export function LeftNav({ onNavigate, settings, onOpenLibrary }: LeftNavProps): 
 
       {/* 1kg.6.4: a GM's way to the Campaign Library, whose panel holds the lists. */}
       {workbench && <LibraryNavGroup onNavigate={onNavigate} onOpenLibrary={onOpenLibrary} />}
+      {workbench && (
+        <div role="group" aria-label="Campaign settings" className="left-nav__campaign-settings">
+          <Button
+            variant="text"
+            icon="group"
+            aria-expanded={participantsOpen}
+            aria-controls={participantsOpen ? PARTICIPANTS_PANEL_ID : undefined}
+            onClick={(event) => {
+              if (!participantsOpen) onOpenLibrary?.()
+              toggleParticipants(event.currentTarget)
+              onNavigate?.()
+            }}
+          >
+            Participants
+          </Button>
+        </div>
+      )}
 
       {settings}
 
@@ -206,6 +236,7 @@ interface RenameDraft {
  * campaign never call `onNavigate`; choosing a thread and New conversation do. */
 function CampaignConversations({ onNavigate }: Pick<LeftNavProps, 'onNavigate'>): React.JSX.Element {
   const { conversationId, setConversationId, openTavern } = useAppNav()
+  const { flushBeforeLeaving } = useCanvasActions()
   const { selection, retrySelection, clearCampaign } = useCampaign()
   const threads = useCampaignThreads()
   const line = React.useRef<HTMLParagraphElement>(null)
@@ -254,8 +285,11 @@ function CampaignConversations({ onNavigate }: Pick<LeftNavProps, 'onNavigate'>)
           <Button variant="text" onClick={leave}>{CONTINUE_WITHOUT}</Button>
         )}
         <Button variant="text" onClick={() => {
-          openTavern?.()
-          onNavigate?.()
+          void flushBeforeLeaving().then((proceed) => {
+            if (!proceed) return
+            openTavern?.()
+            onNavigate?.()
+          })
         }}>{selection.kind === 'selected' ? SWITCH_CAMPAIGN : CHOOSE_CAMPAIGN}</Button>
       </div>
 

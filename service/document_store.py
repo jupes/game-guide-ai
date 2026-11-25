@@ -787,6 +787,10 @@ class DocumentStore(Protocol):
         """
         ...  # pragma: no cover - structural type
 
+    def created_by_command(self, unit: UnitOfWork, campaign_id: str, command_id: str) -> DocumentRecord | None:
+        """The current document a creation command already made in this campaign."""
+        ...  # pragma: no cover - structural type
+
     def get(
         self, unit: UnitOfWork, campaign_id: str, document_id: str
     ) -> DocumentRecord | None:
@@ -1378,13 +1382,9 @@ class PostgresDocumentStore:
             # never be refused for growth it will not cause. Checked only on
             # the quota'd path: every other caller keeps the one-statement
             # happy path it had before.
-            existing = pg(unit).conn.execute(
-                f"SELECT {_D_COLUMNS} FROM campaign.documents "
-                f"WHERE campaign_id = %s AND created_command_id = %s",
-                (campaign_id, command_id),
-            ).fetchone()
+            existing = self.created_by_command(unit, campaign_id, command_id)
             if existing is not None:
-                return self._with_current(unit, campaign_id, existing)
+                return existing
         content_bytes = measured_bytes(content)
         if quota is not None:
             # The account lock is the CALLER's (documents_api, immediately
@@ -1451,14 +1451,17 @@ class PostgresDocumentStore:
         `create` carrying a command id that already made a document gets that
         document back; anything else names a campaign that is not there."""
         if command_id is not None:
-            made = pg(unit).conn.execute(
-                f"SELECT {_D_COLUMNS} FROM campaign.documents "
-                f"WHERE campaign_id = %s AND created_command_id = %s",
-                (campaign_id, command_id),
-            ).fetchone()
+            made = self.created_by_command(unit, campaign_id, command_id)
             if made is not None:
-                return self._with_current(unit, campaign_id, made)
+                return made
         raise MissingParent("no such campaign")
+
+    def created_by_command(self, unit: UnitOfWork, campaign_id: str, command_id: str) -> DocumentRecord | None:
+        row = pg(unit).conn.execute(
+            f"SELECT {_D_COLUMNS} FROM campaign.documents WHERE campaign_id = %s AND created_command_id = %s",
+            (campaign_id, command_id),
+        ).fetchone()
+        return None if row is None else self._with_current(unit, campaign_id, row)
 
     def write_fields(
         self,
@@ -2155,9 +2158,9 @@ class InMemoryDocumentStore:
         if campaign_id not in self._campaigns.visible(twin):
             raise MissingParent("no such campaign")
         if command_id is not None:
-            for row in self._live(twin).values():
-                if row.campaign_id == campaign_id and row.created_command_id == command_id:
-                    return self._with_current(twin, row)
+            existing = self.created_by_command(unit, campaign_id, command_id)
+            if existing is not None:
+                return existing
         if quota is not None:
             _require_account_lock(twin, quota)
             growth = 2 * measured_bytes(content)  # the document, plus its version 1
@@ -2191,6 +2194,13 @@ class InMemoryDocumentStore:
             moment=moment,
         )
         return self._with_current(twin, row)
+
+    def created_by_command(self, unit: UnitOfWork, campaign_id: str, command_id: str) -> DocumentRecord | None:
+        twin = fake(unit)
+        for row in self._live(twin).values():
+            if row.campaign_id == campaign_id and row.created_command_id == command_id:
+                return self._with_current(twin, row)
+        return None
 
     def _append(
         self,

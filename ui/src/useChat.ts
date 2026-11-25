@@ -23,6 +23,7 @@ export interface Exchange {
   status: ExchangeStatus
   response?: ChatResponse
   error?: string
+  submittedAt?: number
 }
 
 export type PostFn = (
@@ -240,13 +241,14 @@ export function useChat({
       pendingRef.current = true
       setInFlight(true)
       const startedAt = now()
+      const submittedAt = Date.now()
 
       const id = nextId.current++
       setState((prev) => ({
         scopeId: conversationId,
         exchanges: [
           ...(prev.scopeId === conversationId ? prev.exchanges : []),
-          { id, prompt: trimmed, status: 'pending' },
+          { id, prompt: trimmed, status: 'pending', ...(mode === 'gm' ? { submittedAt } : {}) },
         ],
         historyError: prev.scopeId === conversationId ? prev.historyError : null,
         // Entering a new scope via send(): its recall may still be in flight.

@@ -3,9 +3,8 @@
  *
  * It reads the canvas state the provider holds and renders it:
  *
- * - `open`: `CanvasPane` around a READ-ONLY `GameDocument` (I-1: nothing is editable
- *   until 1kg.6.5 gives it a save path, so there is no Edit, no field assistant and no
- *   SelectionBar). The title is the document's `data.name`.
+ * - `open`: `CanvasPane` around a `GameDocument`. Direct edits are saved per field;
+ *   archived documents are read-only. The title is the document's `data.name`.
  * - `loading`: a skeleton and visible text, `aria-busy`, and no live region of its own
  *   (A-29: the shell's one announcer carries canvas-level outcomes).
  * - `unavailable`, `unsupported`, `failed`: a plain panel. `unavailable` is one state
@@ -16,16 +15,12 @@
  *
  * The version history is read here, on demand: one \`GET versions?limit=20\` when the
  * disclosure first opens for a document, one more per Load more, never one per version.
- * Its state is keyed by document id and write revision, so a page that arrives for a
- * document that has since been replaced is dropped with the component that asked.
+ * History is cached for the current write revision. Editor state survives saves.
  *
  * The pane's width mode follows THIS COLUMN's measured width (below 560 px is
  * \`compact\`), not the viewport: the header is laid out for the room it has. At the
  * narrow layout the pane is full screen. Nothing here uses a width media query; the
  * shell's boundaries live in \`breakpoints.ts\`.
- *
- * Nothing here edits a document. A title, a summary or field text is GM-private (X-7):
- * it is rendered and nothing more.
  *
  * Lifecycle (1kg.6.4, PR-2): an open document that is archived stays open under an
  * `Archived` banner with **Restore** (LIB-16), and Restore re-reads it so the banner is
@@ -49,8 +44,10 @@ import { useLibraryPanel } from '../shell/libraryPanel'
 import { useReveals } from '../shell/revealContext'
 import { LIBRARY_COPY, WORKBENCH_COPY } from '../shell/workbenchCopy'
 import { CanvasPane, type CanvasLayout } from './CanvasPane'
+import { versionLabel } from './canvasStatus'
 import type { Document, DocumentVersion } from './contracts'
-import { getDocumentHistory, unarchiveDocument } from './documentApi'
+import { getDocumentHistory, restoreDocumentVersion, unarchiveDocument } from './documentApi'
+import { DocumentAutosave } from './documentAutosave'
 import { documentTitle } from './documentTitle'
 import { GameDocument } from './GameDocument'
 import { documentTypeById } from './registry'
@@ -152,12 +149,29 @@ interface OpenCanvasProps {
   fetchImpl: typeof fetch | undefined
 }
 
-/** One open document. Keyed by id and write revision, so its history state is always its own. */
+/** One open document. A pending field remains mounted when an earlier write lands. */
 function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX.Element {
-  const { closeDocument, openerRef, composerRef, titleRef } = useCanvasActions()
+  const { closeDocument, openerRef, composerRef, titleRef, registerDirtySource, acceptDocument, flushBeforeLeaving, announce } = useCanvasActions()
+  const [autosave] = React.useState(() => new DocumentAutosave(document, acceptDocument, fetchImpl))
+  const saves = React.useSyncExternalStore(autosave.subscribe, autosave.getSnapshot)
+  React.useLayoutEffect(() => {
+    const stop = autosave.mount()
+    const unregister = registerDirtySource(autosave)
+    return () => {
+      unregister()
+      stop()
+    }
+  }, [autosave, registerDirtySource])
+  React.useLayoutEffect(() => autosave.sync(document), [autosave, document])
+
   const reveals = useReveals()
   const [historyOpen, setHistoryOpen] = React.useState(false)
-  const [history, setHistory] = React.useState<HistoryState | null>(null)
+  const [history, setHistory] = React.useState<(HistoryState & { revision: number }) | null>(null)
+  const restoreInProgress = React.useRef(false)
+  const [restoring, setRestoring] = React.useState<number | null>(null)
+  const [restoreError, setRestoreError] = React.useState<string | null>(null)
+  const historyRequest = React.useRef(0)
+  const requestedRevision = React.useRef<number | null>(null)
   const mounted = React.useRef(true)
   React.useEffect(() => {
     mounted.current = true
@@ -166,25 +180,28 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
     }
   }, [])
 
-  const { campaign_id: campaignId, document_id: documentId } = document
+  const { campaign_id: campaignId, document_id: documentId, write_revision: revision } = document
 
   const loadFirstPage = React.useCallback(async (): Promise<void> => {
-    setHistory(HISTORY_LOADING)
+    const request = ++historyRequest.current
+    requestedRevision.current = revision
     const result = await getDocumentHistory(campaignId, documentId, null, fetchImpl)
-    if (!mounted.current) return
+    if (!mounted.current || request !== historyRequest.current) return
     setHistory(
       result.kind === 'ok'
-        ? { status: 'ready', versions: result.page.items, nextCursor: result.page.next_cursor, loadingMore: false }
-        : { status: 'error', versions: [], nextCursor: null, loadingMore: false },
+        ? { revision, status: 'ready', versions: result.page.items, nextCursor: result.page.next_cursor, loadingMore: false }
+        : { revision, status: 'error', versions: [], nextCursor: null, loadingMore: false },
     )
-  }, [campaignId, documentId, fetchImpl])
+  }, [campaignId, documentId, fetchImpl, revision])
 
   const loadMore = React.useCallback(async (): Promise<void> => {
     const current = history
-    if (current === null || current.status !== 'ready' || current.nextCursor === null || current.loadingMore) return
+    if (current === null || current.revision !== revision || current.status !== 'ready' ||
+        current.nextCursor === null || current.loadingMore) return
+    const request = ++historyRequest.current
     setHistory({ ...current, loadingMore: true })
     const result = await getDocumentHistory(campaignId, documentId, current.nextCursor, fetchImpl)
-    if (!mounted.current) return
+    if (!mounted.current || request !== historyRequest.current) return
     if (result.kind !== 'ok') {
       // The rows already shown stay, and Load more is still there to press again.
       setHistory({ ...current, loadingMore: false })
@@ -192,24 +209,58 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
     }
     const shown = new Set(current.versions.map((version) => version.number))
     setHistory({
+      revision,
       status: 'ready',
       versions: [...current.versions, ...result.page.items.filter((version) => !shown.has(version.number))],
       nextCursor: result.page.next_cursor,
       loadingMore: false,
     })
-  }, [history, campaignId, documentId, fetchImpl])
+  }, [history, campaignId, documentId, fetchImpl, revision])
+
+  React.useEffect(() => {
+    if (historyOpen && requestedRevision.current !== revision) void loadFirstPage()
+  }, [revision, historyOpen, loadFirstPage])
 
   function toggleHistory(): void {
-    const next = !historyOpen
-    setHistoryOpen(next)
-    if (next && history === null) void loadFirstPage()
+    setHistoryOpen(!historyOpen)
   }
 
-  const read = history ?? HISTORY_LOADING
+  async function restoreVersion(version: DocumentVersion): Promise<void> {
+    if (restoreInProgress.current) return
+    restoreInProgress.current = true
+    const opener = window.document.activeElement
+    try {
+      if (!(await flushBeforeLeaving()) || !mounted.current) return
+      setRestoreError(null)
+      setRestoring(version.number)
+      const result = await restoreDocumentVersion(document, version.number, fetchImpl)
+      if (!mounted.current) return
+      const label = versionLabel(version.number)
+      if (result.kind === 'ok') {
+        acceptDocument(result.document)
+        announce(`Restored ${label}`)
+        if (window.document.activeElement === opener || window.document.activeElement === window.document.body) {
+          titleRef.current?.focus({ preventScroll: true })
+        }
+      } else {
+        setRestoreError(`Couldn't restore ${label}. Select Restore ${label} to try again.`)
+      }
+    } finally {
+      restoreInProgress.current = false
+      if (mounted.current) setRestoring(null)
+    }
+  }
+
+  const read = history?.revision === revision ? history : HISTORY_LOADING
   const title = documentTitle(document)
   const type = documentTypeById(document.type)
   const presentation =
     type === undefined ? NO_REVEAL_CONTROLS : revealPresentation(reveals, documentId, type, reveals.seats ?? [])
+
+  async function openReveal(): Promise<void> {
+    const opener = window.document.activeElement
+    if (await flushBeforeLeaving() && mounted.current) reveals.openSheet(documentId, opener)
+  }
 
   // Pressing Stop moves no focus (X-3). But once the table is no longer seeing the document the Stop control is
   // gone, and a browser drops focus from a control that unmounts to <body>: the canvas heading, which every state
@@ -228,7 +279,8 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
       documentType={document.type}
       updatedAt={document.updated_at}
       versionNumber={document.version.number}
-      saveStatus="saved"
+      saveStatus={saves.status}
+      onRetrySave={saves.retryable ? () => autosave.retry() : undefined}
       historyOpen={historyOpen}
       onToggleHistory={toggleHistory}
       history={{
@@ -238,7 +290,13 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
         hasMore: read.nextCursor !== null,
         loadingMore: read.loadingMore,
         onLoadMore: () => void loadMore(),
-        onRetry: () => void loadFirstPage(),
+        onRetry: () => {
+          setHistory(null)
+          void loadFirstPage()
+        },
+        onRestore: document.archived ? undefined : (version) => void restoreVersion(version),
+        restoringVersionNumber: restoring,
+        restoreError,
         documentType: document.type,
       }}
       onRequestClose={closeDocument}
@@ -247,7 +305,7 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
       titleRef={titleRef}
       layout={layout}
       reveal={presentation.reveal}
-      onReveal={presentation.canOpen ? () => reveals.openSheet(documentId, window.document.activeElement) : undefined}
+      onReveal={presentation.canOpen && restoring === null ? () => void openReveal() : undefined}
       onStopReveal={
         presentation.canStop
           ? () => {
@@ -258,9 +316,22 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
       }
     >
       {document.archived && <ArchivedBanner document={document} title={title} fetchImpl={fetchImpl} />}
+      {saves.status === 'conflict' && (
+        <p className="canvas-host__banner">This document changed elsewhere</p>
+      )}
       <GameDocument
+        key={saves.reset}
         document={document}
-        readOnly
+        readOnly={document.archived || restoring !== null}
+        fieldStates={saves.fields}
+        onFieldDraft={autosave.draft}
+        onInvalidFieldDraft={autosave.invalidDraft}
+        onCancelFieldDraft={autosave.cancel}
+        onFieldCommit={autosave.commit}
+        onRetry={autosave.retry}
+        onKeepMine={autosave.keepMine}
+        onUseLatest={autosave.cancel}
+        selectionEnabled={false}
         revealBadge={presentation.badge}
         revealedFields={presentation.fields}
         revealedNote={presentation.note}
@@ -336,7 +407,7 @@ export function CanvasHost({ fetchImpl }: CanvasHostProps): React.JSX.Element | 
     case 'open':
       body = (
         <OpenCanvas
-          key={`${doc.document.document_id}:${doc.document.write_revision}`}
+          key={`${doc.document.campaign_id}:${doc.document.document_id}`}
           document={doc.document}
           layout={layout}
           fetchImpl={fetchImpl}

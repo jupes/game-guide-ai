@@ -17,6 +17,10 @@ export interface ButtonProps {
   onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void
   style?: React.CSSProperties
   className?: string
+  'aria-label'?: string
+  'aria-expanded'?: boolean
+  'aria-controls'?: string
+  'aria-disabled'?: boolean
 }
 
 export function Button({
@@ -31,6 +35,10 @@ export function Button({
   onClick,
   style,
   className,
+  'aria-label': ariaLabel,
+  'aria-expanded': ariaExpanded,
+  'aria-controls': ariaControls,
+  'aria-disabled': ariaDisabled,
 }: ButtonProps): React.JSX.Element {
   const classes = ['aether-btn', className].filter(Boolean).join(' ')
 
@@ -39,6 +47,10 @@ export function Button({
       type={type}
       disabled={disabled}
       onClick={onClick}
+      aria-label={ariaLabel}
+      aria-expanded={ariaExpanded}
+      aria-controls={ariaControls}
+      aria-disabled={ariaDisabled}
       data-variant={variant}
       data-size={size}
       data-full-width={fullWidth ? 'true' : undefined}

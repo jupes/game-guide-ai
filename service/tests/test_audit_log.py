@@ -150,7 +150,7 @@ def test_the_thirty_one_actions_that_ship_include_reveals_three_a_documents_thre
     added or removed."""
     assert {a.value for a in AuditAction} == {
         "session.started", "session.ended", "session.expired", "session.rotated",
-        "participant.added", "participant.removed", "participant.linked",
+        "participant.added", "participant.renamed", "participant.removed", "participant.linked",
         "participant.unlinked", "seat.offered", "seat.accepted",
         "seat.declined", "seat.confirmed",
         "campaign.archived", "campaign.restored", "campaign.deleted",
@@ -183,7 +183,7 @@ def test_a_seat_row_carries_the_seat_and_nothing_else():
 
 _WORDS = {
     3: "three", 4: "four", 5: "five", 6: "six", 14: "fourteen", 16: "sixteen", 18: "eighteen", 19: "nineteen",
-    7: "seven", 20: "twenty", 23: "twenty-three", 26: "twenty-six", 28: "twenty-eight", 31: "thirty-one",
+    7: "seven", 20: "twenty", 23: "twenty-three", 26: "twenty-six", 28: "twenty-eight", 32: "thirty-two",
 }
 
 

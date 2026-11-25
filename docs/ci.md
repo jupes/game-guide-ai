@@ -5,6 +5,10 @@ runs on pull requests targeting `master`, every push to `master` (the default
 branch is `master`, not `main`), and manual dispatch. Pull requests run every
 quality gate but never deploy.
 
+When a newer commit starts CI for a pull request, it cancels that pull
+request's older run. A running `master` push or manual dispatch stays active
+when a newer run queues.
+
 ```text
 pull request / push to master
    ├─ python-tests        ruff · mypy · pytest (service, ingestion, repo guards) ─┐

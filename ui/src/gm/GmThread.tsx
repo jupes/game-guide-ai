@@ -50,7 +50,7 @@ import { StatBlockCard } from '../ds/StatBlockCard'
 import { SourceList } from '../components/SourceList'
 import { SuggestionCards } from '../components/SuggestionCards'
 import { parseDiceNotation } from '../shell/diceNotation'
-import { AssistantLane } from './AssistantLane'
+import { AssistantLane, type AssistantLaneProps } from './AssistantLane'
 import { AssistantText } from './AssistantText'
 import { toSpellCardProps, toStatBlockCardProps } from './adapters'
 import type { ChatMode } from '../api'
@@ -78,6 +78,9 @@ export interface GmThreadProps {
   turns: readonly GmTurn[]
   /** CANVAS-3: Open in canvas. */
   onOpenDocument?: (link: DocumentLink) => void
+  toolLaneProps?: (turn: Extract<GmTurn, { kind: 'tool' }>) => Partial<Pick<AssistantLaneProps,
+    'onArmSuggestion' | 'onRetry' | 'onCancel' | 'onCheckAgain' | 'onEditBrief' | 'onRunAgain' | 'availability'
+    | 'campaignId' | 'bestiary'>>
   /** 1kg.3.6: an older page exists to walk to. Omitted (or false) draws no
    * control — a thread that fits in one page has nothing to load. */
   hasEarlier?: boolean
@@ -94,6 +97,7 @@ export interface GmThreadProps {
 export function GmThread({
   turns,
   onOpenDocument = noCanvas,
+  toolLaneProps,
   hasEarlier = false,
   loadingEarlier = false,
   earlierError = null,
@@ -161,7 +165,7 @@ export function GmThread({
             ref={index === 0 ? firstExchangeRef : undefined}
           >
             <Narration turn={turn} />
-            <Outcome turn={turn} onOpenDocument={onOpenDocument} />
+            <Outcome turn={turn} onOpenDocument={onOpenDocument} toolLaneProps={toolLaneProps} />
           </div>
         ),
       )}
@@ -261,9 +265,11 @@ function Narration({ turn }: { turn: ExchangeTurn }): React.JSX.Element | null {
 function Outcome({
   turn,
   onOpenDocument,
+  toolLaneProps,
 }: {
   turn: ExchangeTurn
   onOpenDocument: (link: DocumentLink) => void
+  toolLaneProps?: GmThreadProps['toolLaneProps']
 }): React.JSX.Element | null {
   switch (turn.kind) {
     case 'chat':
@@ -278,6 +284,7 @@ function Outcome({
           lost={turn.live?.lost === true}
           sourceEntryId={turn.entryId}
           onOpenDocument={onOpenDocument}
+          {...toolLaneProps?.(turn)}
         />
       )
     case 'unreadable':
