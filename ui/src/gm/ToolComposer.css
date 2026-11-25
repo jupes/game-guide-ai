@@ -84,6 +84,12 @@
   white-space: nowrap;
 }
 
+@media (height <= 460px) {
+  .gm-composer {
+    padding-block: var(--aether-space-1);
+  }
+}
+
 @media (max-width: 767px) {
   .gm-composer__armed-hint {
     margin-left: 0;

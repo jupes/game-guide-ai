@@ -112,7 +112,8 @@ export const Loading = state('doc_slow', api(), async (canvas) => {
 export const Open = state('doc_ok', api(), async (canvas) => {
   await expect(await canvas.findByRole('heading', { level: 2, name: TITLE })).toBeVisible()
   await expect(canvas.getByText('GM ONLY')).toBeVisible()
-  await expect(canvas.queryAllByRole('button', { name: /^Edit / })).toEqual([])
+  await expect(canvas.getByRole('button', { name: 'Edit Voice' })).toBeVisible()
+  await expect(canvas.queryByRole('button', { name: /with assistant$/ })).toBeNull()
   await expectTouchTargets(canvas, ['Close canvas'])
 })
 export const OpenDark = dark(Open)
