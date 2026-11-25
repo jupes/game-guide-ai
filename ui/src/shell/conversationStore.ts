@@ -87,10 +87,11 @@ function normalizeConversation(value: unknown): Conversation | null {
 
 function createConversation(
   mode: ChatMode, firstPrompt?: string, modelPreference: string = 'auto',
+  id: string = crypto.randomUUID(),
 ): Conversation {
   const derivedTitle = deriveConversationTitle(firstPrompt ?? '')
   return {
-    id: crypto.randomUUID(),
+    id,
     mode,
     title: derivedTitle,
     derivedTitle,
@@ -151,6 +152,15 @@ function recordFirstPrompt(
   })
 }
 
+function adoptConversation(
+  rows: Conversation[], id: string, mode: ChatMode, prompt: string, sentPreference: string,
+): Conversation[] | null {
+  if (rows.some((row) => row.id === id)) return recordFirstPrompt(rows, id, prompt, sentPreference)
+  return [...rows, {
+    ...createConversation(mode, prompt, sentPreference, id), boundPreference: sentPreference,
+  }]
+}
+
 /** The server's own heal of a retired manual pick (j9w) — moves
  * `boundPreference` (what the NEXT turn sends) and `modelPreference` (what
  * ModelPicker shows) together onto the healed preference, so this
@@ -185,6 +195,7 @@ export interface ConversationStore {
   list(mode: ChatMode): Conversation[]
   get(id: string): Conversation | undefined
   create(mode: ChatMode, firstPrompt?: string, modelPreference?: string): Conversation
+  adopt(id: string, mode: ChatMode, prompt: string, sentPreference: string): void
   recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void
   rename(id: string, title: string): void
   setModelPreference(id: string, modelPreference: string): void
@@ -233,6 +244,13 @@ export class MemoryConversationStore
 
   get(id: string): Conversation | undefined {
     return this.convs.find((c) => c.id === id)
+  }
+
+  adopt(id: string, mode: ChatMode, prompt: string, sentPreference: string): void {
+    const next = adoptConversation(this.convs, id, mode, prompt, sentPreference)
+    if (next === null) return
+    this.convs = next
+    this.notifyChanged()
   }
 
   recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void {
@@ -373,6 +391,11 @@ export class LocalStorageConversationStore
 
   recordFirstPrompt(id: string, prompt: string, sentPreference?: string): void {
     const next = recordFirstPrompt(this.load(), id, prompt, sentPreference)
+    if (next !== null && this.save(next)) this.notifyChanged()
+  }
+
+  adopt(id: string, mode: ChatMode, prompt: string, sentPreference: string): void {
+    const next = adoptConversation(this.load(), id, mode, prompt, sentPreference)
     if (next !== null && this.save(next)) this.notifyChanged()
   }
 

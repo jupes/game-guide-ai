@@ -98,9 +98,11 @@ from typing import Any, Protocol
 
 from pydantic import TypeAdapter, ValidationError
 
+import config
+
 from . import campaign_identity as ident
 from .campaign_store import Campaign, CampaignStoreError, MissingParent, Staging, fake, now_or, pg, shared_rows
-from .db import InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
+from .db import AdvisoryLock, InMemoryDatabase, InMemoryTransaction, PgTransaction, UnitOfWork
 from .jobs import JobQueue
 from .workbench_contracts import (
     ALT_MAX_CHARS,
@@ -200,6 +202,12 @@ class QuotaExceeded(CampaignStoreError):
 
     def __init__(self) -> None:
         super().__init__(self.MESSAGE)
+
+
+class AccountMediaQuotaExceeded(QuotaExceeded):
+    """The owner's total media reservation would exceed the account cap."""
+
+    MESSAGE = "the account's media quota cannot take that asset"
 
 
 class IllegalTransition(CampaignStoreError):
@@ -333,6 +341,17 @@ class ReadyObject:
 class MediaUsage:
     bytes_reserved: int
     asset_count: int
+
+
+def _check_account_room(usage: MediaUsage, delta_bytes: int, delta_count: int) -> None:
+    bytes_exceeded = (
+        delta_bytes > 0 and usage.bytes_reserved + delta_bytes > config.WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX
+    )
+    assets_exceeded = (
+        delta_count > 0 and usage.asset_count + delta_count > config.WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX
+    )
+    if bytes_exceeded or assets_exceeded:
+        raise AccountMediaQuotaExceeded()
 
 
 def record_of(row: AssetRow) -> AssetRecord:
@@ -797,9 +816,14 @@ class _Transitions:
     ) -> AssetRecord:
         _check_types(campaign_id=campaign_id, asset_id=asset_id, owner_id=owner_id)
         moment = now_or(now)
+        self._lock_account(unit, owner_id, transaction_timeout_s)
         row = self._held(unit, campaign_id, asset_id, owner_id, (_PROCESSING,), transaction_timeout_s)
         real = _check_measured(row, measured)
-        if self._try_reserve(unit, row.campaign_id, owner_id, real.size_bytes - row.declared_size_bytes, 0):
+        try:
+            self._reserve(unit, row.campaign_id, owner_id, real.size_bytes - row.declared_size_bytes, 0)
+        except QuotaExceeded:
+            pass
+        else:
             ready = _entered(
                 row, _READY, moment,
                 media_type=real.media_type, size_bytes=real.size_bytes,
@@ -876,9 +900,12 @@ class _Transitions:
     def _write_row(self, unit: UnitOfWork, row: AssetRow, owner_id: int) -> AssetRow:
         raise NotImplementedError  # pragma: no cover
 
-    def _try_reserve(
+    def _lock_account(self, unit: UnitOfWork, owner_id: int, transaction_timeout_s: float | None) -> None:
+        raise NotImplementedError  # pragma: no cover
+
+    def _reserve(
         self, unit: UnitOfWork, campaign_id: str, owner_id: int, delta_bytes: int, delta_count: int
-    ) -> bool:
+    ) -> None:
         raise NotImplementedError  # pragma: no cover
 
     def _release(self, unit: UnitOfWork, campaign_id: str, owner_id: int, freed_bytes: int, freed_count: int) -> None:
@@ -972,8 +999,8 @@ class PostgresAssetStore(_Transitions):
         )
         declared = _declared(kind, media_type, size_bytes, alt, command_id)
         moment = now_or(now)
+        self._lock_account(unit, owner_id, transaction_timeout_s)
         transaction = pg(unit)
-        bound_before_locking(transaction, transaction_timeout_s)
         conn = transaction.conn
         params = {
             "id": ident.new_id(ident.ASSET),
@@ -987,8 +1014,6 @@ class PostgresAssetStore(_Transitions):
             "tmp_key": new_tmp_key(),
             "command_id": declared.command_id,
             "now": moment,
-            "quota_bytes": QUOTA_BYTES,
-            "quota_assets": QUOTA_ASSETS,
         }
         created: AssetRow | None = None
         # A savepoint (participant_store.offer's pattern): a quota refusal rolls
@@ -1024,23 +1049,7 @@ class PostgresAssetStore(_Transitions):
                 # returns its first asset even when the quota is now full.
                 return self._replay_or_refuse(conn, params)
             created = row_from_tuple(found)
-            # One conditional UPDATE (SEC-31). The loser of two racing creates
-            # gets no row back ONLY because PostgreSQL re-evaluates this WHERE
-            # against the winner's committed row version under READ COMMITTED,
-            # which Database.transaction() sets; under REPEATABLE READ it would
-            # raise a serialisation error instead. The insert above has already
-            # shown, in this transaction, that the campaign is the caller's, so
-            # no row changed can only mean over quota.
-            reserved = conn.execute(
-                f"UPDATE campaign.media_usage "
-                f"SET bytes_reserved = bytes_reserved + %(size_bytes)s, asset_count = asset_count + 1 "
-                f"WHERE campaign_id = %(campaign_id)s AND campaign_id IN ({GM_CAMPAIGNS}) "
-                f"AND bytes_reserved + %(size_bytes)s <= %(quota_bytes)s "
-                f"AND asset_count + 1 <= %(quota_assets)s RETURNING campaign_id",
-                params,
-            ).fetchone()
-            if reserved is None:
-                raise QuotaExceeded()
+            self._reserve(unit, campaign_id, owner_id, declared.size_bytes, 1)
         self._seed_sweep(unit, created)
         return record_of(created)
 
@@ -1132,11 +1141,26 @@ class PostgresAssetStore(_Transitions):
             raise _missing()
         return row_from_tuple(written)
 
-    def _try_reserve(
+    def _lock_account(self, unit: UnitOfWork, owner_id: int, transaction_timeout_s: float | None) -> None:
+        transaction = pg(unit)
+        bound_before_locking(transaction, transaction_timeout_s)
+        transaction.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
+
+    def _reserve(
         self, unit: UnitOfWork, campaign_id: str, owner_id: int, delta_bytes: int, delta_count: int
-    ) -> bool:
-        # Conditional, and correct only under READ COMMITTED (see create).
-        changed = pg(unit).conn.execute(
+    ) -> None:
+        conn = pg(unit).conn
+        if delta_bytes > 0 or delta_count > 0:
+            # Competing reservations hold the same owner lock. Under READ
+            # COMMITTED this query sees reservations committed before that lock.
+            total = conn.execute(
+                f"SELECT COALESCE(sum(bytes_reserved), 0), COALESCE(sum(asset_count), 0) "
+                f"FROM campaign.media_usage WHERE campaign_id IN ({GM_CAMPAIGNS})",
+                {"owner_id": owner_id},
+            ).fetchone()
+            assert total is not None
+            _check_account_room(MediaUsage(int(total[0]), int(total[1])), delta_bytes, delta_count)
+        changed = conn.execute(
             f"UPDATE campaign.media_usage "
             f"SET bytes_reserved = bytes_reserved + %(delta_bytes)s, asset_count = asset_count + %(delta_count)s "
             f"WHERE campaign_id = %(campaign_id)s AND campaign_id IN ({GM_CAMPAIGNS}) "
@@ -1151,7 +1175,8 @@ class PostgresAssetStore(_Transitions):
                 "quota_assets": QUOTA_ASSETS,
             },
         ).fetchone()
-        return changed is not None
+        if changed is None:
+            raise QuotaExceeded()
 
     def _release(self, unit: UnitOfWork, campaign_id: str, owner_id: int, freed_bytes: int, freed_count: int) -> None:
         pg(unit).conn.execute(
@@ -1286,9 +1311,8 @@ class InMemoryAssetStore(_Transitions):
         )
         declared = _declared(kind, media_type, size_bytes, alt, command_id)
         moment = now_or(now)
+        self._lock_account(unit, owner_id, transaction_timeout_s)
         twin = fake(unit)
-        twin.note_row_lock()
-        twin.transaction_bound(transaction_timeout_s)
         campaign = self._owned(twin, campaign_id, owner_id)
         earlier = None
         if declared.command_id is not None:
@@ -1306,9 +1330,7 @@ class InMemoryAssetStore(_Transitions):
             raise _missing()
         # One open writer, so the twin may check before it stages; it gives the
         # same answers in the same cases as the insert-then-reserve order.
-        usage = usage_of(visible_rows(self._rows, twin).values(), campaign_id)
-        if usage.bytes_reserved + declared.size_bytes > QUOTA_BYTES or usage.asset_count + 1 > QUOTA_ASSETS:
-            raise QuotaExceeded()
+        self._reserve(unit, campaign_id, owner_id, declared.size_bytes, 1)
         created = stage_row(
             self._rows,
             twin,
@@ -1377,13 +1399,26 @@ class InMemoryAssetStore(_Transitions):
     def _write_row(self, unit: UnitOfWork, row: AssetRow, owner_id: int) -> AssetRow:
         return stage_row(self._rows, fake(unit), row, new=False)
 
-    def _try_reserve(
+    def _lock_account(self, unit: UnitOfWork, owner_id: int, transaction_timeout_s: float | None) -> None:
+        twin = fake(unit)
+        twin.transaction_bound(transaction_timeout_s)
+        twin.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
+
+    def _reserve(
         self, unit: UnitOfWork, campaign_id: str, owner_id: int, delta_bytes: int, delta_count: int
-    ) -> bool:
-        usage = usage_of(visible_rows(self._rows, fake(unit)).values(), campaign_id)
-        return (
-            usage.bytes_reserved + delta_bytes <= QUOTA_BYTES and usage.asset_count + delta_count <= QUOTA_ASSETS
-        )
+    ) -> None:
+        twin = fake(unit)
+        rows = visible_rows(self._rows, twin).values()
+        if delta_bytes > 0 or delta_count > 0:
+            owned = {
+                campaign.id for campaign in self._campaigns.visible(twin).values() if campaign.owner_id == owner_id
+            }
+            assets = [row for row in rows if row.campaign_id in owned]
+            bytes_reserved, count = _freed(assets)
+            _check_account_room(MediaUsage(bytes_reserved, count), delta_bytes, delta_count)
+        usage = usage_of(rows, campaign_id)
+        if usage.bytes_reserved + delta_bytes > QUOTA_BYTES or usage.asset_count + delta_count > QUOTA_ASSETS:
+            raise QuotaExceeded()
 
     def _release(self, unit: UnitOfWork, campaign_id: str, owner_id: int, freed_bytes: int, freed_count: int) -> None:
         """The twin's usage is derived from its rows, so the row's own write

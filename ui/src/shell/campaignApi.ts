@@ -302,6 +302,27 @@ export type ThreadRenameResult =
   | { readonly kind: 'failed' }
   | { readonly kind: 'unauthorized' }
 
+/** Background reconciliation is optional on older servers. A failed read or
+ * bind has no UI or auth side effects, including if its account has since left. */
+export async function listOwnConversations(cursor: string | null, fetchImpl: typeof fetch) {
+  const query = cursor === null ? '' : `?cursor=${encodeURIComponent(cursor)}`
+  const response = await send(fetchImpl, `/conversations${query}`)
+  if (!response?.ok) return null
+  const page = parseConversationPage(await bodyOf(response))
+  return page.kind === 'ok' ? page.value : null
+}
+
+export async function bindConversationChannel(id: string, mode: Conversation['started_mode'], fetchImpl: typeof fetch) {
+  if (!isOpaqueId(id) || mode === null) return null
+  const response = await sendJson(fetchImpl, `/conversations/${encodeURIComponent(id)}`, 'PATCH', {
+    schema_version: CONTRACT_VERSION, started_mode: mode,
+  })
+  if (!response?.ok) return null
+  const row = parseConversation(await bodyOf(response))
+  return row.kind === 'ok' && row.value.conversation_id === id && row.value.started_mode === mode
+    ? row.value : null
+}
+
 /** `GET /conversations?campaign_id=…[&cursor=…]`: a campaign's threads, newest
  * first. No `started_mode` filter (critic 17): a campaign thread whose mode is
  * still `null` is one too. A row this client cannot read, or that names another

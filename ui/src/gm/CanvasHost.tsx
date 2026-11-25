@@ -48,8 +48,10 @@ import { versionLabel } from './canvasStatus'
 import type { Document, DocumentVersion } from './contracts'
 import { getDocumentHistory, restoreDocumentVersion, unarchiveDocument } from './documentApi'
 import { DocumentAutosave } from './documentAutosave'
+import { documentFieldReads } from './documentFields'
 import { documentTitle } from './documentTitle'
 import { GameDocument } from './GameDocument'
+import { PortraitUpload } from './PortraitUpload'
 import { documentTypeById } from './registry'
 import { NO_REVEAL_CONTROLS, revealPresentation } from './revealPresentation'
 import { returnFocus } from './returnFocus'
@@ -254,6 +256,8 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
   const read = history?.revision === revision ? history : HISTORY_LOADING
   const title = documentTitle(document)
   const type = documentTypeById(document.type)
+  const canEditPortrait = !document.archived && restoring === null &&
+    documentFieldReads(document.type).some((field) => field.key === 'portrait' && field.editable)
   const presentation =
     type === undefined ? NO_REVEAL_CONTROLS : revealPresentation(reveals, documentId, type, reveals.seats ?? [])
 
@@ -331,6 +335,17 @@ function OpenCanvas({ document, layout, fetchImpl }: OpenCanvasProps): React.JSX
         onRetry={autosave.retry}
         onKeepMine={autosave.keepMine}
         onUseLatest={autosave.cancel}
+        portraitEditor={canEditPortrait ? (
+          <PortraitUpload
+            campaignId={campaignId}
+            hasPortrait={document.data.portrait != null}
+            locked={saves.fields.portrait !== undefined}
+            fetchImpl={fetchImpl}
+            onStart={() => autosave.invalidDraft('portrait')}
+            onCancel={() => autosave.cancel('portrait')}
+            onAttach={(asset) => autosave.commit('portrait', asset)}
+          />
+        ) : undefined}
         selectionEnabled={false}
         revealBadge={presentation.badge}
         revealedFields={presentation.fields}

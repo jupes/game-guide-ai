@@ -342,6 +342,12 @@ chat message becomes a document edit, and reload behaviour.
 | CANVAS-15 | **Drafts live in memory only.** They are not mirrored to `localStorage` or `sessionStorage`, because they are GM-private text (X-7). `beforeunload` protects a dirty canvas against reload. | I |
 | CANVAS-34 | **History and concurrency are different things.** *Concurrency:* every committed write advances the document's **write revision**, and each field remembers the revision that last changed it; patches carry the revision they were based on, which is what CANVAS-19 compares. A history version number is never a concurrency token. *History:* a burst of GM autosaves reads as one entry and must not store one whole-document snapshot per pause. Recommended: autosaves accumulate in one open `gm` working version, sealed by ten minutes idle, by closing or switching the canvas, by the start of an AI edit, by a restore, or by another author's write. **Opening the reveal sheet or an export dialog seals it first**, so what is pinned or exported is exactly the immutable version that was displayed. This reads plan invariant 5 as "*sealed* versions are append-only". `1kg.5.1` may group at display time instead, provided storage stays bounded. | P (refined) + I |
 
+When campaign media uploads are available, the portrait field offers a native
+file picker and asks for an image description. Upload sends the file bytes
+after an explicit press. The canvas attaches the processed asset through the
+same revision check as a text edit. Replacing a portrait preserves references
+held by earlier versions.
+
 ### 5.3 The loss guard
 
 The guard first **flushes**: it tries to save pending edits immediately, waiting

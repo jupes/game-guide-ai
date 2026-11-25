@@ -321,7 +321,7 @@ describe('who sees the Workbench (X-9)', () => {
     await waitFor(() => expect(canvasHeading()).toBeInTheDocument())
     const channels = within(screen.getByRole('navigation', { name: 'Channels' }))
     await user.click(channels.getByRole('button', { name: 'Sage' }))
-    expect(columns().canvas).toBeNull()
+    expect(columns().canvas).toHaveAttribute('hidden')
     expect(rail()).toBeInTheDocument()
     expect(switchGroup()).toBeNull()
     expect(screen.queryByRole('heading', { level: 2, name: 'Ondrey' })).toBeNull()

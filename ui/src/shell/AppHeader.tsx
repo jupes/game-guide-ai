@@ -2,7 +2,7 @@
  * AppHeader — persistent channel switcher band (swe1.4).
  *
  * Sits under the TopBar so switching channels no longer depends on the LeftNav.
- * Renders the role-gated channels as accented filter chips wired to setMode,
+ * Renders the role-gated channels as accented filter chips using the shared switch,
  * with the shared theme control anchored at the right edge.
  *
  * On the narrow layout (agent-forge-harness-0rn) WorkspaceShell passes
@@ -21,7 +21,7 @@ import { Chip } from '../ds/Chip'
 import { Switch } from '../ds/Switch'
 import { useTheme } from '../ds/theme'
 import { useAppNav } from './AppNav'
-import { useCanvasActions } from './canvasContext'
+import { useChannelSwitch } from './channelSwitch'
 import { useCurrentUser } from './currentUser'
 import { ModelPicker } from './ModelPicker'
 import { modesForRole, accentClass } from './modes'
@@ -38,8 +38,8 @@ export interface AppHeaderProps {
 }
 
 export function AppHeader({ showSettings = true, inert = false }: AppHeaderProps): React.JSX.Element {
-  const { mode, setMode } = useAppNav()
-  const { flushBeforeLeaving } = useCanvasActions()
+  const { mode } = useAppNav()
+  const switchChannel = useChannelSwitch()
   const { user } = useCurrentUser()
   const { theme, toggleTheme } = useTheme()
   const channelsRef = React.useRef<HTMLDivElement>(null)
@@ -59,11 +59,7 @@ export function AppHeader({ showSettings = true, inert = false }: AppHeaderProps
               icon={icon}
               label={label}
               selected={mode === m}
-              onClick={() => {
-                if (mode === m) return
-                if (mode !== 'gm') setMode(m)
-                else void flushBeforeLeaving().then((proceed) => { if (proceed) setMode(m) })
-              }}
+              onClick={() => switchChannel(m)}
               className={`app-header__channel ${accentClass(m)}`}
             />
           ))}

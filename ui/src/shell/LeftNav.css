@@ -50,6 +50,13 @@
   color: var(--md-sys-color-on-surface-variant);
 }
 
+.left-nav__other-conversations {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+}
+
 .left-nav__conversation {
   display: block;
   flex: 1;

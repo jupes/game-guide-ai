@@ -16,8 +16,7 @@
  *    grammar belongs to the workspace (`1kg.6.3`, CANVAS-30) and its reserved
  *    keys are single-use credentials. The code is not a credential.
  *
- * The outcome is held in a tiny module-level store so Login, Signup and the
- * Profile page can show it without prop-drilling through `App`.
+ * The store holds an outcome until Login, Signup or Profile displays it.
  */
 
 import { useSyncExternalStore } from 'react'
@@ -140,9 +139,9 @@ export function setGoogleOutcome(location: { search: string; pathname: string })
   if (outcome !== null) publish(outcome)
 }
 
-/** Forget the held outcome. */
-export function clearGoogleOutcome(): void {
-  if (current !== null) publish(null)
+/** Forget the held outcome, or consume a specific outcome after displaying it. */
+export function clearGoogleOutcome(displayed?: GoogleOutcome): void {
+  if (current !== null && (displayed === undefined || current === displayed)) publish(null)
 }
 
 /** Boot-only: read the callback's code from the address bar, hold it, and

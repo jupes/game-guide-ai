@@ -41,7 +41,7 @@ from fastapi.testclient import TestClient
 from starlette.routing import Mount
 
 import service.app as service_app
-from service.security_headers import CONTENT_SECURITY_POLICY
+from service.security_headers import CONTENT_SECURITY_POLICY, TABLE_PAGE_HEADERS
 from service.spa_fallback import (
     CLIENT_ROUTES,
     SPA_MOUNT_NAME,
@@ -93,6 +93,7 @@ def tmp_dist(tmp_path: Path) -> Path:
     (dist / "index.html").write_text(
         "<html><body>test-fixture-index</body></html>", encoding="utf-8",
     )
+    (dist / "table.html").write_text("<html><body>test-fixture-table</body></html>", encoding="utf-8")
     assets = dist / "assets"
     assets.mkdir()
     (assets / "app-abc123.js").write_text(
@@ -123,6 +124,21 @@ def test_allowlisted_path_serves_index_html(
         assert response.content == (tmp_dist / "index.html").read_bytes()
 
 
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_table_deep_link_serves_a_shell_with_its_own_policy(
+    routed_client: TestClient, tmp_dist: Path, method: str,
+) -> None:
+    response = routed_client.request(
+        method, "/table?campaign_id=cmp_example", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    for name, value in TABLE_PAGE_HEADERS.items():
+        assert response.headers[name] == value
+    if method == "GET":
+        assert response.content == (tmp_dist / "table.html").read_bytes()
+
+
 # ── A2 -- the fallback is an allowlist, not a catch-all ──────────────────────
 
 
@@ -131,7 +147,7 @@ def test_allowlisted_path_serves_index_html(
     # `/auth/nope`: an unknown subpath of a real API prefix (N-2) must not
     # fall through to index.html either.
     [
-        "/nope", "/verify", "/reset", "/billing/return", "/table/x", "/t/abc",
+        "/nope", "/verify", "/reset", "/billing/return", "/table/x", "/table.html", "/t/abc",
         "/profile/", "/auth/nope", "/tavern/", "/taverns",
     ],
 )

@@ -5,6 +5,7 @@ import { AppNavProvider } from './shell/AppNav'
 import { CampaignProvider } from './shell/campaignContext'
 import { CurrentUserProvider } from './shell/currentUser'
 import { ConversationStoreProvider } from './shell/ConversationStoreContext'
+import { ConversationIndexProvider } from './shell/conversationIndex'
 import { UrlNavigation } from './shell/UrlNavigation'
 import { startScreen } from './shell/routes'
 import { readCampaignRestore } from './shell/workspaceFragment'
@@ -36,10 +37,12 @@ export function AppRoot(): React.JSX.Element {
       >
         <CurrentUserProvider>
           <ConversationStoreProvider>
-            <CampaignProvider restore={boot.restore}>
-              <UrlNavigation />
-              <App />
-            </CampaignProvider>
+            <ConversationIndexProvider>
+              <CampaignProvider restore={boot.restore}>
+                <UrlNavigation />
+                <App />
+              </CampaignProvider>
+            </ConversationIndexProvider>
           </ConversationStoreProvider>
         </CurrentUserProvider>
       </AppNavProvider>

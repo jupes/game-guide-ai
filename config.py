@@ -421,6 +421,7 @@ REVEAL_STOP_RATE_LIMIT_WINDOW_S: float = _float("REVEAL_STOP_RATE_LIMIT_WINDOW_S
 # polls every few seconds stays far below it. Per instance, like the others.
 TABLE_READ_RATE_LIMIT_PER_PRINCIPAL: int = _int("TABLE_READ_RATE_LIMIT_PER_PRINCIPAL", 120)
 TABLE_READ_RATE_LIMIT_WINDOW_S: float = _float("TABLE_READ_RATE_LIMIT_WINDOW_S", 60.0)
+TABLE_STREAMS_ENABLED: bool = _bool("WORKBENCH_TABLE_STREAMS_ENABLED", False)
 
 # --- Per-account storage caps (agent-forge-harness-531x, PR-B) --------------
 # The write throttle above bounds RATE; these bound STORAGE itself, so a
@@ -443,6 +444,12 @@ WORKBENCH_CAMPAIGNS_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_CAMPAIGNS_PER_ACCOU
 #: 256 MiB: a maximum-size stat block with a few versions is about 20 MB, and
 #: honest campaigns are text-light.
 WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX", 268_435_456)
+
+# Across all of one owner's campaigns, including archived campaigns and
+# uploads whose original bytes are still reserved. Defaults allow two full
+# per-campaign media quotas. Each thumbnail and waveform has a separate size bound.
+WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX", 1_000_000_000)
+WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX", 1000)
 
 # --- GM tools (agent-forge-harness-1kg.4.1) -----------------------------------
 

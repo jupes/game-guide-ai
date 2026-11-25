@@ -626,12 +626,16 @@ describe('Concluded (S-8, S-9, S-10, S-11)', () => {
     const concluded = Array.from({ length: 13 }, (_, i) => campaignBody(`cmp_x${String(i + 1).padStart(2, '0')}`, {
       concluded_at: day(10), last_activity_at: day(28 - i),
     }))
-    await mount({ route: listOf(concluded) })
+    const { server } = await mount({ route: listOf(concluded) })
     openTavern()
     await userEvent.click(await screen.findByRole('button', { name: 'Concluded (13)' }))
     expect(screen.getAllByRole('button', { name: /^Reopen / })).toHaveLength(12)
-    await userEvent.click(screen.getByRole('button', { name: 'Show more concluded campaigns' }))
+    const before = server.calls.length
+    screen.getByRole('button', { name: 'Show more concluded campaigns' }).focus()
+    await userEvent.keyboard('{Enter}')
     expect(screen.getAllByRole('button', { name: /^Reopen / })).toHaveLength(13)
+    expect(prepButton('cmp_x13')).toHaveFocus()
+    expect(server.calls).toHaveLength(before)
   })
 
   it('S-9 Mark concluded sends one POST; the card moves to Concluded (3), focus goes to the toggle, and the status reads Marking concluded… then Marked concluded', async () => {
@@ -1011,7 +1015,7 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     expect(seatNames()).toEqual(['Table of cmp_B', 'Table of cmp_D', 'Table of cmp_A', 'Table of cmp_C'])
   })
 
-  it('SP-3 each seat says one thing about its standing: plain "Live now" and no link or button, waiting, concluded, or last played', async () => {
+  it('SP-3 each seat shows its standing, and only a confirmed live seat links to the player table', async () => {
     const seats = [
       seatBody('cmp_B', { live: true, tone: 'Mystery · Low magic' }),
       seatBody('cmp_D', { confirmed: false, live: true }),
@@ -1027,9 +1031,8 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     expect(live.getByText('Playing as Brannoc')).toBeInTheDocument()
     expect(live.getByText('5e')).toBeInTheDocument()
     expect(live.queryByText('Last played', { exact: false })).toBeNull()
-    // ID-17: no table page exists, so there is nothing to press and nowhere to go.
-    expect(screen.queryAllByRole('link')).toHaveLength(0)
-    expect(document.querySelectorAll('a')).toHaveLength(0)
+    expect(live.getByRole('link', { name: 'Join table Table of cmp_B' })).toHaveAttribute('href', '/table?campaign_id=cmp_B')
+    expect(within(screen.getByRole('list', { name: 'Your seats' })).getAllByRole('link')).toHaveLength(1)
     for (const id of ['cmp_B', 'cmp_D', 'cmp_C', 'cmp_A']) {
       expect(within(seatCard(id)).queryAllByRole('button'), id).toHaveLength(0)
     }
@@ -1140,7 +1143,7 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     const { server } = await asPlayer(route)
     const retry = await screen.findByRole('button', { name: 'Retry' })
     expect(statusNode()).toHaveTextContent("Couldn't load your seats")
-    expect(document.querySelector('p.tavern-screen__message')).toHaveTextContent("Couldn't load your seats")
+    expect(screen.getByText("Couldn't load your seats", { selector: 'p.tavern-screen__message' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /^Retry/ })).toHaveLength(1)
     failing = false
     await userEvent.click(retry)
@@ -1219,8 +1222,10 @@ describe('the player tavern and Your seats (30c PR-2, SP-1 to SP-13)', () => {
     await screen.findByRole('list', { name: 'Your seats' })
     expect(seatNames()).toHaveLength(12)
     const before = server.calls.length
-    await userEvent.click(screen.getByRole('button', { name: 'Show more seats' }))
+    screen.getByRole('button', { name: 'Show more seats' }).focus()
+    await userEvent.keyboard('{Enter}')
     expect(seatNames()).toHaveLength(13)
+    expect(screen.getByRole('heading', { name: 'Table of cmp_s00' })).toHaveFocus()
     expect(screen.queryByRole('button', { name: 'Show more seats' })).toBeNull()
     expect(server.calls.length).toBe(before)
     cleanup()

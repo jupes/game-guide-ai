@@ -32,9 +32,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+from .security_headers import TABLE_PAGE_HEADERS
 
 #: The client screens. `ui/src/shell/routes.ts` is the client half of
 #: this table; `tests/test_spa_routes_parity.py` fails if the two drift.
@@ -85,4 +87,18 @@ def install_spa(app: FastAPI, dist: Path) -> None:
             name=f"{SPA_ROUTE_PREFIX}{path}",
         )
 
+    table_html = dist / "table.html"
+
+    async def _serve_table() -> FileResponse:
+        if not table_html.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(table_html, headers=TABLE_PAGE_HEADERS)
+
+    async def _hide_table_file() -> None:
+        raise HTTPException(status_code=404)
+
+    app.add_api_route("/table", _serve_table, methods=["GET", "HEAD"], include_in_schema=False, name="spa:/table")
+    app.add_api_route(
+        "/table.html", _hide_table_file, methods=["GET", "HEAD"], include_in_schema=False, name="spa:/table.html"
+    )
     app.mount("/", StaticFiles(directory=dist, html=True), name=SPA_MOUNT_NAME)

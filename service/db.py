@@ -119,9 +119,9 @@ class AdvisoryLock(IntEnum):
     #: transaction holding it can never take a campaign lock afterwards
     #: (`lock_campaign` refuses with `CampaignLockOrder`).
     WORKBENCH_IN_FLIGHT = 4
-    #: Per account, around the campaign count and the document byte total
-    #: (agent-forge-harness-531x, PR-B). Taken before any row lock of the
-    #: write it guards (campaign create; document create, patch and restore).
+    #: Per account, around the campaign count and the document and media totals
+    #: (agent-forge-harness-531x). Taken before any row lock of the write it
+    #: guards (campaign create; document writes; media reservation and finalization).
     #: Never taken by a transaction that has taken, or will take, a campaign
     #: lock (`lock_campaign`) — `documents_api` and `campaign_store.create`
     #: never do, so there is nothing to order against there. Ordering:

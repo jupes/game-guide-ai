@@ -160,6 +160,7 @@ export interface CampaignContextValue {
    * caller holds the pages. A signed-out or inert context makes no request. */
   readSeats(cursor: string | null): Promise<SeatReadOutcome>
   registerSwitchGuard(guard: SwitchGuard): () => void
+  parkedConversation(): string | null | undefined
   isCurrentScope(key: string): boolean
 }
 
@@ -228,7 +229,7 @@ class CampaignStore {
   private guards: SwitchGuard[] = []
   private documentListeners = new Set<(documentId: string) => void>()
   private nav: Nav = NO_NAV
-  private parkedThread: { scope: string; id: string } | null = null
+  private parkedThread: { scope: string; id: string | null } | null = null
   private restore: CampaignRestore | null
   private readonly fetchImpl: typeof fetch | undefined
   private readonly win: Window
@@ -352,7 +353,7 @@ class CampaignStore {
     this.nav = nav
     this.threadStore.opened(nav.conversationId)
     if (nav.mode !== 'gm') {
-      if (previousMode === 'gm' && scope !== null && previousId !== null && threads.includes(previousId)) {
+      if (previousMode === 'gm' && scope !== null && (previousId === null || threads.includes(previousId))) {
         this.parkedThread = { scope: scope.key, id: previousId }
       }
       this.dropCampaignConversation()
@@ -739,6 +740,9 @@ class CampaignStore {
   }
 
   isCurrentScope = (key: string): boolean => this.snap.scope?.key === key
+  parkedConversation = (): string | null | undefined => (
+    this.parkedThread?.scope === this.snap.scope?.key ? this.parkedThread?.id : undefined
+  )
 }
 
 /** The id AppNav consumers see: a campaign thread only in its own campaign's GM
@@ -773,6 +777,7 @@ const INERT: CampaignContextValue = {
   setConcluded: inertOutcome<ConcludeOutcome>('failed'),
   readSeats: inertOutcome<SeatReadOutcome>(SEATS_FAILED),
   registerSwitchGuard: () => () => {},
+  parkedConversation: () => undefined,
   isCurrentScope: () => false,
 }
 
@@ -841,6 +846,7 @@ export function CampaignProvider({ children, restore = null, fetchImpl }: Campai
     setConcluded: store.setConcluded,
     readSeats: store.readSeats,
     registerSwitchGuard: store.registerSwitchGuard,
+    parkedConversation: store.parkedConversation,
     isCurrentScope: store.isCurrentScope,
     // Only these four snapshot fields reach the value, so a change to the document key,
     // the thread bookkeeping or anything else does not re-render a useCampaign consumer (C-13).

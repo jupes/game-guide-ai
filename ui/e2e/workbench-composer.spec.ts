@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 import { CAMPAIGN_ID, DOCUMENT, DOCUMENT_ID, DOCUMENT_TITLE, HISTORY, installWorkbenchRoutes } from './workbenchStubs'
-import { DocumentHistoryPageSchema, DocumentVersionSchema, TOOL_IDS, type FieldPatchRequest, type ToolInvocationRequest } from '../src/gm/contracts'
+import { DocumentHistoryPageSchema, DocumentVersionSchema, TOOL_IDS, type AssetRef, type FieldPatchRequest, type TableSession, type ToolInvocationRequest } from '../src/gm/contracts'
 import { cardResult, documentResult, toolInvocation } from '../src/gm/laneFixtures'
 
 const THREAD = 'cnv_e2eWorkbenchThread00000001'
@@ -11,6 +11,8 @@ const thread = {
   schema_version: 1, conversation_id: THREAD, campaign_id: CAMPAIGN_ID, started_mode: 'gm',
   title: null, created_at: '2026-09-16T19:20:11Z', updated_at: null, archived_at: null,
 }
+
+test.use({ hasTouch: true })
 
 async function prepWorkbench(page: Page): Promise<void> {
   await page.setViewportSize({ width: 375, height: 812 })
@@ -23,9 +25,51 @@ async function prepWorkbench(page: Page): Promise<void> {
   } }))
   await page.route((url) => /\/(reveals|table-session|attachments)$/.test(url.pathname),
     (route) => route.fulfill({ status: 404, json: {} }))
+  await page.route((url) => url.pathname.endsWith('/assets/upload-capability'),
+    (route) => route.fulfill({ status: 404, json: {} }))
+  await page.route((url) => url.pathname === '/conversations' && !url.searchParams.has('campaign_id'),
+    (route) => route.fulfill({ json: { schema_version: 1, items: [], next_cursor: null } }))
   await page.route('**/metrics/ui', (route) => route.fulfill({ status: 204 }))
   await page.route((url) => url.pathname === `/conversations/${THREAD}`, (route) => route.fulfill({ json: thread }))
 }
+
+test('a GM can start and end the live table from the phone workspace', async ({ page }) => {
+  await prepWorkbench(page)
+  const id = 'ses_e2ePhoneTableSession00001'
+  let table: TableSession | null = null
+  const actions: string[] = []
+  await page.route((url) => url.pathname === `/conversations/${THREAD}/timeline`, (route) => route.fulfill({ json: {
+    schema_version: 1, conversation_id: THREAD, next_cursor: null, items: [],
+  } }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/tool-availability`,
+    (route) => route.fulfill({ json: Object.fromEntries(TOOL_IDS.map((toolId) => [toolId, null])) }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/table-session`, (route) => {
+    if (route.request().method() === 'POST') {
+      const request = route.request().postDataJSON()
+      actions.push(request.action)
+      if (request.action === 'start') {
+        table = {
+          schema_version: 1, state: 'live', session_id: id, campaign_id: CAMPAIGN_ID,
+          gen: 1, audio_epoch: 0, reveal_epoch: 0, audio: false, screens: [],
+          started_at: new Date().toISOString(), ends_at: new Date(Date.now() + 3600_000).toISOString(), ended_at: null,
+        }
+      } else {
+        expect(request).toMatchObject({ action: 'end', session_id: id })
+        if (table === null) throw new Error('Only a started session can be ended')
+        table = { ...table, state: 'ended', ended_at: new Date().toISOString(), reveal_epoch: 1 }
+      }
+    }
+    return route.fulfill({ json: { schema_version: 1, session: table } })
+  })
+  await page.goto(WORKSPACE)
+  const controls = page.getByRole('group', { name: 'Table session', exact: true })
+  await controls.getByRole('button', { name: 'Start session' }).click()
+  await expect(controls.getByText('Live', { exact: true })).toBeVisible()
+  await controls.getByRole('button', { name: 'End session' }).click()
+  await expect(controls.getByRole('button', { name: 'Start session' })).toBeVisible()
+  expect(actions).toEqual(['start', 'end'])
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+})
 
 test('a phone keeps the GM draft, runs from Send, and restores the result after reload', async ({ page }) => {
   await prepWorkbench(page)
@@ -124,7 +168,7 @@ test('a hydrated monster card saves without replacing the canvas and opens on a 
   const save = page.getByRole('button', { name: 'Save to Bestiary' })
   await expect(save).toBeVisible()
   expect(called).toEqual([])
-  await save.click()
+  await save.press('Enter')
   const open = page.getByRole('button', { name: 'Open in Bestiary' })
   await expect(open).toBeFocused()
   await expect(page).not.toHaveURL(/document=/)
@@ -188,6 +232,14 @@ test('phone autosave keeps new typing and resolves two-tab conflicts before swit
   await expect(guard.getByRole('button', { name: 'Keep editing' })).toBeFocused()
   await guard.getByRole('button', { name: 'Keep editing' }).click()
   await expect(input).toHaveValue('A gravelly whisper')
+  await page.getByRole('button', { name: 'Sage', exact: true }).click()
+  await guard.getByRole('button', { name: 'Switch anyway' }).click()
+  await expect(canvas).toBeHidden()
+  await page.getByRole('button', { name: 'Spell', exact: true }).click()
+  await page.getByRole('button', { name: 'GM', exact: true }).click()
+  await expect(conflict).toBeVisible()
+  await expect(input).toHaveValue('A gravelly whisper')
+  expect(requests).toHaveLength(3)
   await conflict.getByRole('button', { name: 'Keep mine' }).click()
   await expect(conflict).toBeHidden()
   expect(requests[3]).toMatchObject({ base_write_revision: 7, fields: { voice: 'A gravelly whisper' } })
@@ -255,7 +307,7 @@ test('history restore on a phone flushes drafts and appends a new version', asyn
   await canvas.getByRole('button', { name: 'Edit Voice' }).click()
   const voice = canvas.getByRole('textbox', { name: 'Voice', exact: true })
   await voice.fill('Voice to preserve in history')
-  await restore.click()
+  await restore.tap()
   const guard = page.getByRole('dialog', { name: /unsaved changes/i })
   await expect(guard).toBeVisible()
   expect(writes).toContain('patch')
@@ -272,4 +324,116 @@ test('history restore on a phone flushes drafts and appends a new version', asyn
   await expect(canvas.getByText('The first voice', { exact: true })).toBeVisible()
   await expect(canvas.getByRole('heading', { name: DOCUMENT_TITLE })).toBeFocused()
   await expect(versions.getByRole('alert')).toBeHidden()
+})
+
+test('a phone retries a portrait upload without reserving a second asset', async ({ page }) => {
+  await prepWorkbench(page)
+  const collection = `/campaigns/${CAMPAIGN_ID}/assets`
+  const documentPath = `/campaigns/${CAMPAIGN_ID}/documents/${DOCUMENT_ID}`
+  const assetId = 'ast_e2ePortraitAsset0000000001'
+  const abandonedId = 'ast_e2ePortraitAbandoned000001'
+  const uploadPath = `${collection}/${assetId}/bytes`
+  const description = 'A traveller wearing a sea-green cloak'
+  const image = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8/x8AAwMCAO+/T1sAAAAASUVORK5CYII=',
+    'base64',
+  )
+  const commands: string[] = []
+  const order: string[] = []
+  const discarded: string[] = []
+  const uploads: Buffer[] = []
+  await page.exposeFunction('recordPortraitBytes', (bytes: number[]) => { uploads.push(Buffer.from(bytes)) })
+  // WebKit's network interceptor doesn't expose file blobs. Read the outgoing
+  // request body in the browser before forwarding the original fetch.
+  await page.addInitScript((path) => {
+    const fetchOriginal = window.fetch.bind(window)
+    const capture = (window as typeof window & {
+      recordPortraitBytes: (bytes: number[]) => Promise<void>
+    }).recordPortraitBytes
+    window.fetch = async (input, init) => {
+      if (typeof input === 'string' && input === path && init?.method === 'PUT') {
+        const request = new Request(new URL(path, window.location.href), init)
+        await capture(Array.from(new Uint8Array(await request.arrayBuffer())))
+      }
+      return fetchOriginal(input, init)
+    }
+  }, uploadPath)
+  let server = { ...DOCUMENT, data: { ...DOCUMENT.data, portrait: undefined as AssetRef | undefined } }
+  const asset = {
+    schema_version: 1, asset_id: assetId, campaign_id: CAMPAIGN_ID, kind: 'image',
+    state: 'uploading', media_type: 'image/png', size_bytes: image.length,
+    width: null, height: null, duration_ms: null, alt: description, failure: null,
+    created_at: DOCUMENT.created_at, updated_at: DOCUMENT.created_at,
+  }
+  await page.route((url) => url.pathname === `/conversations/${THREAD}/timeline`, (route) => route.fulfill({ json: {
+    schema_version: 1, conversation_id: THREAD, next_cursor: null, items: [],
+  } }))
+  await page.route((url) => url.pathname === `/campaigns/${CAMPAIGN_ID}/tool-availability`,
+    (route) => route.fulfill({ json: Object.fromEntries(TOOL_IDS.map((id) => [id, null])) }))
+  await page.route((url) => url.pathname === `${collection}/upload-capability`,
+    (route) => route.fulfill({ status: 204 }))
+  await page.route((url) => url.pathname === collection, (route) => {
+    expect(route.request().method()).toBe('POST')
+    const request = route.request().postDataJSON()
+    expect(request).toMatchObject({ kind: 'image', media_type: 'image/png', alt: description, size_bytes: image.length })
+    expect(JSON.stringify(request)).not.toContain('personal-photo.png')
+    commands.push(request.command_id)
+    order.push('reserve')
+    return route.fulfill({ status: 201, json: commands.length <= 2 ? asset : { ...asset, asset_id: abandonedId } })
+  })
+  await page.route((url) => url.pathname === uploadPath, (route) => {
+    expect(route.request().method()).toBe('PUT')
+    expect(route.request().headers()['content-type']).toBe('image/png')
+    order.push('upload')
+    if (commands.length === 1) return route.fulfill({ status: 503, json: {} })
+    return route.fulfill({ json: { ...asset, state: 'ready', width: 1, height: 1 } })
+  })
+  await page.route((url) => url.pathname === `${collection}/${assetId}` && url.search === '?rendition=thumb',
+    (route) => route.fulfill({ body: image, contentType: 'image/png' }))
+  await page.route((url) => url.pathname === `${collection}/${abandonedId}/bytes`,
+    (route) => route.fulfill({ status: 503, json: {} }))
+  await page.route((url) => url.pathname === `${collection}/${abandonedId}`, (route) => {
+    expect(route.request().method()).toBe('DELETE')
+    discarded.push(abandonedId)
+    return route.fulfill({ status: 204 })
+  })
+  await page.route((url) => url.pathname === documentPath, (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: server })
+    const patch = route.request().postDataJSON() as FieldPatchRequest
+    const portrait = { asset_id: assetId, media_type: 'image', width: 1, height: 1, alt: description } as const
+    expect(patch).toMatchObject({ base_write_revision: 4, fields: { portrait } })
+    order.push('attach')
+    server = { ...server, write_revision: 5, data: { ...server.data, portrait } }
+    return route.fulfill({ json: server })
+  })
+  await page.goto(`${WORKSPACE}&document=${DOCUMENT_ID}`)
+  const canvas = page.getByRole('region', { name: DOCUMENT_TITLE })
+  await canvas.getByRole('button', { name: 'Attach portrait' }).click()
+  const form = canvas.getByRole('form', { name: 'Portrait upload' })
+  await form.getByLabel('Image file').setInputFiles({ name: 'personal-photo.png', mimeType: 'image/png', buffer: image })
+  await form.getByLabel('Image description').fill(description)
+  expect(order).toEqual([])
+  await form.getByRole('button', { name: 'Upload portrait' }).click()
+  await expect(form.getByRole('alert')).toHaveText('The portrait could not be uploaded. Try again.')
+  await expect(canvas.getByRole('img', { name: description })).toBeHidden()
+  await form.getByRole('button', { name: 'Upload portrait' }).click()
+  await expect(canvas.getByRole('img', { name: description })).toBeVisible()
+  await expect.poll(() => canvas.getByRole('img', { name: description }).evaluate((node: HTMLImageElement) => node.naturalWidth)).toBe(1)
+  await expect(canvas.getByRole('button', { name: 'Replace portrait' })).toBeFocused()
+  expect(order).toEqual(['reserve', 'upload', 'reserve', 'upload', 'attach'])
+  expect(uploads).toEqual([image, image])
+  expect(commands).toHaveLength(2)
+  expect(commands[1]).toEqual(commands[0])
+
+  await canvas.getByRole('button', { name: 'Replace portrait' }).click()
+  await form.getByLabel('Image file').setInputFiles({ name: 'personal-photo.png', mimeType: 'image/png', buffer: image })
+  await form.getByLabel('Image description').fill(description)
+  await form.getByRole('button', { name: 'Upload portrait' }).click()
+  await expect(form.getByRole('alert')).toBeVisible()
+  await form.getByRole('button', { name: 'Cancel upload' }).click()
+  await expect.poll(() => discarded).toEqual([abandonedId])
+  expect(commands[2]).not.toBe(commands[0])
+  expect(order.filter((step) => step === 'attach')).toHaveLength(1)
+  await expect(canvas.getByRole('img', { name: description })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })

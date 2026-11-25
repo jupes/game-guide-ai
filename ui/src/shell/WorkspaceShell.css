@@ -291,6 +291,17 @@
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .workspace-shell__skip-link {
+    transition: none;
+  }
+}
+.workspace-shell__session {
+  display: block;
+  padding-inline: var(--aether-space-4);
+}
+
+/* Keep the document body usable when a phone is held sideways. */
 @media (height <= 460px) {
   .workspace-shell:is([data-layout="medium"], [data-layout="wide"]) .workspace-shell__chrome {
     .top-bar {
@@ -305,16 +316,29 @@
     .workbench-switch {
       margin-block: 0;
     }
+
+    &:has(.workspace-shell__session) {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(20rem, 38%);
+
+      > .workspace-shell__session {
+        grid-area: 1 / 2;
+        align-self: center;
+      }
+
+      .session-control__summary {
+        flex-basis: 8rem;
+      }
+
+      > .app-header,
+      .workbench-switch {
+        grid-column: 1 / -1;
+      }
+    }
   }
 
   .workspace-shell__main:not([data-canvas]),
   .workspace-shell[data-layout] .workbench[data-canvas] .workbench__chat:not([data-concealed]) {
     padding-block: var(--aether-space-1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .workspace-shell__skip-link {
-    transition: none;
   }
 }

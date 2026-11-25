@@ -297,10 +297,10 @@ export function selectionBarPosition(
 
 /**
  * The one route a GM surface may load an image from: the campaign asset route
- * (MS-7). Built from two ids and nothing else — an `AssetRef` never carries a
- * URL (X-10), and both ids are escaped so that neither can climb out of the
- * path or add a query that would carry GM text out (X-7).
+ * (MS-7). The two ids are escaped and the rendition can only come from this
+ * client. An `AssetRef` never carries a URL (X-10).
  */
-export function assetPath(campaignId: string, assetId: string): string {
-  return `/campaigns/${encodeURIComponent(campaignId)}/assets/${encodeURIComponent(assetId)}`
+export function assetPath(campaignId: string, assetId: string, rendition?: 'thumb'): string {
+  const path = `/campaigns/${encodeURIComponent(campaignId)}/assets/${encodeURIComponent(assetId)}`
+  return rendition === undefined ? path : `${path}?rendition=${rendition}`
 }

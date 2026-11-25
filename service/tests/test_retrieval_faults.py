@@ -284,6 +284,7 @@ def test_each_stage_fault_is_raised_typed(
 _BUGS = [
     pytest.param("embed", "sage", lambda: TypeError(CANARY), id="embed-TypeError"),
     pytest.param("vector_search", "sage", lambda: KeyError(CANARY), id="search-KeyError"),
+    pytest.param("fetch", "sage", lambda: TypeError(CANARY), id="fetch-TypeError"),
     pytest.param("secondary", "gm", lambda: RuntimeError(CANARY), id="secondary-RuntimeError"),
     pytest.param("secondary", "gm", lambda: PermissionError(CANARY), id="secondary-PermissionError"),
     pytest.param("secondary", "gm", lambda: psycopg.errors.InsufficientPrivilege(CANARY),

@@ -57,13 +57,14 @@ import subprocess
 import sys
 import threading
 import time
+from array import array
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import anyio
 
-from .media_objects import CHUNK_BYTES
+from .media_objects import CHUNK_BYTES, THUMBNAIL_NAME, WAVEFORM_NAME
 from .workbench_contracts import AMBIENCE_MAX_MS, IMAGE_MAX_PIXELS, IMAGE_MAX_SIDE, AssetFailure, AssetKind
 
 #: Enough of a body to tell every accepted family apart (WebP and WAV need 12).
@@ -79,6 +80,12 @@ RETRY_AFTER_S = 30
 #: How often a waiting upload looks at the gate again.
 GATE_POLL_S = 0.05
 PROCESSED_AUDIO_TYPE = "audio/mpeg"
+THUMBNAIL_MAX_SIDE = 320
+# Match AudioCue's decorative fallback. The low-rate mono samples are only
+# used for these peaks and never replace the audio served to the table.
+WAVEFORM_BARS = 46
+WAVEFORM_SAMPLE_RATE = 8_000
+WAVEFORM_PCM_BYTES = (AMBIENCE_MAX_MS * WAVEFORM_SAMPLE_RATE // 1000) * 2
 
 #: Pillow's format name for each accepted image type: the only decoder tried.
 IMAGE_FORMATS: Mapping[str, str] = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}
@@ -180,6 +187,8 @@ class Processed:
     width: int | None
     height: int | None
     duration_ms: int | None
+    thumbnail: Path | None = None
+    waveform: Path | None = None
 
 
 def process(
@@ -205,7 +214,8 @@ def _process_image(declared: str, source: Path, scratch: Path, deadline: float) 
     width, height = report.get("width"), report.get("height")
     if not isinstance(width, int) or not isinstance(height, int) or not target.is_file():
         raise ProcessingFailed(AssetFailure.UNREADABLE)
-    return Processed(target, declared, width, height, None)
+    thumbnail = scratch / THUMBNAIL_NAME
+    return Processed(target, declared, width, height, None, thumbnail if thumbnail.is_file() else None)
 
 
 def _process_audio(declared: str, source: Path, scratch: Path, deadline: float) -> Processed:
@@ -213,12 +223,60 @@ def _process_audio(declared: str, source: Path, scratch: Path, deadline: float) 
     probed = _run(ffprobe_argv(demuxer, source), deadline)
     if probed.returncode != 0:
         raise ProcessingFailed(AssetFailure.UNREADABLE)
-    duration_ms = probe_verdict(probed.stdout)
+    probe_verdict(probed.stdout)
     target = scratch / "out.mp3"
     done = _run(ffmpeg_argv(demuxer, source, target), deadline)
     if done.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
         raise ProcessingFailed(AssetFailure.UNREADABLE)
-    return Processed(target, PROCESSED_AUDIO_TYPE, None, None, duration_ms)
+    # An upload's container can understate its duration (for example, VBR MP3
+    # without a length header). Measure the exact file that will be served.
+    measured = _run(ffprobe_argv(AUDIO_DEMUXERS[PROCESSED_AUDIO_TYPE], target), deadline)
+    if measured.returncode != 0:
+        raise ProcessingFailed(AssetFailure.UNREADABLE)
+    duration_ms = probe_verdict(measured.stdout)
+    waveform = _make_waveform(target, scratch, deadline)
+    return Processed(target, PROCESSED_AUDIO_TYPE, None, None, duration_ms, waveform=waveform)
+
+
+def _make_waveform(source: Path, scratch: Path, deadline: float) -> Path | None:
+    pcm = scratch / "samples.pcm"
+    try:
+        result = _run(
+            [
+                "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe",
+                "-filter_threads", "1", "-threads", "1", "-f", "mp3", "-i", str(source),
+                "-map", "0:a:0", "-ac", "1", "-ar", str(WAVEFORM_SAMPLE_RATE),
+                "-t", f"{AMBIENCE_MAX_MS}ms", "-c:a", "pcm_s16le", "-f", "s16le", str(pcm),
+            ],
+            deadline,
+        )
+    except (ProcessingFailed, ProcessingUnavailable):
+        # The MP3 was already validated. A missing optional peak array uses
+        # the client's deterministic fallback.
+        return None
+    if result.returncode != 0 or not pcm.is_file():
+        return None
+    size = pcm.stat().st_size
+    if size == 0 or size % 2 != 0 or size > WAVEFORM_PCM_BYTES:
+        return None
+
+    samples = size // 2
+    peaks: list[float] = []
+    start = 0
+    with pcm.open("rb") as decoded:
+        for bucket in range(1, WAVEFORM_BARS + 1):
+            if time.monotonic() >= deadline:
+                return None
+            end = (samples * bucket) // WAVEFORM_BARS
+            segment = array("h", decoded.read((end - start) * 2))
+            if sys.byteorder != "little":
+                segment.byteswap()
+            maximum = max(max(segment, default=0), -min(segment, default=0))
+            peaks.append(round(maximum / 32768, 4))
+            start = end
+    waveform = scratch / WAVEFORM_NAME
+    waveform.write_text(json.dumps({"schema_version": 1, "peaks": peaks}, separators=(",", ":")), encoding="utf-8")
+    return waveform
 
 
 def image_argv(pillow_format: str, source: Path, target: Path) -> list[str]:
@@ -239,6 +297,7 @@ def ffmpeg_argv(demuxer: str, source: Path, target: Path) -> list[str]:
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe",
         "-f", demuxer, "-i", str(source),
         "-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1", "-vn", "-sn", "-dn",
+        "-t", f"{AMBIENCE_MAX_MS}ms",
         "-c:a", "libmp3lame", "-q:a", "5", "-id3v2_version", "0", "-write_id3v1", "0",
         # No version string in the Info frame either: bitexact leaves ffmpeg's
         # fixed "Lavf" there instead of this build's encoder version.
@@ -385,7 +444,12 @@ def image_child(pillow_format: str, source: str, target: str) -> dict[str, objec
             pixels = upright.convert(mode)
             clean = Image.frombytes(mode, pixels.size, pixels.tobytes())
             clean.save(target, pillow_format, **({} if pillow_format == "PNG" else {"quality": 90}))
-            return {"width": clean.width, "height": clean.height}
+            width, height = clean.size
+            # The preview is rendered from the cleaned pixels, with no
+            # metadata from the source and no enlargement of small images.
+            clean.thumbnail((THUMBNAIL_MAX_SIDE, THUMBNAIL_MAX_SIDE), Image.Resampling.LANCZOS)
+            clean.save(Path(target).with_name(THUMBNAIL_NAME), "WEBP", quality=82)
+            return {"width": width, "height": height}
     except Image.DecompressionBombError:
         return {"failure": AssetFailure.TOO_MANY_PIXELS.value}
     except (OSError, ValueError, SyntaxError, EOFError, MemoryError):

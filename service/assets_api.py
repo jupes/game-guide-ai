@@ -35,8 +35,8 @@ audio cap is `AUDIO_MAX_BYTES` and `AMBIENCE_MAX_MS`, never a one-shot's: an
 upload has no cue kind (AUDIO-26; `1kg.8.5` checks `CUE_MAX_MS`).
 
 **No connection is held while bytes move** (requirement 3.8, SEC-35). The
-request is several short transactions — read the asset; `processing`;
-`ready` or `failed` — each committed before the next byte moves; the
+request is several short transactions. The accepted PUT claims `processing`
+before it can write the temporary key, then ends in `ready` or `failed`. The
 streaming, the copy to the scratch directory and the processed write run in a
 worker thread with no connection open, every store call through `via_store`.
 
@@ -77,7 +77,7 @@ import anyio.to_thread
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
@@ -86,11 +86,19 @@ from starlette.types import Scope
 
 from . import campaign_identity as ident
 from . import media_processing as processing
-from .asset_store import AssetRecord, AssetStore, IllegalTransition, Measured, QuotaExceeded
+from .asset_store import AccountMediaQuotaExceeded, AssetRecord, AssetStore, IllegalTransition, Measured, QuotaExceeded
 from .campaign_store import MissingParent
 from .conversations_api import read_body
 from .db import TransactionalDatabase
-from .media_objects import ObjectStore, ObjectStoreError, ObjectTooLarge, via_store
+from .media_objects import (
+    THUMBNAIL_MAX_BYTES,
+    WAVEFORM_MAX_BYTES,
+    ObjectStore,
+    ObjectStoreError,
+    ObjectTooLarge,
+    asset_rendition_keys,
+    via_store,
+)
 from .session import SessionData
 from .workbench_api import SessionDependency, WorkbenchRoute, not_found, workbench_router
 from .workbench_contracts import (
@@ -108,6 +116,7 @@ from .workbench_contracts import (
 
 CREATE_PATH = "/campaigns/{campaign_id}/assets"
 BYTES_PATH = "/campaigns/{campaign_id}/assets/{asset_id}/bytes"
+UPLOAD_CAPABILITY_PATH = "/campaigns/{campaign_id}/assets/upload-capability"
 #: Every type an upload may declare: the origin check's content types for the
 #: bytes route (SEC-7's upload exception).
 UPLOAD_TYPES: tuple[str, ...] = tuple(media for kind in AssetKind for media in MEDIA_TYPES[kind])
@@ -116,6 +125,7 @@ UPLOAD_TYPES: tuple[str, ...] = tuple(media for kind in AssetKind for media in M
 UNAVAILABLE_MESSAGE = "Media is briefly unavailable. Try again."
 BUSY_MESSAGE = "Media is busy. Try again shortly."
 QUOTA_MESSAGE = "This campaign has no room for that file."
+ACCOUNT_QUOTA_MESSAGE = "Your account has no room for that file."
 CONFLICT_MESSAGE = "That file can't take bytes now."
 LENGTH_MESSAGE = "Send the file's length."
 TYPE_MESSAGE = "That isn't the type this file was declared as."
@@ -196,6 +206,8 @@ def _guarded[T](work: Callable[[], T]) -> T:
         return work()
     except MissingParent:
         gone = True
+    except AccountMediaQuotaExceeded:
+        failure = _refusal(409, ErrorCode.ACCOUNT_LIMIT_REACHED, ACCOUNT_QUOTA_MESSAGE)
     except QuotaExceeded:
         failure = _refusal(409, ErrorCode.CAP_REACHED, QUOTA_MESSAGE)
     except IllegalTransition:
@@ -265,6 +277,9 @@ class Upload:
         declared = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if declared != record.declared_media_type:
             raise _refusal(415, ErrorCode.VALIDATION_FAILED, TYPE_MESSAGE, field="content-type")
+        # The tmp key is shared by retries of this intent. Only the request
+        # that wins the database transition may touch it.
+        record = await run_in_threadpool(_guarded, self._transition("start_processing"))
         refused: AssetFailure | None = None
         try:
             await anyio.to_thread.run_sync(self._receive, request, record, length)
@@ -275,15 +290,10 @@ class Upload:
         except ClientDisconnect:
             refused = AssetFailure.UNREADABLE
         except ObjectStoreError:
+            await self._back_to_uploading(record)
             raise _unavailable() from None
         if refused is not None:
             return await self._failed(record, refused)
-        try:
-            await run_in_threadpool(_guarded, self._transition("start_processing"))
-        except HTTPException:
-            # A tombstone or the sweep won while the bytes arrived.
-            await self._delete(record.tmp_key)
-            raise
         if not await processing.GATE.acquire(processing.QUEUE_BOUND_S):
             await self._back_to_uploading(record)
             raise _busy()
@@ -371,7 +381,20 @@ class Upload:
                 )
             except ObjectTooLarge:
                 return AssetFailure.TOO_LARGE
+            if made.thumbnail is not None:
+                self._save_rendition(record, made.thumbnail, THUMBNAIL_MAX_BYTES)
+            if made.waveform is not None:
+                self._save_rendition(record, made.waveform, WAVEFORM_MAX_BYTES)
         return Measured(made.media_type, size, made.width, made.height, made.duration_ms)
+
+    def _save_rendition(self, record: AssetRecord, path: Path, cap: int) -> None:
+        try:
+            via_store(self.runtime.objects, lambda store: store.put_stream(
+                f"{record.object_key}/{path.name}", processing.file_chunks(path), max_bytes=cap,
+            ))
+        except ObjectTooLarge:
+            # The original passed its cap. Omit a rendition that exceeds its own.
+            return
 
     async def _delete(self, *keys: str) -> None:
         """Idempotent; a store that cannot delete now leaves the objects to the
@@ -394,25 +417,28 @@ class Upload:
         try:
             failed = await run_in_threadpool(_guarded, self._transition("mark_failed", failure=failure))
         finally:
-            await self._delete(record.tmp_key, record.object_key)
+            await self._delete(record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
         return answer(failed)
 
     async def _back_to_uploading(self, record: AssetRecord) -> None:
-        try:
-            await run_in_threadpool(_guarded, self._transition("return_to_uploading"))
-        finally:
-            await self._delete(record.tmp_key)
+        # The next request can acquire the key as soon as this transaction
+        # commits. Clean this request's bytes while it still owns the claim.
+        await self._delete(record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
+        await run_in_threadpool(_guarded, self._transition("return_to_uploading"))
 
     async def _ready(self, record: AssetRecord, measured: Measured) -> JSONResponse:
         try:
             finished = await run_in_threadpool(_guarded, self._transition("mark_ready", measured=measured))
-        except HTTPException:
-            # The sweep or a tombstone won: nothing will ever name this object.
-            await self._delete(record.object_key, record.tmp_key)
+        except HTTPException as refused:
+            # If the DB failed to acknowledge the write, leave the original
+            # for a possibly committed ready record or the processing sweep.
+            await self._delete(record.tmp_key)
+            if refused.status_code in (404, 409):
+                await self._delete(record.object_key, *asset_rendition_keys(record.object_key))
             raise
         await self._delete(record.tmp_key)
         if finished.state is not AssetState.READY:
-            await self._delete(record.object_key)
+            await self._delete(record.object_key, *asset_rendition_keys(record.object_key))
         return answer(finished)
 
 
@@ -445,7 +471,7 @@ def build_router(
     media: Callable[[], MediaRuntime | None],
     enabled: Callable[[], bool],
 ) -> APIRouter:
-    """The two routes, given the app's GM gate, its database getter, the media
+    """The upload routes, given the app's GM gate, its database getter, the media
     runtime getter and the capability switch."""
     route_class = media_route(enabled)
     create_router = workbench_router(gm)
@@ -468,6 +494,24 @@ def build_router(
 
     # Out of the published schema, as SchedulerRoute is: a dark route does not
     # announce itself in /openapi.json either.
+    @create_router.get(UPLOAD_CAPABILITY_PATH, status_code=204, include_in_schema=False)
+    def upload_capability(
+        campaign_id: str,
+        user: SessionData = Depends(gm),
+        db: TransactionalDatabase | None = Depends(database),
+        runtime: MediaRuntime | None = Depends(media),
+    ) -> Response:
+        live_db, live = _available(db, runtime)
+        _shaped(campaign_id)
+
+        def check() -> None:
+            with live_db.transaction() as unit:
+                if live.assets.usage(unit, campaign_id, owner_id=user.user_id) is None:
+                    not_found()
+
+        _guarded(check)
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
     @create_router.post(CREATE_PATH, response_model=Asset, status_code=201, include_in_schema=False)
     def create(
         campaign_id: str,

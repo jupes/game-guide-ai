@@ -17,10 +17,8 @@
  * A new file, not an edit to an existing spec: the existing ones only change
  * where they entered the workspace (one line each).
  *
- * Every test signs in as the SECOND account. The per-account sign-in budget is
- * 10 attempts per 300 s and is deliberately not raised for the E2E stack
- * (docker-compose.e2e.yml); the first account already spends most of it across
- * the suite, so three more attempts there would turn a late spec into a 429.
+ * The fixture provisions fresh accounts per test and keeps the normal
+ * per-account sign-in limit.
  */
 
 import type { Page } from '@playwright/test'

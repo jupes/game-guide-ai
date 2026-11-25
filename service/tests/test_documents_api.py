@@ -1681,8 +1681,7 @@ def test_every_lifecycle_route_answers_the_one_404_for_whatever_is_not_the_calle
     mine, second, theirs = world.campaign(), world.campaign(name="Second"), world.campaign(GM_B)
     elsewhere, foreign = world.document(second), world.document(theirs)
     reference = _shape(client.get(_doc(mine, MISSING_DOC)))
-    cases = [(theirs, foreign), (mine, foreign), (mine, elsewhere), (mine, MISSING_DOC), ("cmp_bad", "doc_bad"),
-             (MISSING_CAMPAIGN, foreign), (mine, "doc_bad")]
+    cases = [(theirs, foreign), (mine, foreign), (mine, elsewhere), (mine, MISSING_DOC), (MISSING_CAMPAIGN, foreign)]
     for archived in (False, True):
         for campaign, document in cases:
             for method, path, body in _lifecycle(campaign, document):
@@ -1692,6 +1691,29 @@ def test_every_lifecycle_route_answers_the_one_404_for_whatever_is_not_the_calle
             life.archive(second, elsewhere)
     assert world.record(theirs, foreign).is_archived and life.ledger(theirs) == [] and world.revision(theirs) == 0
     assert world.record(second, elsewhere).is_archived and life.ledger(second) == []
+
+
+def test_malformed_lifecycle_ids_are_rejected_before_querying(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    mine = world.campaign()
+    document = world.document(mine)
+    reference = _shape(client.get(_doc(mine, MISSING_DOC)))
+    opened = len(world.db.units)
+    for campaign_id, document_id in [("cmp_bad", document), (mine, "doc_bad"), (mine, "doc_%00")]:
+        for method, path, body in _lifecycle(campaign_id, document_id):
+            assert _shape(_send(client, method, path, body)) == reference, (method, path)
+            assert len(world.db.units) == opened, (method, path)
+
+
+def test_delete_checks_the_password_before_rejecting_a_malformed_document_id(
+    client: TestClient, world: _World, life: _Life
+) -> None:
+    mine = world.campaign()
+    opened = len(world.db.units)
+    wrong = _delete(client, mine, "doc_bad", password="wrong " + CANARY)
+    assert (wrong.status_code, wrong.json()) == (403, {"detail": dict(REAUTH_FAILED_DETAIL)})
+    assert len(world.db.units) == opened
 
 
 def test_every_lifecycle_transaction_reads_ownership_first_and_under_the_lock_in_step_two(

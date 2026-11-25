@@ -261,7 +261,7 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
     await flush()
     expect(window.location.pathname).toBe('/tavern')
     expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(1)
-    expect(server.lines().some((l) => l.includes('/conversations'))).toBe(false)
+    expect(server.lines().filter((l) => l.includes('/conversations'))).toEqual(['GET /conversations'])
     expect(server.calls.filter((c) => !isUiMetricsPost(c) && (c.method === 'POST' || c.method === 'PATCH'))).toEqual([])
   })
 
@@ -834,7 +834,9 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(live.nav.mode).toBe('sage')
     expect(window.location.pathname).toBe('/workspace')
     expect(window.history.length).toBe(len)
-    expect(live.raw.conversationId).toBe(L)
+    // Sage is empty. The previous uncampaigned GM row remains in its channel.
+    expect(live.raw.conversationId).toBeNull()
+    expect(storageHolds(L as string)).toBe(true)
 
     const rel = server.calls.length
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))

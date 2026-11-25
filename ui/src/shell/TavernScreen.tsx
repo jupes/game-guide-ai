@@ -13,10 +13,9 @@
  * region: the status node, mounted empty with the list and given the messages in
  * the spec's section 3.4 (one at the start of a read, one at its end).
  *
- * - Seats (ID-17, ID-21 to ID-28): informational cards with nothing to press. A
- *   confirmed seat whose table is live reads "Live now" as plain text, never a
- *   link, because no table page exists yet (`1kg.7.4`, SEC-43). An unconfirmed
- *   seat reads "Waiting for your GM to confirm your seat".
+ * - Seats (ID-17, ID-21 to ID-28): a confirmed seat at a live table shows
+ *   "Live now" and links to the player table. An unconfirmed seat reads
+ *   "Waiting for your GM to confirm your seat".
  * - One Retry serves both reads: it re-asks whichever of campaigns and seats failed.
  *
  * - Read once per visit, every page (the order is the client's, and
@@ -153,18 +152,16 @@ export function TavernScreen(): React.JSX.Element | null {
             {enabled ? (
               <Button variant="filled" icon="add" onClick={() => nameField.current?.focus()}>{NEW_CAMPAIGN}</Button>
             ) : (
-              <>
-                <TavernActionButton variant="filled" icon="add" ariaDisabled ariaDescribedBy={lockedReasonId} onPress={() => {}}>
-                  {NEW_CAMPAIGN}
-                </TavernActionButton>
-                <span id={lockedReasonId} className="tavern__sr-only">{NEW_CAMPAIGN_LOCKED}</span>
-              </>
+              <TavernActionButton variant="filled" icon="lock" ariaDisabled ariaDescribedBy={lockedReasonId} onPress={() => {}}>
+                {NEW_CAMPAIGN}
+              </TavernActionButton>
             )}
             {selection.kind !== 'none' && (
               <Button variant="outlined" onClick={continueWithout}>{CONTINUE_WITHOUT}</Button>
             )}
             <Button variant="outlined" icon="arrow_back" onClick={backToWorkspace}>{BACK_TO_CHAT}</Button>
           </div>
+          {!enabled && <p id={lockedReasonId} className="tavern-screen__message">{NEW_CAMPAIGN_LOCKED}</p>}
         </header>
         <TavernCampaigns
           key={`${enabled}:${user.id}`}
@@ -192,7 +189,10 @@ interface TavernCampaignsProps {
 }
 
 /** What a commit should focus once the store's answer has rendered. */
-type FocusTarget = { readonly kind: 'toggle' } | { readonly kind: 'prep'; readonly id: string }
+type FocusTarget =
+  | { readonly kind: 'toggle' }
+  | { readonly kind: 'prep'; readonly id: string }
+  | { readonly kind: 'seat'; readonly index: number }
 
 function TavernCampaigns({
   heading, nameField, arrivedInApp, stillHere, onSelected, openThread, askTheSage,
@@ -222,6 +222,7 @@ function TavernCampaigns({
   const [note, setNote] = React.useState('')
   const prepNodes = React.useRef(new Map<string, HTMLButtonElement>())
   const toggle = React.useRef<HTMLButtonElement>(null)
+  const nextSeatHeading = React.useRef<HTMLHeadingElement>(null)
   const [target, setTarget] = React.useState<FocusTarget | null>(null)
   const focusedTarget = React.useRef<FocusTarget | null>(null)
   const autoFocused = React.useRef(false)
@@ -293,10 +294,11 @@ function TavernCampaigns({
   const visibleActive = targetIndex < 0 ? shown : Math.max(shown, Math.ceil((targetIndex + 1) / TAVERN_PAGE_SIZE) * TAVERN_PAGE_SIZE)
 
   // The moves a press asks for, made after the commit that renders its answer
-  // (a card or the toggle that is not there yet waits for the commit that has it).
+  // (a card, seat heading or toggle that is not there yet waits for its commit).
   React.useEffect(() => {
     if (target === null || focusedTarget.current === target) return
-    const node = target.kind === 'toggle' ? toggle.current : prepNodes.current.get(target.id)
+    const node = target.kind === 'seat' ? nextSeatHeading.current
+      : target.kind === 'toggle' ? toggle.current : prepNodes.current.get(target.id)
     if (node === null || node === undefined) return
     focusedTarget.current = target
     node.focus()
@@ -341,7 +343,17 @@ function TavernCampaigns({
     setShown(visibleActive + TAVERN_PAGE_SIZE)
   }
 
+  const showMoreConcluded = (): void => {
+    const first = concluded[shownConcluded]
+    if (first !== undefined) setTarget({ kind: 'prep', id: first.campaign_id })
+    setShownConcluded(shownConcluded + TAVERN_PAGE_SIZE)
+  }
+
   const orderedSeats = React.useMemo(() => orderSeats(seats.items), [seats.items])
+  const showMoreSeats = (): void => {
+    setTarget({ kind: 'seat', index: shownSeats })
+    setShownSeats(shownSeats + TAVERN_PAGE_SIZE)
+  }
   // A player with no seat at the end of a good read (E-1); a campaign account's
   // seats never replace its own campaigns' states.
   const noSeats = !enabled && seats.complete && orderedSeats.length === 0
@@ -416,15 +428,19 @@ function TavernCampaigns({
         <section className="tavern-screen__seats">
           <h2 className="tavern-screen__section-title">{SEATS_HEADING}</h2>
           <ul className="tavern-screen__grid" aria-label={SEATS_HEADING}>
-            {orderedSeats.slice(0, shownSeats).map((seat) => (
+            {orderedSeats.slice(0, shownSeats).map((seat, index) => (
               <li key={seat.campaign_id}>
-                <TavernSeatCard seat={seat} now={now} />
+                <TavernSeatCard
+                  seat={seat}
+                  now={now}
+                  headingRef={target?.kind === 'seat' && target.index === index ? nextSeatHeading : undefined}
+                />
               </li>
             ))}
           </ul>
           {orderedSeats.length > shownSeats && (
             <div className="tavern-screen__actions">
-              <Button variant="text" onClick={() => setShownSeats(shownSeats + TAVERN_PAGE_SIZE)}>{SHOW_MORE_SEATS}</Button>
+              <Button variant="text" onClick={showMoreSeats}>{SHOW_MORE_SEATS}</Button>
             </div>
           )}
         </section>
@@ -474,7 +490,7 @@ function TavernCampaigns({
           </ul>
           {open && concluded.length > shownConcluded && (
             <div className="tavern-screen__actions">
-              <Button variant="text" onClick={() => setShownConcluded(shownConcluded + TAVERN_PAGE_SIZE)}>
+              <Button variant="text" onClick={showMoreConcluded}>
                 {SHOW_MORE_CONCLUDED}
               </Button>
             </div>

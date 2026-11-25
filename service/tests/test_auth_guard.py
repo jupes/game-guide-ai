@@ -151,6 +151,8 @@ PROTECTED_ROUTES: list[Route] = [
       "kind": "audio", "media_type": "audio/mpeg", "size_bytes": 10}),
     ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa/bytes", None),
+    ("GET", "/campaigns/{campaign_id}/assets/upload-capability",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/upload-capability", None),
     # 1kg.8.1.3, live for this module only, like the two above.
     ("GET", "/campaigns/{campaign_id}/assets/{asset_id}",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/assets/ast_aaaaaaaaaaaaaaaaaaaaaa", None),

@@ -9,7 +9,7 @@
  */
 
 import * as React from 'react'
-import { useGoogleOutcome } from './googleOutcome'
+import { clearGoogleOutcome, useGoogleOutcome, type GoogleOutcome } from './googleOutcome'
 import './GoogleOutcomeNotice.css'
 
 export interface GoogleOutcomeNoticeProps {
@@ -17,7 +17,15 @@ export interface GoogleOutcomeNoticeProps {
 }
 
 export function GoogleOutcomeNotice({ scope = 'any' }: GoogleOutcomeNoticeProps): React.JSX.Element | null {
-  const outcome = useGoogleOutcome()
+  const pending = useGoogleOutcome()
+  const [outcome, setOutcome] = React.useState<GoogleOutcome | null>(null)
+  if (pending !== null && pending !== outcome && (scope === 'any' || pending.arrivedOn === 'profile')) {
+    setOutcome(pending)
+  }
+  // The mounted notice remains readable after the shared store releases it.
+  React.useEffect(() => {
+    if (outcome !== null) clearGoogleOutcome(outcome)
+  }, [outcome])
   if (outcome === null) return null
   if (scope === 'profile' && outcome.arrivedOn !== 'profile') return null
   return (

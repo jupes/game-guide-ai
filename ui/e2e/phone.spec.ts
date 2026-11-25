@@ -8,8 +8,7 @@
  * name uses `exact: true`: Playwright's `name` is a substring match, and
  * conversation buttons are titled by the user's own prompts.
  *
- * It runs inside the one `chromium` project with `test.use`, rather than as a
- * second project that would run every spec twice.
+ * The phone settings also apply when this spec runs in the desktop project.
  */
 
 import type { Locator, Page } from '@playwright/test'
@@ -114,4 +113,40 @@ test('a player signs in and asks a question on a 390px phone', async ({ page, ac
   const composer = await page.getByPlaceholder('Ask…').boundingBox()
   expect(composer).not.toBeNull()
   expect((composer?.y ?? Infinity) + (composer?.height ?? 0)).toBeLessThanOrEqual(PHONE.height)
+})
+
+test('Sage and Spell keep separate conversations on a phone', async ({ page, accounts }) => {
+  const sage = 'Who can take the Dodge action?'
+  const spell = 'What does the Light spell illuminate?'
+  const field = page.getByPlaceholder('Ask…')
+  const channels = page.getByRole('navigation', { name: 'Channels' })
+
+  async function ask(mode: 'sage' | 'spell', prompt: string): Promise<string> {
+    await field.fill(prompt)
+    const [reply] = await Promise.all([
+      page.waitForResponse((response) => new URL(response.url()).pathname === '/chat'),
+      page.getByRole('button', { name: 'Send message', exact: true }).tap(),
+    ])
+    expect(reply.request().postDataJSON()).toMatchObject({ mode, conversation_id: null })
+    await expect(page.getByText(`E2E ${mode} answer: ${prompt}`)).toBeVisible()
+    const { conversation_id } = await reply.json() as { conversation_id: string }
+    expect(conversation_id).toBeTruthy()
+    return conversation_id
+  }
+
+  await page.goto('/')
+  await signIn(page, accounts[0])
+  await page.getByRole('button', { name: 'Sage', exact: true }).tap()
+  const sageThread = await ask('sage', sage)
+  await field.fill('An unfinished Sage question')
+  await channels.getByRole('button', { name: 'Spell', exact: true }).tap()
+  await expect(page.getByText(`E2E sage answer: ${sage}`)).toHaveCount(0)
+  await expect(field).toHaveValue('')
+  expect(await ask('spell', spell)).not.toBe(sageThread)
+
+  await channels.getByRole('button', { name: 'Sage', exact: true }).tap()
+  await expect(page.getByText(`E2E sage answer: ${sage}`)).toBeVisible()
+  await expect(page.getByText(`E2E spell answer: ${spell}`)).toHaveCount(0)
+  await expect(field).toHaveValue('An unfinished Sage question')
+  await expectWorkspaceFits(page)
 })

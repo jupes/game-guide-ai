@@ -57,8 +57,8 @@ function boot(url: string, options: BootOptions = {}) {
   window.history.replaceState(null, '', url)
   render(options.strict === true ? <React.StrictMode><AppRoot /></React.StrictMode> : <AppRoot />)
   const lines = () => calls.map((c) => `${c.method} ${c.url}`)
-  /** Requests for anything campaign-scoped: campaigns, and every conversation route. */
-  const scoped = () => lines().filter((line) => / \/(campaigns|conversations)/.test(line))
+  /** Explicit campaign or thread work, excluding the account-level background read. */
+  const scoped = () => lines().filter((line) => line !== 'GET /conversations' && / \/(campaigns|conversations)/.test(line))
   return { calls, lines, scoped }
 }
 

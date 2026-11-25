@@ -74,7 +74,8 @@ def _route_prefixes() -> set[str]:
 
 
 def test_every_api_prefix_is_proxied_by_nginx_and_vite() -> None:
-    prefixes = _route_prefixes()
+    # The table also owns an HTML entry at /table. Test its exact API paths below.
+    prefixes = _route_prefixes() - {"table"}
     nginx = NGINX_CONF.read_text(encoding="utf-8")
     vite = VITE_CONFIG.read_text(encoding="utf-8")
 
@@ -89,6 +90,21 @@ def test_every_api_prefix_is_proxied_by_nginx_and_vite() -> None:
         f"ui/vite.config.ts server.proxy does not proxy: {missing_vite}. The dev server would "
         "serve the SPA for these instead of forwarding them to the service."
     )
+
+
+def test_the_table_document_reserves_its_own_path_on_both_front_ends() -> None:
+    nginx = NGINX_CONF.read_text(encoding="utf-8")
+    vite = VITE_CONFIG.read_text(encoding="utf-8")
+    table_paths = {path for path, _ in api_routes(service_app.app) if path.startswith("/table/")}
+    assert table_paths
+    assert "location = /table {" in nginx
+    assert "try_files /table.html =404;" in nginx
+    assert not re.search(r"location\s+/table\b", nginx)
+    assert not re.search(r"['\"]/table['\"]\s*:", vite)
+    for path in table_paths:
+        assert f"location = {path} {{" in nginx
+        vite_pattern = f"'^{path}" + r"(?:\\?|$)': 'http://localhost:8000'"
+        assert vite_pattern in vite
 
 
 def test_auth_prefix_is_proxied() -> None:
@@ -151,5 +167,5 @@ def test_the_spa_fallback_is_not_an_api_prefix(tmp_path: Path) -> None:
 
     install_spa(app, tmp_path)
     served = {path for path, _ in api_routes(app)}
-    assert served == {"/healthz", "/", "/workspace", "/profile", "/tavern"}  # the SPA routes are really there
+    assert served == {"/healthz", "/", "/workspace", "/profile", "/tavern", "/table", "/table.html"}
     assert _prefixes_of(app) == {"healthz"}

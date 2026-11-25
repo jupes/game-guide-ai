@@ -40,7 +40,10 @@ import {
 } from '../gm/gmTimeline'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { useAppNav } from './AppNav'
+import { useShellLayout } from './breakpoints'
+import type { ChatMode } from '../api'
 import { useConversationStore } from './ConversationStoreContext'
+import { conversationInChannel, useConversationIndex } from './conversationIndex'
 import { useModelCatalogState } from './ModelCatalogContext'
 import { preferenceToSend } from './modelPreference'
 import { parseDiceNotation } from './diceNotation'
@@ -166,9 +169,10 @@ function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string
   React.useLayoutEffect(() => {
     activeConversation.current = { mode, conversationId }
   }, [mode, conversationId])
-  const [held, setHeld] = React.useState<Side | null>(null)
-  const side: Side = held ?? (mode === 'gm' ? 'gm' : 'chat')
-  const holdWhilePending = React.useCallback((pending: boolean) => setHeld(pending ? side : null), [side])
+  const [held, setHeld] = React.useState<ChatMode | null>(null)
+  const paneMode = held !== null && (held === 'gm') !== (mode === 'gm') ? held : mode
+  const side: Side = paneMode === 'gm' ? 'gm' : 'chat'
+  const holdWhilePending = React.useCallback((pending: boolean) => setHeld(pending ? paneMode : null), [paneMode])
   // 1kg.2.5 PR-2 (review pr212 H-2): on the GM side with a campaign in any
   // state, the pane belongs to that campaign's scope alone. A switch, a clear
   // or a pick remounts it, so nothing of the scope it left -- a failed first
@@ -179,7 +183,10 @@ function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string
   // the pane stays the one it was drawn over: a refused turn keeps its prompt
   // and its announced failure until the next pick or a clear.
   const { selection, scope } = useCampaign()
-  const drafts = useConversationDrafts(conversationId ?? (scope === null ? null : `new:${scope.key}`))
+  const draftKey = mode === 'gm'
+    ? conversationId ?? (scope === null ? null : `new:${scope.key}`)
+    : `${mode}:${conversationId ?? ''}`
+  const drafts = useConversationDrafts(draftKey)
   const tools = useToolInvocations(selection.kind === 'selected' ? selection.campaign.campaign_id : null)
   const pins = usePins(account)
   const owner = selection.kind === 'none' || selection.kind === 'unavailable'
@@ -193,6 +200,7 @@ function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string
       key={campaign === null ? side : `${side}:${campaign}`}
       {...props}
       side={side}
+      mode={paneMode}
       onPendingChange={holdWhilePending}
       drafts={drafts}
       tools={tools}
@@ -205,6 +213,7 @@ function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string
 interface ChatPaneBodyProps extends ChatPaneProps {
   /** The mode's side of the GM boundary, or the side a turn in flight was sent from. */
   side: Side
+  mode: ChatMode
   onPendingChange: (pending: boolean) => void
   drafts: DraftStore
   tools: ToolInvocations
@@ -214,6 +223,7 @@ interface ChatPaneBodyProps extends ChatPaneProps {
 
 function ChatPaneBody({
   side,
+  mode,
   onPendingChange,
   post,
   loadHistory,
@@ -226,9 +236,20 @@ function ChatPaneBody({
   uploadAttachment = defaultUploadAttachment,
   getAttachments = defaultGetAttachments,
 }: ChatPaneBodyProps): React.JSX.Element {
-  const { mode, conversationId, setConversationId, openTavern } = useAppNav()
+  const { mode: destination, conversationId: selectedId, setConversationId, openTavern } = useAppNav()
+  const layout = useShellLayout()
   const gm = side === 'gm'
   const conversationStore = useConversationStore()
+  const index = useConversationIndex()
+  // The campaign provider already hides its ids outside their own GM scope.
+  // Apply the same boundary to known legacy rows before recall or send.
+  const conversationId = conversationInChannel(selectedId, mode, conversationStore, index.rows)
+  const selectionAtSend = React.useMemo(() => ({ destination, selectedId, conversationStore }), [destination, selectedId, conversationStore])
+  const currentSelection = React.useRef<typeof selectionAtSend | null>(null)
+  React.useLayoutEffect(() => {
+    currentSelection.current = selectionAtSend
+    return () => { currentSelection.current = null }
+  }, [selectionAtSend])
   // agent-forge-harness-bta: the preference this conversation's next turn
   // sends, by the one rule ModelPicker shows it by (`preferenceToSend`, read
   // against the same shared catalog): a started conversation's bound
@@ -296,8 +317,25 @@ function ChatPaneBody({
       return { ...result, response: { ...result.response, conversation_id: current ? thread : null } }
     }
   }, [mode, selection.kind, scope, isCurrentScope, post, ensureThread])
+  const postInChannel = React.useCallback<PostFn>(async (prompt, turnMode, id, preference) => {
+    const result = await (campaignPost ?? post ?? postTurn)(prompt, turnMode, id, preference)
+    if (result.kind !== 'ok') return result
+    const returnedId = result.response.conversation_id
+    const freshId = id === null && typeof returnedId === 'string' && returnedId !== '' ? returnedId : null
+    if (campaignPost === undefined && index.isCurrent()) {
+      if (freshId !== null) conversationStore.adopt(freshId, turnMode, prompt, preference)
+      const legacyId = id ?? freshId
+      if (legacyId !== null) index.bindAfterTurn(legacyId, turnMode)
+    }
+    // Save an answer to the channel that sent it, but never navigate back to
+    // that channel on a late response after another selection or sign-out.
+    if (freshId !== null && (currentSelection.current !== selectionAtSend || !index.isCurrent())) {
+      return { ...result, response: { ...result.response, conversation_id: null } }
+    }
+    return result
+  }, [campaignPost, post, index, conversationStore, selectionAtSend])
   const { exchanges, send, pending, inFlight, historyError, loadingHistory } = useChat({
-    post: campaignPost ?? post,
+    post: postInChannel,
     loadHistory: gm ? SKIP_RECALL : loadHistory,
     mode,
     conversationId,
@@ -316,8 +354,8 @@ function ChatPaneBody({
   })
   // Keeps ChatPane on this side of the GM boundary while a turn is in flight.
   React.useEffect(() => {
-    onPendingChange(pending)
-  }, [onPendingChange, pending])
+    onPendingChange(inFlight)
+  }, [onPendingChange, inFlight])
   // 1kg.3.4: in the GM channel a stored entry and a live turn become the same
   // GmTurn, so a reload draws an answer exactly as it arrived. The thread's
   // empty, loading and error states are §12.2's, which are today's.
@@ -344,7 +382,7 @@ function ChatPaneBody({
   // cursor behind it, and the thread (with its Load earlier control) is then
   // what to draw, not the empty label.
   const threadEmpty = threadLength === 0 && !(gm && timeline.hasEarlier)
-  const [draft, setDraft] = React.useState('')
+  const { draft, setDraft } = drafts
   // agent-forge-harness-764: block a submit before it ever reaches the wire,
   // mirroring the server-side gate in service/app.py::chat().
   const draftLength = codePointLength(draft)
@@ -356,15 +394,13 @@ function ChatPaneBody({
   // keep typing while a turn is in flight. Send (and Enter) wait while this
   // pane has a plain turn in flight in ANY conversation (`inFlight`), not only
   // the visible one: `useChat` allows one request per mounted hook, and a Send
-  // it silently refuses would clear the GM's text. `|| pending` keeps it never
-  // looser than today. Sage, Spell and Rules keep today's lock (X-9).
-  const gmLive = gm && mode === 'gm'
+  // it silently refuses would clear the GM's text.
+  const gmLive = gm && destination === 'gm'
   const showTools = gmLive && enabled
-  const inputDraft = showTools ? drafts.draft : draft
-  const parsedDraft = showTools ? parseDraft(inputDraft) : null
+  const parsedDraft = showTools ? parseDraft(draft) : null
   const overPlainLength = (parsedDraft === null || parsedDraft.kind === 'plain' || parsedDraft.kind === 'escaped')
-    && codePointLength(inputDraft) > CHAT_TEXT_MAX_CHARS
-  const sendBlocked = gmLive ? inFlight || pending : pending
+    && overLength
+  const sendBlocked = inFlight || pending
   // agent-forge-harness-8tt: announce the crossing itself — once when the
   // draft first goes over CHAT_TEXT_MAX_CHARS and once when it comes back
   // under — through the SAME `.chat-pane__arrival` node, never a second live
@@ -377,9 +413,8 @@ function ChatPaneBody({
   // pending phrase, pr129 M-2, so it leaves this one alone). Further edits
   // that leave the draft over the bound — a paste growing an already-over-
   // length draft, or one more keystroke — must NOT re-announce (the visible counter already
-  // updates every keystroke; the live region does not need to). No effect on
-  // conversation switches or a `side` remount: `draft` resets to '' there, so
-  // overLength starts false and matches this ref's own initial value.
+  // updates every keystroke; the live region does not need to). Returning to a
+  // different draft can also cross the limit.
   const wasOverLengthRef = React.useRef(overPlainLength)
   React.useEffect(() => {
     if (overPlainLength !== wasOverLengthRef.current) {
@@ -628,7 +663,7 @@ function ChatPaneBody({
     if (sendBlocked || overLength || draft.trim() === '') return
     sendText(draft.trim())
     setDraft('')
-  }, [draft, overLength, sendBlocked, sendText])
+  }, [draft, overLength, sendBlocked, sendText, setDraft])
 
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -974,7 +1009,7 @@ function ChatPaneBody({
           capabilitiesFailed={checked && capabilities.tools === null}
           onRetryCapabilities={() => setAvailabilityAttempt((attempt) => attempt + 1)}
           campaignSelected={campaignId !== null}
-          onChooseCampaign={openTavern}
+          onChooseCampaign={layout === 'wide' ? undefined : openTavern}
           draft={drafts.draft}
           onDraftChange={drafts.setDraft}
           onChat={sendText}

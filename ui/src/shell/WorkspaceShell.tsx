@@ -73,6 +73,7 @@ import { NavSettings } from './NavSettings'
 import { ParticipantsPanel } from './ParticipantsPanel'
 import { RevealAnnouncer } from './RevealAnnouncer'
 import { RevealProvider, useRevealSheetOpen, useReveals } from './revealContext'
+import { SessionControl } from './SessionControl'
 import { TableSessionProvider } from './tableSession'
 import { TopBar, type TopBarNavToggle } from './TopBar'
 import { WorkbenchAnnouncer } from './WorkbenchAnnouncer'
@@ -322,6 +323,11 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
           <TopBar navToggle={navToggle} />
         </div>
         <AppHeader showSettings={!settingsInDrawer} inert={drawerOpen || modal} />
+        {workbench && (
+          <div className="workspace-shell__chrome-part workspace-shell__session" inert={drawerOpen || modal}>
+            <SessionControl />
+          </div>
+        )}
         {single && shown && (
           <div className="workspace-shell__chrome-part" inert={drawerOpen || modal}>
             <WorkbenchViewSwitch view={view} onChange={setView} />
@@ -401,8 +407,8 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
             >
               {chat}
             </div>
-            {shown && (
-              <div ref={canvasColumnRef} className="workbench__canvas" hidden={single && view === 'chat'}>
+            {doc.kind !== 'closed' && (
+              <div ref={canvasColumnRef} className="workbench__canvas" hidden={!shown || (single && view === 'chat')}>
                 <CanvasHost />
               </div>
             )}

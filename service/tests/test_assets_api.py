@@ -30,9 +30,11 @@ import subprocess
 import sys
 import zlib
 from collections.abc import Callable, Iterable, Iterator, MutableMapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from typing import Any, cast
 
 import pytest
@@ -41,6 +43,7 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from PIL import Image, ImageCms
 
+import config
 from service import app as appmod
 from service import assets_api
 from service import media_processing as mp
@@ -50,6 +53,9 @@ from service.campaign_store import InMemoryCampaignStore
 from service.db import InMemoryDatabase
 from service.jobs import InMemoryJobQueue
 from service.media_objects import (
+    THUMBNAIL_MAX_BYTES,
+    THUMBNAIL_NAME,
+    WAVEFORM_NAME,
     InMemoryObjectStore,
     MediaSettings,
     ObjectPage,
@@ -368,7 +374,8 @@ DARK_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
 def _dark_pairs() -> list[tuple[str, str]]:
     campaign, asset = "cmp_" + "a" * 22, "ast_" + "b" * 22
     return [(f"/campaigns/{campaign}/assets", f"/campaigns/{campaign}/assetz"),
-            (_bytes_path(campaign, asset), f"/campaigns/{campaign}/assetz/{asset}/bytes")]
+            (_bytes_path(campaign, asset), f"/campaigns/{campaign}/assetz/{asset}/bytes"),
+            (f"/campaigns/{campaign}/assets/upload-capability", f"/campaigns/{campaign}/assetz/upload-capability")]
 
 
 @pytest.mark.parametrize("topology", ["no static mount", "root static mount"])
@@ -407,8 +414,8 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert appmod._media_enabled() is True
     media = [route for path, route in api_routes(app) if "/assets" in path]
-    # Two upload routes, and 1kg.8.1.3's read and delete (`asset_serving_api`).
-    assert len(media) == 4 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
+    # Three upload routes, and 1kg.8.1.3's read and delete (`asset_serving_api`).
+    assert len(media) == 5 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
     assert not [path for path, _ in api_routes(app) if ":path}" in path]
     app.openapi_schema = None
     assert not [path for path in app.openapi()["paths"] if "/assets" in path], "no announcement either"
@@ -417,6 +424,19 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
 def test_no_api_route_begins_with_assets() -> None:
     """RV-1: the built UI loads its bundle from /assets/<name>-<hash>.js."""
     assert not [path for path, _ in api_routes(app) if path == "/assets" or path.startswith("/assets/")]
+
+
+def test_upload_availability_checks_ownership_without_reserving_storage(client: TestClient, world: World) -> None:
+    campaign = world.campaign()
+    path = f"/campaigns/{campaign}/assets/upload-capability"
+    mine = client.get(path)
+    assert mine.status_code == 204 and mine.content == b""
+    assert mine.headers["cache-control"] == "no-store"
+    assert not world.rows() and world.reserved(campaign) == (0, 0)
+    _as(GM_B)
+    assert client.get(path).json() == NOT_FOUND
+    _as(PLAYER, "player")
+    assert client.get(path).status_code == 403
 
 
 # ── AC 20: the proxies carry the prefix, and the bytes path's posture ───────
@@ -480,6 +500,25 @@ def test_a_full_quota_is_cap_reached_and_writes_nothing(
     assert world.reserved(campaign) == (1000, 1) and len(world.rows()) == 1
 
 
+@pytest.mark.parametrize("limit", ["WORKBENCH_MEDIA_BYTES_PER_ACCOUNT_MAX", "WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX"])
+def test_an_account_limit_counts_other_campaigns_before_reading_bytes(
+    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch, limit: str,
+) -> None:
+    monkeypatch.setattr(config, limit, 1)
+    first, second = world.campaign(), world.campaign()
+    reserved = _create(client, first, size=1, command="cmd-create-000000001")
+    assert reserved.status_code == 201
+    assert _create(client, first, size=1, command="cmd-create-000000001").json() == reserved.json()
+    refused = _create(client, second, size=1)
+    assert (refused.status_code, refused.json()["detail"]["code"]) == (409, "account_limit_reached")
+    assert world.reserved(second) == (0, 0) and len(world.rows()) == 1
+    assert world.objects.handed == {}, "an account refusal made no write to staging"
+
+    other = world.campaign(GM_B)
+    _as(GM_B)
+    assert _create(client, other, size=1).status_code == 201
+
+
 def test_the_path_campaign_is_authoritative_and_checked_before_the_body(client: TestClient, world: World) -> None:
     mine, theirs = world.campaign(), world.campaign(GM_B)
     mismatch = _create(client, world.campaign(), path_campaign=mine)
@@ -510,13 +549,63 @@ def test_a_png_is_re_encoded_as_png_without_a_single_ancillary_chunk(client: Tes
     assert (body["state"], body["width"], body["height"], body["media_type"]) == ("ready", 40, 30, "image/png")
     row = world.row(asset)
     served = world.objects.read(row.object_key)
-    assert world.objects.keys() == [row.object_key], "the tmp/ object is gone"
+    assert world.objects.keys() == [row.object_key, f"{row.object_key}/{THUMBNAIL_NAME}"], "the tmp/ object is gone"
     assert set(png_chunk_types(served)) <= {b"IHDR", b"IDAT", b"IEND"}
     assert CANARY_TITLE.encode() not in served
     with Image.open(io.BytesIO(served)) as out:
         assert (out.format, out.mode, out.size) == ("PNG", "RGBA", (40, 30)), "alpha kept"
     assert body["size_bytes"] == len(served) == row.size_bytes
     assert world.reserved(campaign) == (len(served), 1), "the real size replaced the declared one"
+
+
+def test_thumbnail_is_bounded_and_has_the_same_owner_and_ready_gate(
+    client: TestClient, world: World
+) -> None:
+    campaign = world.campaign()
+    source = image_bytes("PNG", (720, 360), mode="RGBA")
+    asset = _create(client, campaign, size=len(source)).json()["asset_id"]
+    path = f"/campaigns/{campaign}/assets/{asset}?rendition=thumb"
+    assert client.get(path).json() == NOT_FOUND
+    assert _put(client, campaign, asset, source, "image/png").status_code == 200
+    thumbnail = client.get(path)
+    assert thumbnail.status_code == 200
+    assert thumbnail.headers["content-type"] == "image/webp"
+    assert thumbnail.headers["cache-control"] == "no-store"
+    assert len(thumbnail.content) < THUMBNAIL_MAX_BYTES
+    with Image.open(io.BytesIO(thumbnail.content)) as out:
+        assert (out.size, out.mode) == ((320, 160), "RGBA")
+        assert {"exif", "icc_profile", "xmp"}.isdisjoint(out.info)
+    _as(GM_B)
+    assert client.get(path).json() == NOT_FOUND
+    _as(GM_A)
+    row = world.row(asset)
+    world.objects.delete_object(f"{row.object_key}/{THUMBNAIL_NAME}")
+    legacy = client.get(path)
+    assert legacy.headers["content-type"] == "image/png"
+    assert legacy.content == world.objects.read(row.object_key)
+
+
+def test_a_derivative_store_failure_leaves_no_bytes_and_can_retry(
+    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = world.campaign()
+    asset = _create(client, campaign).json()["asset_id"]
+    put = world.objects.put_stream
+    failed = False
+
+    def fail_once(key: str, chunks: Iterable[bytes], *, max_bytes: int) -> int:
+        nonlocal failed
+        if key.endswith(f"/{THUMBNAIL_NAME}") and not failed:
+            failed = True
+            raise ObjectStoreUnavailable()
+        return put(key, chunks, max_bytes=max_bytes)
+
+    monkeypatch.setattr(world.objects, "put_stream", fail_once)
+    source = image_bytes("PNG")
+    assert _put(client, campaign, asset, source, "image/png").status_code == 503
+    assert world.row(asset).state == "uploading" and world.objects.keys() == []
+    assert _put(client, campaign, asset, source, "image/png").status_code == 200
+    assert client.get(f"/campaigns/{campaign}/assets/{asset}?rendition=thumb").headers["content-type"] == "image/webp"
 
 
 def test_a_jpeg_loses_its_exif_gps_icc_and_hidden_thumbnail(client: TestClient, world: World) -> None:
@@ -783,6 +872,38 @@ def test_bytes_for_an_asset_that_is_no_longer_uploading_is_409_for_its_owner(cli
     assert (again.status_code, again.json()["detail"]["code"]) == (409, "conflict")
 
 
+def test_a_concurrent_retry_cannot_touch_the_winners_temporary_bytes(
+    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    campaign = world.campaign()
+    asset = _create(client, campaign).json()["asset_id"]
+    writing = Event()
+    resume = Event()
+    temporary = world.row(asset).tmp_key
+    put = world.objects.put_stream
+
+    def pause(key: str, chunks: Iterable[bytes], *, max_bytes: int) -> int:
+        if key == temporary:
+            assert not writing.is_set(), "only the winning request may reach the temporary key"
+            writing.set()
+            assert resume.wait(8)
+        return put(key, chunks, max_bytes=max_bytes)
+
+    monkeypatch.setattr(world.objects, "put_stream", pause)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        first = worker.submit(_put, client, campaign, asset, image_bytes("PNG", (24, 16)), "image/png")
+        try:
+            assert writing.wait(8)
+            duplicate = _put(client, campaign, asset, image_bytes("PNG", (42, 42)), "image/png")
+            assert duplicate.status_code == 409
+            assert world.row(asset).state == "processing"
+        finally:
+            resume.set()
+        answer = first.result(timeout=15)
+    assert answer.status_code == 200
+    assert (answer.json()["width"], answer.json()["height"]) == (24, 16)
+
+
 def test_a_final_transition_that_loses_deletes_what_processing_wrote(
     client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -888,7 +1009,12 @@ def audio(tmp_path_factory: pytest.TempPathFactory) -> dict[str, bytes]:
                 "-f", "mp3"]
     video = ["-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=5", "-f", "lavfi", "-i",
              "sine=duration=1", "-c:v", "mpeg4", "-c:a", "aac", "-f", "mp4"]
-    for name, args in {"forty seconds": long_wav, "601 seconds": too_long, "video": video}.items():
+    # Without a Xing header, probing extrapolates from the high-bitrate first
+    # second and underestimates the later, very low-bitrate silence.
+    vbr = ["-f", "lavfi", "-i", "anoisesrc=d=1:r=44100:a=0.8:seed=7", "-f", "lavfi", "-i",
+           "anullsrc=r=44100:cl=mono:d=9", "-filter_complex", "concat=n=2:v=0:a=1",
+           "-c:a", "libmp3lame", "-q:a", "2", "-write_xing", "0", "-f", "mp3"]
+    for name, args in {"forty seconds": long_wav, "601 seconds": too_long, "video": video, "vbr": vbr}.items():
         target = work / name.replace(" ", "_")
         subprocess.run(["ffmpeg", "-v", "error", "-y", *args, str(target)], check=True, timeout=120)
         out[name] = target.read_bytes()
@@ -924,6 +1050,38 @@ def test_a_forty_second_six_megabyte_clip_is_accepted_the_cue_decides_its_kind(
     _, answer = _upload(client, world.campaign(), upload, "audio/wav")
     assert answer.status_code == 200, answer.text
     assert 39_900 <= answer.json()["duration_ms"] <= 40_100
+
+
+def test_a_vbr_upload_with_no_length_header_reports_the_served_duration(
+    client: TestClient, world: World, audio: dict[str, bytes], tmp_path: Path
+) -> None:
+    source = tmp_path / "source.mp3"
+    source.write_bytes(audio["vbr"])
+    before = subprocess.run(mp.ffprobe_argv("mp3", source), capture_output=True, check=True, timeout=30)
+    assert mp.probe_verdict(before.stdout) < 7000, "the fixture must understate its ten seconds"
+
+    asset, answer = _upload(client, world.campaign(), audio["vbr"], "audio/mpeg")
+    assert answer.status_code == 200, answer.text
+    output = tmp_path / "served.mp3"
+    output.write_bytes(world.objects.read(world.row(asset).object_key))
+    after = subprocess.run(mp.ffprobe_argv("mp3", output), capture_output=True, check=True, timeout=30)
+    duration = mp.probe_verdict(after.stdout)
+    assert 9900 <= duration <= 10_200
+    assert answer.json()["duration_ms"] == duration
+
+    wave_path = f"/campaigns/{answer.json()['campaign_id']}/assets/{asset}?rendition=waveform"
+    waveform = client.get(wave_path)
+    assert (waveform.status_code, waveform.headers["content-type"]) == (200, "application/json")
+    assert waveform.headers["cache-control"] == "no-store"
+    body = waveform.json()
+    assert body["schema_version"] == 1
+    assert len(body["peaks"]) == 46 and all(0 <= peak <= 1 for peak in body["peaks"])
+    assert max(body["peaks"][:5]) > 0.1 and body["peaks"][-10:] == [0] * 10
+    _as(GM_B)
+    assert client.get(wave_path).json() == NOT_FOUND
+    _as(GM_A)
+    world.objects.delete_object(f"{world.row(asset).object_key}/{WAVEFORM_NAME}")
+    assert client.get(wave_path).json() == NOT_FOUND, "older cues can use fallback peaks"
 
 
 def test_audio_past_ten_minutes_is_too_long_and_video_is_unsupported(

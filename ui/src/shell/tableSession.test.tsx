@@ -46,6 +46,13 @@ async function advance(ms: number): Promise<void> {
   await flush()
 }
 
+/** Start the action inside act, then let the test deliver its deferred reply. */
+function invoke<T>(action: () => Promise<T>): Promise<T> {
+  let pending!: Promise<T>
+  act(() => { pending = action() })
+  return pending
+}
+
 interface Call {
   readonly url: string
   readonly method: string
@@ -95,12 +102,16 @@ function mount(options: { scope: CampaignScope | null; strict?: boolean; onStart
     return options.strict === true ? <StrictMode>{provider}</StrictMode> : provider
   }
   const view = render(tree(options.scope, 'ada@example.com'))
+  const now = (): TableSessionValue => seen[seen.length - 1]
   return {
     calls,
     seen,
     posts: () => calls.filter((call) => call.method === 'POST'),
     gets: () => calls.filter((call) => call.method === 'GET'),
-    now: (): TableSessionValue => seen[seen.length - 1],
+    now,
+    start: () => invoke(now().start),
+    end: () => invoke(now().end),
+    retry: () => invoke(now().retry),
     rerender: (scope: CampaignScope | null, user = 'ada@example.com') => view.rerender(tree(scope, user)),
     unmount: view.unmount,
     async answer(status: number, body?: unknown, index = 0): Promise<void> {
@@ -116,6 +127,7 @@ beforeEach(() => {
   vi.setSystemTime(Date.parse('2026-09-29T20:00:00Z'))
 })
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.useRealTimers()
 })
 
@@ -146,16 +158,16 @@ describe('TableSessionProvider', () => {
   it('T4-1: a Start is never retried by itself, and a manual retry reuses its command id', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(null))
-    void t.now().start()
+    void t.start()
     await flush()
     expect(t.now()).toMatchObject({ state: 'none', pending: 'start' })
     await t.answer(503, refusal('backend_unavailable'))
     expect(t.now().problem).toEqual({ kind: 'start_failed' })
     await advance(HOUR)
     expect(t.posts()).toHaveLength(1)
-    void t.now().retry()
+    void t.retry()
     await flush()
-    void t.now().start()
+    void t.start()
     await flush()
     expect(t.posts()).toHaveLength(2)
     await t.answer(200, envelope(LIVE))
@@ -169,7 +181,7 @@ describe('TableSessionProvider', () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(ENDED))
     expect(t.now()).toMatchObject({ state: 'ended', liveSession: null })
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(409, refusal('live_elsewhere'))
     await advance(HOUR)
@@ -181,12 +193,12 @@ describe('TableSessionProvider', () => {
     const refused = vi.fn()
     const t = mount({ scope: A1, onStartRefused: refused })
     await t.answer(200, envelope(null))
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(403, refusal('plan_required'))
     expect(refused).toHaveBeenCalledWith('plan_required')
     expect(t.now().problem).toEqual({ kind: 'start_refused' })
-    expect(await t.now().retry()).toBe('skipped')
+    expect(await t.retry()).toBe('skipped')
     expect(t.posts()).toHaveLength(1)
   })
 
@@ -194,16 +206,16 @@ describe('TableSessionProvider', () => {
     const t = mount({ scope: A1 })
     await t.answer(503)
     expect(t.now()).toMatchObject({ state: 'failed', problem: { kind: 'load_failed' } })
-    void t.now().retry()
-    void t.now().retry()
+    void t.retry()
+    void t.retry()
     await flush()
     expect(t.gets()).toHaveLength(2)
     await t.answer(200, envelope(null))
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(429, refusal('throttled_user', { retry_after_s: 30 }))
     expect(t.now().problem).toEqual({ kind: 'throttled', retryAfterS: 30 })
-    void t.now().retry()
+    void t.retry()
     await flush()
     expect(t.posts()[1].body?.command_id).toBe(t.posts()[0].body?.command_id)
   })
@@ -213,7 +225,7 @@ describe('TableSessionProvider', () => {
     await t.answer(status, refusal(status === 404 ? 'not_found' : 'forbidden'))
     expect(t.now()).toMatchObject({ state: 'failed', problem: { kind: 'unavailable' } })
     await act(async () => {
-      await expect(t.now().retry()).resolves.toBe('skipped')
+      await expect(t.retry()).resolves.toBe('skipped')
     })
     await flush()
     expect(t.gets()).toHaveLength(1)
@@ -222,7 +234,7 @@ describe('TableSessionProvider', () => {
   it('T4-2: End is retried on the backoff with one session and command id until a 2xx', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    void t.now().end()
+    void t.end()
     await flush()
     expect(t.now().pending).toBe('end')
     for (const [delay, failure] of [[1, 503], [2, 0], [4, 403], [8, 503], [16, 503], [30, 503], [30, 0]] as const) {
@@ -246,7 +258,7 @@ describe('TableSessionProvider', () => {
   it('End honours a longer retry_after_s, is sent at once on a second press, and stops on a 404', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    void t.now().end()
+    void t.end()
     await flush()
     await t.answer(429, refusal('throttled_user', { retry_after_s: 5 }))
     await advance(4 * SECOND)
@@ -254,7 +266,7 @@ describe('TableSessionProvider', () => {
     await advance(SECOND)
     expect(t.posts()).toHaveLength(2)
     await t.answer(503)
-    void t.now().end()
+    void t.end()
     await flush()
     expect(t.posts()).toHaveLength(3)
     await t.answer(404, refusal('not_found'))
@@ -266,7 +278,7 @@ describe('TableSessionProvider', () => {
   it('Critic 23a: End stops on a 401 and resolves signed_out', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    const ended = t.now().end()
+    const ended = t.end()
     await flush()
     await t.answer(401, { detail: 'not signed in' })
     await advance(HOUR)
@@ -281,7 +293,7 @@ describe('TableSessionProvider', () => {
     await advance(HOUR)
     expect(t.gets()).toHaveLength(2)
     expect(t.now().state).toBe('live')
-    void t.now().end()
+    void t.end()
     await flush()
     expect(t.posts().map((call) => call.body?.action)).toEqual(['end'])
   })
@@ -313,7 +325,7 @@ describe('TableSessionProvider', () => {
   it("T4-6: A's End answer, arriving after a switch to B, never lands on B's live session", async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    const ended = t.now().end()
+    const ended = t.end()
     await flush()
     await t.answer(503)
     t.rerender(B2)
@@ -341,7 +353,7 @@ describe('TableSessionProvider', () => {
   it('Critic 23a/23d: an End in retry survives a campaign switch and the provider unmounting', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    const ended = t.now().end()
+    const ended = t.end()
     await flush()
     await t.answer(503)
     t.rerender(B2)
@@ -388,7 +400,7 @@ describe('TableSessionProvider', () => {
     await advance(24 * HOUR)
     expect(t.calls).toHaveLength(2)
     expect(t.now()).toMatchObject({ state: 'live', session: { sessionId: 'tss_1' }, liveSession: null })
-    void t.now().end()
+    void t.end()
     await flush()
     expect(t.posts()).toMatchObject([{ url: TABLE_A, body: { action: 'end', session_id: 'tss_1' } }])
   })
@@ -404,7 +416,7 @@ describe('TableSessionProvider', () => {
     expect(t.gets()).toHaveLength(3)
     await t.answer(200, envelope(stored({ state: 'ended', ends_at: '2026-09-29T23:00:00Z', ended_at: '2026-09-29T23:00:00Z' })))
     expect(t.now()).toMatchObject({ state: 'ended', liveSession: null })
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(200, envelope(stored({ session_id: 'tss_2', started_at: '2026-09-29T23:00:00Z', ends_at: '2026-09-30T01:00:00Z' })))
     expect(t.now()).toMatchObject({ state: 'live', liveSession: { sessionId: 'tss_2', campaignId: 'cmp_A' } })
@@ -423,17 +435,65 @@ describe('TableSessionProvider', () => {
 })
 
 describe('TableSessionProvider: review #198 round 3', () => {
+  it('L-1: a refused Start from an old campaign never calls the host callback', async () => {
+    const onStartRefused = vi.fn()
+    const t = mount({ scope: A1, onStartRefused })
+    await t.answer(200, envelope(null))
+    const start = t.start()
+    expect(t.posts()).toHaveLength(1)
+    t.rerender(B2)
+    await t.answer(403, refusal('plan_required'))
+    await expect(start).resolves.toBe('stale')
+    expect(onStartRefused).not.toHaveBeenCalled()
+    await t.answer(200, envelope(null))
+    expect(t.now()).toMatchObject({ state: 'none', pending: null, problem: null })
+  })
+
+  it('L-2: Start while live leaves the active session alone', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    const start = t.start()
+    expect(t.posts()).toHaveLength(0)
+    await expect(start).resolves.toBe('skipped')
+    expect(t.now().liveSession?.sessionId).toBe('tss_1')
+  })
+
+  it('L-2: two End presses during one request share the same outcome', async () => {
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    const first = t.end()
+    const second = t.end()
+    expect(t.posts()).toHaveLength(1)
+    await t.answer(200, envelope(ENDED))
+    await expect(Promise.all([first, second])).resolves.toEqual(['ended', 'ended'])
+    expect(t.now()).toMatchObject({ state: 'ended', pending: null })
+  })
+
+  it('L-3: repeating an expiry callback only reads status once', async () => {
+    const timers = vi.spyOn(globalThis, 'setTimeout')
+    const t = mount({ scope: A1 })
+    await t.answer(200, envelope(LIVE))
+    const expire = timers.mock.calls.find(([, delay]) => delay === HOUR)?.[0]
+    if (typeof expire !== 'function') throw new Error('Expected the live session expiry callback')
+    await advance(HOUR)
+    expect(t.gets()).toHaveLength(2)
+    act(() => { expire() })
+    expect(t.gets()).toHaveLength(2)
+    await t.answer(200, envelope(ENDED))
+    expect(t.now().state).toBe('ended')
+  })
+
   it('H-1: a Start after a finished Start is a new intent with a new command id (the server replays by command id)', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(null))
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(200, envelope(LIVE))
-    void t.now().end()
+    void t.end()
     await flush()
     await t.answer(200, envelope(ENDED))
     expect(t.now().state).toBe('ended')
-    void t.now().start()
+    void t.start()
     await flush()
     const starts = t.posts().filter((call) => call.body?.action === 'start')
     expect(starts).toHaveLength(2)
@@ -457,7 +517,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
   it('M-1: a Start answer whose ends_at is already past on this clock never exposes a liveSession', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(null))
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(200, envelope(stored({ ends_at: '2026-09-29T19:30:00Z' })))
     expect(t.now()).toMatchObject({ state: 'live', liveSession: null })
@@ -467,15 +527,15 @@ describe('TableSessionProvider: review #198 round 3', () => {
   it('M-2: a status read sent before a Start answer never overwrites it (Retry, then Start)', async () => {
     const t = mount({ scope: A1 })
     await t.answer(503)
-    void t.now().retry()
+    void t.retry()
     await flush()
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(200, envelope(LIVE), 1)
     expect(t.now().state).toBe('live')
     await t.answer(200, envelope(null))
     expect(t.now()).toMatchObject({ state: 'live', problem: null, liveSession: { sessionId: 'tss_1' } })
-    void t.now().end()
+    void t.end()
     await flush()
     expect(t.posts().map((call) => call.body?.action)).toEqual(['start', 'end'])
   })
@@ -485,7 +545,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
     await t.answer(200, envelope(LIVE))
     await advance(HOUR)
     expect(t.gets()).toHaveLength(2)
-    void t.now().end()
+    void t.end()
     await flush()
     await t.answer(200, envelope(stored({ state: 'ended', ended_at: '2026-09-29T21:00:00Z' })), 1)
     expect(t.now().state).toBe('ended')
@@ -496,7 +556,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
   it('M-3: an account change drops an End waiting to retry; it resolves signed_out and is never sent again', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    const ended = t.now().end()
+    const ended = t.end()
     await flush()
     await t.answer(503)
     t.rerender(A1, 'bob@example.com')
@@ -509,7 +569,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
   it('M-3: an account change drops an End in flight; its late answer schedules nothing', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    const ended = t.now().end()
+    const ended = t.end()
     await flush()
     t.rerender(A1, 'bob@example.com')
     await flush()
@@ -528,7 +588,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
       },
     })
     await t.answer(200, envelope(null))
-    const started = t.now().start().catch(() => 'threw')
+    const started = t.start().catch(() => 'threw')
     await flush()
     await t.answer(403, refusal('plan_required'))
     await expect(started).resolves.toBe('threw')
@@ -540,7 +600,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
     await t.answer(401, { detail: 'not signed in' })
     expect(t.now().problem).toBeNull()
     await act(async () => {
-      await expect(t.now().retry()).resolves.toBe('skipped')
+      await expect(t.retry()).resolves.toBe('skipped')
     })
     await flush()
     expect(t.gets()).toHaveLength(1)
@@ -549,10 +609,10 @@ describe('TableSessionProvider: review #198 round 3', () => {
   it('L-7: after live_elsewhere the next Start is a new intent', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(null))
-    void t.now().start()
+    void t.start()
     await flush()
     await t.answer(409, refusal('live_elsewhere'))
-    void t.now().start()
+    void t.start()
     await flush()
     const starts = t.posts()
     expect(starts).toHaveLength(2)
@@ -562,7 +622,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
   it('L-8: an End answered 2xx with no session marks the session ended', async () => {
     const t = mount({ scope: A1 })
     await t.answer(200, envelope(LIVE))
-    void t.now().end()
+    void t.end()
     await flush()
     await t.answer(200, envelope(null))
     expect(t.now()).toMatchObject({ state: 'ended', liveSession: null, session: { sessionId: 'tss_1', state: 'ended' } })
@@ -571,7 +631,7 @@ describe('TableSessionProvider: review #198 round 3', () => {
   it('L-9: a successful re-read clears load_failed', async () => {
     const t = mount({ scope: A1 })
     await t.answer(503)
-    void t.now().retry()
+    void t.retry()
     await flush()
     await t.answer(200, envelope(null))
     expect(t.now()).toMatchObject({ state: 'none', problem: null })

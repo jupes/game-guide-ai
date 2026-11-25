@@ -291,7 +291,7 @@ function ValueView({
         <img
           // X-10, MS-7: built from two ids. An `AssetRef` never carries a URL,
           // so nothing a model could emit can become a request off this origin.
-          src={assetPath(campaignId, asset.asset_id)}
+          src={assetPath(campaignId, asset.asset_id, 'thumb')}
           alt={trimWire(asset.alt) === '' ? `${label} of ${documentName}` : asset.alt}
           width={asset.width ?? undefined}
           height={asset.height ?? undefined}
@@ -359,6 +359,7 @@ export interface DocumentFieldProps {
   selectionEnabled?: boolean
   /** CANVAS-23: the bar lives here so it follows the field in the tab order. */
   selectionBar?: React.ReactNode
+  assetEditor?: React.ReactNode
   className?: string
 }
 
@@ -382,6 +383,7 @@ export function DocumentField({
   onArmEdit,
   selectionEnabled = true,
   selectionBar,
+  assetEditor,
   className,
 }: DocumentFieldProps): React.JSX.Element {
   const ids = React.useId()
@@ -1025,7 +1027,7 @@ export function DocumentField({
               </span>
             </button>
           )}
-          {editable && field.kind === 'asset' && asset !== null && (
+          {editable && field.kind === 'asset' && asset !== null && !heldOpen && (
             <button
               type="button"
               className="gm-field__icon"
@@ -1053,6 +1055,7 @@ export function DocumentField({
       </div>
 
       {editing ? editor() : view(committed, labelId, selectable)}
+      {editable && assetEditor}
 
       {selectable && (
         <span className="gm-field__hint" id={hintId}>

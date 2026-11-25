@@ -14,16 +14,25 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { expect, test } from '@playwright/test'
+import { APP_ORIGIN } from './stack'
+
+function declaredDefaultHeader(conf: string, name: string): string {
+  const directive = new RegExp(`^\\s*add_header\\s+${name}\\s+(?:"([^"]*)"|([^\\s;]+))\\s+always;`, 'im').exec(conf)
+  if (!directive) throw new Error(`ui/nginx.conf declares no always-on ${name} header`)
+  const value = directive[1] ?? directive[2]
+  if (!value.startsWith('$')) return value
+  const block = Array.from(conf.matchAll(/^map\s+\$request_uri\s+(\$\w+)\s*\{([\s\S]*?)^\}/gm))
+    .find(([, variable]) => variable === value)
+  const fallback = /^\s*default\s+(?:"([^"]*)"|([^\s;]+));/m.exec(block?.[2] ?? '')
+  if (!fallback) throw new Error(`ui/nginx.conf declares no default for ${value} (${name})`)
+  return fallback[1] ?? fallback[2]
+}
 
 test('nginx serves the Content-Security-Policy it declares', async ({ page }) => {
   // Playwright's cwd is ui/ — app.spec.ts resolves e2e/performance-budget.json
   // the same way. Reading the declaration rather than hard-coding it is what
   // makes this test a two-host equality check instead of a third copy.
   const conf = await fs.readFile(path.resolve('nginx.conf'), 'utf-8')
-  const declared = /add_header\s+Content-Security-Policy\s+"([^"]*)"\s+always;/.exec(conf)
-  if (declared === null) {
-    throw new Error('ui/nginx.conf declares no `add_header Content-Security-Policy "…" always;` (va8 B4)')
-  }
 
   const response = await page.goto('/')
   expect(response?.status()).toBe(200)
@@ -32,7 +41,7 @@ test('nginx serves the Content-Security-Policy it declares', async ({ page }) =>
   // sets its own), and Playwright folds duplicate headers of one name into a
   // single comma-joined value — so an equality assertion on a proxied path
   // would fail for a correct configuration.
-  expect(response?.headers()['content-security-policy']).toBe(declared[1])
+  expect(response?.headers()['content-security-policy']).toBe(declaredDefaultHeader(conf, 'Content-Security-Policy'))
 })
 
 // agent-forge-harness-y58 (review F3) — the "served" half of the four headers
@@ -59,14 +68,8 @@ for (const documentPath of ['/', '/profile']) {
     const served = response?.headers() ?? {}
 
     for (const name of Y58_HEADERS) {
-      // Quoted or bare, name in any case — the same forms the contract test
-      // counts, so a declaration it accepts is one this can read.
-      const declared = new RegExp(`add_header\\s+${name}\\s+(?:"([^"]*)"|([^\\s;"']+))`, 'i').exec(conf)
-      if (declared === null) {
-        throw new Error(`ui/nginx.conf declares no \`add_header ${name} …\` (agent-forge-harness-y58)`)
-      }
       // Soft, so one run names every header that is missing, not just the first.
-      expect.soft(served[name.toLowerCase()], `${name} on ${documentPath}`).toBe(declared[1] ?? declared[2])
+      expect.soft(served[name.toLowerCase()], `${name} on ${documentPath}`).toBe(declaredDefaultHeader(conf, name))
     }
   })
 }
@@ -134,7 +137,10 @@ test('a model-authored remote image renders no <img> and starts no request to th
   // after </p>, which becomes a text node of this div.
   await expect(answer).toHaveText(/^\s*E2E spell answer: va8-vector\s+tail-marker\s*$/)
 
-  await page.waitForLoadState('networkidle')
+  // Let the browser paint the rendered answer and queue any subresource loads.
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  }))
   // Soft, so one run reports every fact instead of stopping at the first.
   await expect.soft(answer.locator('img')).toHaveCount(0)
   expect
@@ -143,5 +149,5 @@ test('a model-authored remote image renders no <img> and starts no request to th
   expect.soft(requests.filter((url) => url.includes('exfil.invalid'))).toEqual([])
   // The collector's OWN positive control: a `request` handler that never ran
   // would make both negative assertions above it true by accident.
-  expect(requests.some((url) => url.startsWith('http://127.0.0.1:4173'))).toBe(true)
+  expect(requests.some((url) => new URL(url).origin === APP_ORIGIN)).toBe(true)
 })

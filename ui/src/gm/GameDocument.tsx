@@ -219,6 +219,7 @@ export interface GameDocumentProps {
   onRetry?: (key: string) => void
   onKeepMine?: (key: string, value: FieldValue) => void
   onUseLatest?: (key: string) => void
+  portraitEditor?: React.ReactNode
   /** CANVAS-21: arms an AI edit scoped to one field. It never runs one. */
   onArmFieldEdit?: (key: string) => void
   /** CANVAS-23. The bar reports; the owner decides whether to spend (X-1). */
@@ -254,6 +255,7 @@ export function GameDocument({
   onRetry,
   onKeepMine,
   onUseLatest,
+  portraitEditor,
   onArmFieldEdit,
   onSelectionAction,
   selectionEnabled = true,
@@ -396,6 +398,7 @@ export function GameDocument({
         onRetry={onRetry}
         onKeepMine={onKeepMine}
         onUseLatest={onUseLatest}
+        assetEditor={field.key === 'portrait' ? portraitEditor : undefined}
         onArmEdit={onArmFieldEdit}
         selectionEnabled={selectionEnabled}
         selectionBar={

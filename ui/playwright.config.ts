@@ -1,6 +1,12 @@
 import { defineConfig, devices } from '@playwright/test'
 import { BASE_URL } from './e2e/stack'
 
+const mobileSpecs = ['**/phone.spec.ts', '**/tavern-seats.spec.ts', '**/workbench-composer.spec.ts']
+export const mobileProjects = [
+  { name: 'mobile-chromium', use: devices['Pixel 5'], testMatch: mobileSpecs },
+  { name: 'mobile-webkit', use: devices['iPhone 13'], testMatch: mobileSpecs },
+]
+
 export default defineConfig({
   testDir: './e2e',
   globalSetup: './e2e/global-setup.ts',
@@ -23,5 +29,6 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
     },
+    ...(process.env.E2E_INCLUDE_MOBILE === '1' ? mobileProjects : []),
   ],
 })

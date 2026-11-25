@@ -519,7 +519,7 @@ describe('asset — the campaign asset route, and never a remote URL', () => {
   it('renders the portrait through the route the contract names', () => {
     show('portrait')
     const image = screen.getByRole('img', { name: /grey-robed woman/ })
-    expect(image).toHaveAttribute('src', '/campaigns/camp_vault_harbour/assets/ast_ondrey')
+    expect(image).toHaveAttribute('src', '/campaigns/camp_vault_harbour/assets/ast_ondrey?rendition=thumb')
   })
 
   it('falls back to the label and the document name when the reference has no alt', () => {
@@ -928,7 +928,7 @@ describe('a hostile value is shown, never run', () => {
     expect(container.querySelector('[onerror]')).toBeNull()
     const image = container.querySelector('img')
     expect(image).toHaveAttribute('alt', HOSTILE)
-    expect(image).toHaveAttribute('src', '/campaigns/camp_vault_harbour/assets/ast_x')
+    expect(image).toHaveAttribute('src', '/campaigns/camp_vault_harbour/assets/ast_x?rendition=thumb')
   })
 
   it('cannot be pushed out through the asset route either', () => {
@@ -937,7 +937,7 @@ describe('a hostile value is shown, never run', () => {
     })
     expect(container.querySelector('img')).toHaveAttribute(
       'src',
-      '/campaigns/camp_vault_harbour/assets/..%2F..%2Fevil%3Fq%3Dsecret',
+      '/campaigns/camp_vault_harbour/assets/..%2F..%2Fevil%3Fq%3Dsecret?rendition=thumb',
     )
   })
 })

@@ -168,13 +168,18 @@ cd ui && bun run test                            # UI: jsdom unit tests + storyb
 cd ui && bun run test:e2e                        # UI: Playwright E2E + perf budgets (production Compose image)
 ```
 
+Run `bunx playwright install chromium webkit` from `ui` to set up the mobile
+browser profile. Then run `bun run test:e2e:mobile` to check the GM Workbench
+and player table entry with Pixel and iPhone emulation through the same proxy.
+
 ### Continuous integration
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every pull request to
 `master` and every merge — PRs run all gates but never deploy. Alongside `python-tests` and
 `ui-tests` (the commands above), a **`ui-e2e`** job drives the production Nginx UI image with
 Playwright over a DB-/key-free [`docker-compose.e2e.yml`](docker-compose.e2e.yml) stack and
-enforces Web-Vital budgets (TTFB ≤ 1500 ms · FCP ≤ 2000 · LCP ≤ 2500 · CLS ≤ 0.1), and a
+checks the Workbench and table entry in Pixel Chromium and iPhone WebKit emulation.
+It enforces Web-Vital budgets (TTFB ≤ 1500 ms · FCP ≤ 2000 · LCP ≤ 2500 · CLS ≤ 0.1). A
 **`retrieval-metrics`** job re-runs `eval_golden.py` against the live corpus DB and **fails on a
 >2-point drop** in Hit@1 or Recall@10 versus the committed `ingestion/eval_results.json` baseline.
 All-green gates a `deploy` job that no-ops until a hosting target exists. Full rules — the
