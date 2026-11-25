@@ -286,6 +286,22 @@ def test_the_generation_records_carry_the_alias_actually_called(records):
     assert answers[0]["provider"] == "openai"
 
 
+def test_long_prompt_reaches_answer_generation_in_full():
+    received = []
+
+    class RecordingLLM(_SeqLLM):
+        def invoke(self, messages, config=None, **kw):
+            received.append(messages[-1].content)
+            return super().invoke(messages, config, **kw)
+
+    prompt = "Context. " * 5_000 + "What is a basilisk?"
+    svc = _service(RecordingLLM([_NO_MARKERS_ANSWER]))
+
+    _turn(svc, prompt, "sage")
+
+    assert prompt in received[0]
+
+
 def test_a_turn_refused_before_the_embed_records_nothing(records):
     """The empty-prompt preflight route refuses before `embed`, so no provider
     request is ever sent and there is nothing to record."""

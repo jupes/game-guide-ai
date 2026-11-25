@@ -58,6 +58,9 @@ if _ENV_PATH.exists():
 
 DEFAULT_DSN = "postgresql://rag:rag_dev_change_me@localhost:5432/game_guide_ai"
 EMBED_MODEL = "text-embedding-3-small"
+# cl100k_base is byte-level BPE, so UTF-8 bytes give a conservative token
+# ceiling without retrieving the tokenizer vocabulary at runtime.
+_EMBED_QUERY_MAX_BYTES = 8_191
 # TOP_K, IPL_FALLBACK_DISTANCE, KOZ_ANSWERABLE_DISTANCE now come from config (imported above).
 
 
@@ -145,6 +148,18 @@ def _embedding_input_tokens(resp) -> int | None:
     return getattr(usage, "prompt_tokens", None) if usage is not None else None
 
 
+def _bounded_embedding_input(text: str) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _EMBED_QUERY_MAX_BYTES:
+        return text
+    # Preserve both initial context and any question at the end. Leave room
+    # for the newline, and drop partial code points at the two cut edges.
+    edge_bytes = (_EMBED_QUERY_MAX_BYTES - 1) // 2
+    start = encoded[:edge_bytes].decode("utf-8", errors="ignore")
+    end = encoded[-edge_bytes:].decode("utf-8", errors="ignore")
+    return f"{start}\n{end}"
+
+
 def embed_query(text: str, client=None, sink: EmbedAttemptSink | None = None) -> list[float]:
     """Embed one query. `client` lets callers (RagRetriever) reuse a single
     OpenAI client instead of constructing one per call. `sink` (or the scoped
@@ -154,12 +169,13 @@ def embed_query(text: str, client=None, sink: EmbedAttemptSink | None = None) ->
     the SDK's own retries and timeouts, exactly as before."""
     if client is None:
         client = _openai_client(bounded=False)
+    embedding_input = _bounded_embedding_input(text)
     if sink is None:
         sink = _EMBED_SINK.get()
     if sink is not None:
         sink.attempt_started()
     try:
-        resp = client.embeddings.create(model=EMBED_MODEL, input=[text])
+        resp = client.embeddings.create(model=EMBED_MODEL, input=[embedding_input])
     except BaseException as exc:
         if sink is not None:
             sink.record_embedding(input_tokens=None, error=exc)
