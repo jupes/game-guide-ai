@@ -80,6 +80,32 @@ def test_a_successful_embedding_records_one_attempt_with_the_reported_tokens():
     assert client.calls[0]["model"] == EMBED_MODEL
 
 
+def test_an_embedding_input_at_the_byte_limit_is_sent_whole():
+    client = _FakeEmbeddings()
+    prompt = "a" * 8_191
+
+    embed_query(prompt, client=client)
+
+    assert client.calls[0]["input"] == [prompt]
+
+
+def test_a_long_embedding_input_keeps_both_ends_within_the_utf8_byte_budget():
+    client = _FakeEmbeddings()
+    start = "Read the encounter: "
+    question = " Who can take the Dodge action?"
+    prompt = start + "🐉" * 24_000 + question
+
+    embed_query(prompt, client=client)
+
+    [query] = client.calls[0]["input"]
+    excerpt_start, excerpt_end = query.split("\n")
+    assert excerpt_start.startswith(start)
+    assert excerpt_end.endswith(question)
+    assert excerpt_start[len(start):] == "🐉" * ((4_095 - len(start)) // 4)
+    assert excerpt_end[:-len(question)] == "🐉" * ((4_095 - len(question)) // 4)
+    assert len(query.encode("utf-8")) <= 8_191
+
+
 def test_a_provider_without_a_usage_block_records_none_not_zero():
     sink = _RecordingSink()
 
