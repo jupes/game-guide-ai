@@ -9,6 +9,7 @@ export const mobileProjects = [
 
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: '**/google-enabled.spec.ts',
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   outputDir: './e2e-results/test-results',

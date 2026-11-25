@@ -197,12 +197,18 @@ DATABASE_URL=postgresql://<user>:<pass>@localhost:5432/<db> \
 cd ui && bun run typecheck && bun run lint && bun run test  # ui-tests
 uv run python contracts/workbench/tools/differential_fuzz.py  # contract-parity (needs bun too)
 cd ui && bun run test:e2e                                   # production Compose E2E
+cd ui && bun run test:e2e --config playwright.google.config.ts # Google-enabled Compose E2E
 docker compose -f docker-compose.e2e.yml config             # validate stack wiring
 PYTHONUTF8=1 uv run --with "psycopg[binary]" --with openai \
     python ingestion/eval_golden.py                          # metrics (needs DB + key)
 uv run python scripts/ci/eval_gate.py \
     --baseline <committed> --fresh ingestion/eval_results.json
 ```
+
+The Google-enabled suite starts its own Compose stack on `127.0.0.1:4173`.
+Its local identity provider handles browser redirects, token exchange, and
+signing certificates with a throwaway key. The suite needs no Google
+credentials or network access to Google.
 
 ### Mobile table and private media with two services
 

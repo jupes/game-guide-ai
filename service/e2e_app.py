@@ -12,6 +12,7 @@ docker-compose.e2e.yml — the E2E stack is served over plain http, so a Secure
 cookie would never come back.
 """
 
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -103,3 +104,8 @@ app.router.lifespan_context = e2e_lifespan
 app.dependency_overrides[get_service] = DeterministicRagService
 app.dependency_overrides[get_message_store] = lambda: message_store
 app.dependency_overrides[get_auth_store] = lambda: auth_store
+
+if os.environ.get("E2E_FAKE_GOOGLE") == "1":
+    from .e2e_google import install_fake_google
+
+    install_fake_google(app)
