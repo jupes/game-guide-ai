@@ -466,9 +466,8 @@ def test_every_kind_the_ledger_knows_is_a_thing_the_schema_mints_an_id_for():
 
 @pytest.mark.parametrize("reason", ["", "r" * 41, "not eligible", "Rook may not see that", "rook"])
 def test_a_reason_is_one_of_the_codes_its_own_action_declares(reason):
-    """G-3. `check_field_key` made a reason code a shape too, so any lower-case
-    word was a reason. The set is per action, beside `ACTION_DETAIL`: a bead that
-    needs a new reason declares it in the same change a reviewer reads."""
+    """G-3. Each action declares its reason codes beside `ACTION_DETAIL`.
+    Even a correctly formatted key must appear in the action's vocabulary."""
     with pytest.raises(ValueError, match="never text"):
         check_reason_code(AuditAction.PARTICIPANT_REMOVED, reason)
     assert check_reason_code(AuditAction.PARTICIPANT_REMOVED, "gm_removed") == "gm_removed"
