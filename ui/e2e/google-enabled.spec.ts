@@ -19,9 +19,8 @@ test('an invited player creates an account and later signs in with the same Goog
   const created = await (await page.request.get('/auth/me')).json()
   expect(created.email).toBe(`${account}@example.com`)
 
-  await enterTavern.click()
-  await page.getByRole('button', { name: 'Open user menu' }).click()
-  await page.getByRole('button', { name: 'Sign out' }).click()
+  expect((await page.request.post('/auth/logout')).ok()).toBe(true)
+  await page.goto('/')
   await page.getByRole('link', { name: 'Sign in with Google' }).click()
   await chooseGoogleAccount(page, account)
   await expect(enterTavern).toBeVisible()
