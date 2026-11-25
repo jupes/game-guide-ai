@@ -144,7 +144,7 @@ describe('a campaign deep link', () => {
     await flush()
     expect(server.calls.slice(before).filter((c) => c.url.includes('cnv_1'))).toEqual([])
     await userEvent.click(screen.getAllByRole('button', { name: 'GM' })[0])
-    await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_A'))
+    await waitFor(() => expect(window.location.hash).toBe('#campaign=cmp_A&conversation=cnv_1'))
     await userEvent.click(screen.getAllByRole('button', { name: /open user menu/i })[0])
     await userEvent.click(screen.getAllByRole('button', { name: /profile/i })[0])
     expect(await screen.findByRole('heading', { name: 'Profile' })).toBeInTheDocument()

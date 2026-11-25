@@ -56,6 +56,12 @@ type Reply = { status: number; body?: unknown } | 'network'
 interface Call { url: string; method: string; body: string | null; headers: Headers; signal: AbortSignal | null; reply: (r: Reply) => void }
 type Route = (call: Call) => Reply | 'defer'
 
+function isCampaignViewRead(call: Call, campaignId: string): boolean {
+  const path = `/campaigns/${campaignId}/`
+  return (call.method === 'GET' && ['reveals', 'table-session', 'tool-availability']
+    .some((route) => call.url === path + route)) || (call.method === 'POST' && call.url === path + 'library')
+}
+
 /** LeftNavCampaign.test.tsx:50-66, plus the request headers (Critic 48). */
 function stubServer(route: Route) {
   const calls: Call[] = []
@@ -423,11 +429,8 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_A'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
-      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
-      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
-      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail
+        || isCampaignViewRead(call, 'cmp_A'), `${call.method} ${call.url}`).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -437,7 +440,8 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     const server = bootProbed('/', { route: listOf([]) })
     await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
+    await userEvent.click(await within(screen.getByRole('navigation', { name: 'Main navigation' }))
+      .findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
     await userEvent.type(screen.getByLabelText('Campaign name'), TYPED)
     await userEvent.click(screen.getByRole('button', { name: 'Create campaign' }))
@@ -455,7 +459,8 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     const server = bootProbed('/', { route })
     await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
+    await userEvent.click(await within(screen.getByRole('navigation', { name: 'Main navigation' }))
+      .findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
     await userEvent.type(screen.getByLabelText('Campaign name'), TYPED)
     const postIndex = server.calls.length
@@ -645,7 +650,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
   it("T-8b LeftNav's Choose a campaign opens the tavern from uncampaigned GM and round-trips through history, focused (kills M-48)", async () => {
     bootProbed('/')
     await expectTavernRoundTrip(async () => {
-      await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
+      await userEvent.click(await within(screen.getByRole('navigation', { name: 'Main navigation' }))
+        .findByRole('button', { name: 'Choose a campaign' }))
     })
   })
 
@@ -679,10 +685,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(live.raw.conversationId).toBeNull()
     expect(window.history.length).toBe(len + 1)
     expect(seen).toEqual([])
-    // (The documents list's library read, 1kg.6.3, is a read of the campaign already selected, not a switch.)
-    // (So are the table session's and the reveal picture's reads, 1kg.7.3.)
     expect(
-      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !/\/(library|reveals|table-session)$/.test(c.url)),
+      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !isCampaignViewRead(c, 'cmp_A')),
     ).toBe(false)
     expect(server.lines()).toContain('GET /campaigns/cmp_A')
 
@@ -844,11 +848,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_New'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
-      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
-      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
-      const isRevealRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isRevealRead).toBe(true)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail
+        || isCampaignViewRead(call, 'cmp_New'), `${call.method} ${call.url}`).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })

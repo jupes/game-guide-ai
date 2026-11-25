@@ -27,33 +27,6 @@ const TESTER_PASSWORD = 'e2e-password-123'
  * person to sign in on a browser does not inherit the first one's state. */
 const ACCOUNT_SLOTS = [0, 1] as const
 
-/**
- * A nonce per worker PROCESS, which is the grain this fixture runs at.
- *
- * Both an account's email and its invite have to be unused, and neither
- * `workerIndex` nor the retry count gives that. `workerIndex` restarts at 0 on
- * every invocation, so the second `E2E_BASE_URL=… bun run test:e2e` against a
- * stack that is already up found `e2e-account-0-0@example.com` registered and
- * its invite spent, and failed at provisioning with a 400 — a fixture fault
- * that reads exactly like a product one. It also collides with itself: a worker
- * restarted after a failure is issued a fresh index, so a run with enough
- * failures walked past whatever fixed range the service had seeded.
- *
- * A random nonce has neither ceiling. The service mints any `e2e-invite-…`
- * token on first sight (service/e2e_app.py, `E2EInviteStore`), so the token no
- * longer has to appear in a list somebody remembered to widen — but it is still
- * single-use once redeemed.
- */
-const WORKER_NONCE = randomUUID().slice(0, 8)
-
-function inviteToken(slot: number): string {
-  return `e2e-invite-account-${WORKER_NONCE}-${slot}`
-}
-
-function accountEmail(slot: number): string {
-  return `e2e-account-${WORKER_NONCE}-${slot}@example.com`
-}
-
 // ── Guards ───────────────────────────────────────────────────────────────────
 
 interface RejectionReporter {
@@ -84,11 +57,11 @@ interface Guards {
 }
 
 interface Accounts {
-  /** Two signed-up accounts, shared by every test in this worker. */
+  /** Fresh accounts so sign-in attempts from other tests never spend their budget. */
   accounts: readonly [TesterAccount, TesterAccount]
 }
 
-export const test = base.extend<Guards, Accounts>({
+export const test = base.extend<Guards & Accounts>({
   guards: [
     async ({ page }, use) => {
       const remoteRequests: string[] = []
@@ -130,38 +103,30 @@ export const test = base.extend<Guards, Accounts>({
     { auto: true },
   ],
 
-  accounts: [
-    async ({ playwright }, use) => {
-      // Provisioned over the API, not through the UI: these accounts exist so
-      // the flows BELOW sign-up have something to sign in as. Creating them
-      // through the form would spend an extra invite per test and make every
-      // spec depend on the signup screen it is not testing (app.spec.ts covers
-      // signup through the browser, which is where that belongs).
-      const request = await playwright.request.newContext({ baseURL: BASE_URL })
-      const created: TesterAccount[] = []
+  accounts: async ({ playwright }, provide) => {
+    // The adapter mints each unique invite on first sight. A nonce also keeps
+    // retries and separate runs against the same stack independent.
+    const nonce = randomUUID()
+    const request = await playwright.request.newContext({ baseURL: BASE_URL })
+    const created: TesterAccount[] = []
+    try {
       for (const slot of ACCOUNT_SLOTS) {
         const account: TesterAccount = {
-          email: accountEmail(slot),
+          email: `e2e-account-${nonce}-${slot}@example.com`,
           password: TESTER_PASSWORD,
         }
+        const invite = `e2e-invite-account-${nonce}-${slot}`
         const response = await request.post('/auth/signup', {
-          data: {
-            email: account.email,
-            password: account.password,
-            invite: inviteToken(slot),
-          },
+          data: { email: account.email, password: account.password, invite },
         })
-        expect(
-          response.status(),
-          `seeding ${account.email} (invite ${inviteToken(slot)})`,
-        ).toBe(200)
+        expect(response.status(), `seeding ${account.email}`).toBe(200)
         created.push(account)
       }
+    } finally {
       await request.dispose()
-      await use([created[0], created[1]] as const)
-    },
-    { scope: 'worker' },
-  ],
+    }
+    await provide([created[0], created[1]] as const)
+  },
 })
 
 export { expect } from '@playwright/test'
