@@ -1031,8 +1031,8 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/link/{participant_id}"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unlink"),
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}/link"),
-    # 1kg.8.1.2's media upload: two on `workbench_router`, which match nothing
-    # while the media capability is off (`service/assets_api.py`).
+    # The status route reports media capability. Upload commands are gated by it.
+    ("GET", "/campaigns/{campaign_id}/assets/upload-capability"),
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
     # 1kg.8.1.3's media reads and deletes: two more, dark the same way
     # (`service/asset_serving_api.py`).
@@ -1126,7 +1126,8 @@ def test_the_census_filters_the_spa_fallback_by_name(tmp_path: Path) -> None:
     install_spa(target, tmp_path)
     everything = sorted((m, p) for p, r in api_routes(target) for m in (r.methods or set()) - {"HEAD"})
     assert everything == [
-        ("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/tavern"), ("GET", "/workspace"),
+        ("GET", "/"), ("GET", "/healthz"), ("GET", "/profile"), ("GET", "/table"), ("GET", "/table.html"),
+        ("GET", "/tavern"), ("GET", "/workspace"),
     ]
     assert _census(target) == ({("GET", "/healthz")}, set())
 
@@ -1148,7 +1149,9 @@ def test_an_api_route_named_like_the_spa_mount_is_still_seen(tmp_path: Path) -> 
     target.include_router(router)
     install_spa(target, tmp_path)
     names = sorted(route.name for _, route in api_routes(target))
-    assert names == ["spa:/", "spa:/profile", "spa:/tavern", "spa:/workspace", SPA_MOUNT_NAME]
+    assert names == [
+        "spa:/", "spa:/profile", "spa:/table", "spa:/table.html", "spa:/tavern", "spa:/workspace", SPA_MOUNT_NAME,
+    ]
     assert _census(target) == (set(), {("GET", "/campaigns/{campaign_id}/ui")})
     assert _prefixes_of(target) == {"campaigns"}
     assert _live_api_prefixes(target) == {"/campaigns", "/docs", "/openapi.json", "/redoc"}

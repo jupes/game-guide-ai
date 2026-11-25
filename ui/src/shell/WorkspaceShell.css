@@ -303,35 +303,37 @@
 
 /* Keep the document body usable when a phone is held sideways. */
 @media (height <= 460px) {
-  .workspace-shell:is([data-layout="medium"], [data-layout="wide"]) .workspace-shell__chrome:has(.workspace-shell__session) {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(20rem, 38%);
-
+  .workspace-shell:is([data-layout="medium"], [data-layout="wide"]) .workspace-shell__chrome {
     .top-bar {
       height: auto;
       min-height: 48px;
     }
 
-    > .workspace-shell__session {
-      grid-area: 1 / 2;
-      align-self: center;
-    }
-
-    .session-control__summary {
-      flex-basis: 8rem;
-    }
-
-    > .app-header,
-    .workbench-switch {
-      grid-column: 1 / -1;
-    }
-
-    > .app-header {
+    .app-header {
       padding-block: var(--aether-space-1);
     }
 
     .workbench-switch {
       margin-block: 0;
+    }
+
+    &:has(.workspace-shell__session) {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(20rem, 38%);
+
+      > .workspace-shell__session {
+        grid-area: 1 / 2;
+        align-self: center;
+      }
+
+      .session-control__summary {
+        flex-basis: 8rem;
+      }
+
+      > .app-header,
+      .workbench-switch {
+        grid-column: 1 / -1;
+      }
     }
   }
 
