@@ -287,6 +287,8 @@ jobs:
         env:
           E2E_INCLUDE_MOBILE: "1"
         run: bun run test:e2e
+      - name: Playwright with the loopback Google identity provider
+        run: bun run test:e2e --config playwright.google.config.ts
       - name: Upload Playwright performance evidence
         if: always()
         uses: actions/upload-artifact@v7
