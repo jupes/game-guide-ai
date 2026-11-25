@@ -28,6 +28,7 @@ import { UrlNavigation } from './shell/UrlNavigation'
 import { startScreen } from './shell/routes'
 import { readCampaignRestore } from './shell/workspaceFragment'
 import * as api from './api'
+import { buildWebVitalPoint, transmitMetricPoints } from './metrics/metrics'
 
 function campaignBody(id: string) {
   return {
@@ -55,6 +56,16 @@ function bodyId(body: string | null): string {
 type Reply = { status: number; body?: unknown } | 'network'
 interface Call { url: string; method: string; body: string | null; headers: Headers; signal: AbortSignal | null; reply: (r: Reply) => void }
 type Route = (call: Call) => Reply | 'defer'
+
+function isUiMetricsPost(call: Call): boolean {
+  return call.method === 'POST' && call.url === '/metrics/ui'
+}
+
+function sendUiMetricsDuringSwitch(): Promise<void> {
+  return transmitMetricPoints([buildWebVitalPoint('TTFB', 12, { environment: 'test' })], {
+    navigator: { sendBeacon: () => false },
+  })
+}
 
 function isCampaignViewRead(call: Call, campaignId: string): boolean {
   const path = `/campaigns/${campaignId}/`
@@ -101,6 +112,7 @@ const defaultRoute: Route = ({ method, url, body }) => {
   if (method === 'POST' && url === '/chat') {
     return { status: 200, body: { answer: 'ok', sources: [], answerable: true, conversation_id: bodyId(body) } }
   }
+  if (method === 'POST' && url === '/metrics/ui') return { status: 202 }
   return { status: 404, body: {} }
 }
 
@@ -250,7 +262,7 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
     expect(window.location.pathname).toBe('/tavern')
     expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(1)
     expect(server.lines().some((l) => l.includes('/conversations'))).toBe(false)
-    expect(server.calls.filter((c) => c.method === 'POST' || c.method === 'PATCH')).toEqual([])
+    expect(server.calls.filter((c) => !isUiMetricsPost(c) && (c.method === 'POST' || c.method === 'PATCH'))).toEqual([])
   })
 
   it('T-4 the seat read is one request per visit under StrictMode, for a dm and for a player', async () => {
@@ -402,13 +414,15 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     expect(live.raw.conversationId).toBeNull()
 
     const send = server.calls.length
+    await sendUiMetricsDuringSwitch()
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
     // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
     // anywhere after the click, so the requests are found by method and url, never by index.
     const sent = server.calls.slice(send)
-    const createAt = sent.findIndex((c) => c.method === 'POST')
+    expect(sent.some(isUiMetricsPost)).toBe(true)
+    const createAt = sent.findIndex((c) => c.method === 'POST' && !isUiMetricsPost(c))
     const chatAt = sent.findIndex((c) => c.url === '/chat')
     const create = sent[createAt]
     const chat = sent[chatAt]
@@ -430,7 +444,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
       expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail
-        || isCampaignViewRead(call, 'cmp_A'), `${call.method} ${call.url}`).toBe(true)
+        || isCampaignViewRead(call, 'cmp_A') || isUiMetricsPost(call), `${call.method} ${call.url}`).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -471,7 +485,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     expect(screen.getByLabelText('Campaign name')).toHaveValue(TYPED)
     expect(server.calls.filter((c) => c.method === 'POST' && c.url === '/campaigns')).toHaveLength(1)
     const after = server.calls.slice(postIndex + 1)
-    expect(after.every((c) => c.method === 'GET')).toBe(true)
+    expect(after.every((c) => c.method === 'GET' || isUiMetricsPost(c))).toBe(true)
     expect(after.some((c) => c.url === '/campaigns')).toBe(true)
   })
 
@@ -504,7 +518,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     await flush()
     await flush()
     expect(server.calls.length).toBeGreaterThan(0)
-    expect(server.calls.every((c) => c.method === 'GET')).toBe(true)
+    expect(server.calls.every((c) => c.method === 'GET' || isUiMetricsPost(c))).toBe(true)
     expect(server.calls.some((c) => c.url === '/campaigns')).toBe(true)
     expect(server.calls.some((c) => c.url.includes('cmp_A') || c.url.includes('cnv_1')
       || (c.body ?? '').includes('cmp_A') || (c.body ?? '').includes('cnv_1'))).toBe(false)
@@ -825,13 +839,15 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     const rel = server.calls.length
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
     const send = server.calls.length
+    await sendUiMetricsDuringSwitch()
     await userEvent.type(screen.getByPlaceholderText('Ask…'), `${P2}{Enter}`)
     await waitFor(() => expect(server.calls.slice(send).some((c) => c.url === '/chat')).toBe(true))
 
     // The scope's own reads (GET /table-session, GET /reveals) start in passive effects and may land
     // anywhere after the click, so the requests are found by method and url, never by index.
     const sent = server.calls.slice(send)
-    const createAt = sent.findIndex((c) => c.method === 'POST')
+    expect(sent.some(isUiMetricsPost)).toBe(true)
+    const createAt = sent.findIndex((c) => c.method === 'POST' && !isUiMetricsPost(c))
     const chatAt = sent.findIndex((c) => c.url === '/chat')
     const create = sent[createAt]
     const chat = sent[chatAt]
@@ -849,7 +865,7 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
       expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail
-        || isCampaignViewRead(call, 'cmp_New'), `${call.method} ${call.url}`).toBe(true)
+        || isCampaignViewRead(call, 'cmp_New') || isUiMetricsPost(call), `${call.method} ${call.url}`).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })
