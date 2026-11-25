@@ -1736,13 +1736,14 @@ def _google_migration() -> Migration:
 def test_0023_adds_has_password_true_to_every_existing_account(dsn):
     """The expansion is safe next to the previous build: accounts that already exist
     read as having a password, and so do ones the previous build goes on creating."""
-    before = tuple(m for m in PACKAGED if m.version < _google_migration().version)
+    google = _google_migration()
+    before = tuple(m for m in PACKAGED if m.version < google.version)
     assert before and mig.migrate(dsn, packaged=before).state == "current"
     with connect(dsn) as conn:
         conn.execute(
             "INSERT INTO auth.users (email, password_hash, role) VALUES ('old@example.com', 'hash', 'dm')"
         )
-    assert mig.migrate(dsn).applied == (_google_migration().filename,)
+    assert mig.migrate(dsn, packaged=(*before, google)).applied == (google.filename,)
     with connect(dsn) as conn:
         assert conn.execute(
             "SELECT has_password FROM auth.users WHERE email = 'old@example.com'"

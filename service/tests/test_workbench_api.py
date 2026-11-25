@@ -1031,7 +1031,7 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/link/{participant_id}"),
     ("POST", "/campaigns/{campaign_id}/documents/{document_id}/unlink"),
     ("GET", "/campaigns/{campaign_id}/documents/{document_id}/link"),
-    # Media routes match nothing while the media capability is off.
+    # Capability reads report availability. Media commands require it.
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
     ("GET", "/campaigns/{campaign_id}/assets/upload-capability"),
     ("GET", "/campaigns/{campaign_id}/assets/{asset_id}/status"),

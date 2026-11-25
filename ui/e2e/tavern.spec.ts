@@ -48,7 +48,8 @@ test("the GM channel's Choose a campaign opens /tavern", async ({ page, accounts
 
   const channels = page.getByRole('navigation', { name: 'Channels' })
   await channels.getByRole('button', { name: 'GM' }).click()
-  await page.getByRole('button', { name: 'Choose a campaign' }).click()
+  await page.getByRole('navigation', { name: 'Main navigation' })
+    .getByRole('button', { name: 'Choose a campaign' }).click()
 
   await expect(page).toHaveURL(/\/tavern$/)
   await expect(page.getByRole('heading', { name: 'Your Campaigns', level: 1 })).toBeVisible()
