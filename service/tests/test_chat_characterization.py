@@ -58,6 +58,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import NamedTuple, Protocol
+from unittest.mock import Mock
 
 import httpx
 import openai
@@ -1210,7 +1211,7 @@ def test_rag_builder_passes_the_local_opt_in(monkeypatch: pytest.MonkeyPatch, en
     monkeypatch.setattr(config, "RAG_ADDITIVE_EVIDENCE", enabled)
     monkeypatch.setattr(service_app, "RagService", lambda **kwargs: seen.update(kwargs) or sentinel)
     monkeypatch.setattr(service_app, "build_reranker", lambda: None)
-    service_app._build_rag(SimpleNamespace(connection=lambda: None))
+    service_app._build_rag(Mock(spec=service_app.Database))
     assert seen["additive_evidence"] is enabled
 
 
