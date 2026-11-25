@@ -394,6 +394,15 @@ def _carries_body(request: Request) -> bool:
     return _DECIMAL_LENGTH.fullmatch(length) is None or int(length) != 0
 
 
+def check_same_origin(request: Request) -> None:
+    """Enforce the browser origin headers when a client sends them."""
+    origin = request.headers.get("origin")
+    fetch_site = request.headers.get("sec-fetch-site")
+    if ((origin is not None and not _is_own_origin(origin, request.headers.get("host")))
+            or (fetch_site is not None and fetch_site != "same-origin")):
+        raise HTTPException(status_code=403, detail=dict(FORBIDDEN_ORIGIN_DETAIL))
+
+
 def origin_check(content_types: Sequence[str] = ("application/json",)) -> Callable[[Request], None]:
     """SEC-7, for state-changing methods only. All three clauses must hold:
 
@@ -409,14 +418,9 @@ def origin_check(content_types: Sequence[str] = ("application/json",)) -> Callab
     def check(request: Request) -> None:
         if request.method not in _STATE_CHANGING:
             return
-        origin = request.headers.get("origin")
-        fetch_site = request.headers.get("sec-fetch-site")
+        check_same_origin(request)
         media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        if (
-            (origin is not None and not _is_own_origin(origin, request.headers.get("host")))
-            or (fetch_site is not None and fetch_site != "same-origin")
-            or (_carries_body(request) and media_type not in accepted)
-        ):
+        if _carries_body(request) and media_type not in accepted:
             raise HTTPException(status_code=403, detail=dict(FORBIDDEN_ORIGIN_DETAIL))
 
     return check

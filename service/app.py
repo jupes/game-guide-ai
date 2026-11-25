@@ -137,7 +137,7 @@ from .table_sessions import TableSessions
 from .table_streams import TableStreams, build_table_streams
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
 from .usage_ledger import UsageDayReader
-from .workbench_api import gm_session, install_workbench, reauth_failed, spend_write
+from .workbench_api import check_same_origin, gm_session, install_workbench, reauth_failed, spend_write
 from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, ErrorCode, check_plain_text
 
 log = logging.getLogger(__name__)
@@ -1273,6 +1273,7 @@ async def _chat_request(request: Request, _session: SessionData = Depends(requir
     so an anonymous caller could make the app parse a default body, about 27 MB
     of objects, only to be refused. Parsed by the standard library, as FastAPI
     parses it, so a lone surrogate still reaches the stored-text rule (5mj)."""
+    check_same_origin(request)
     raw = await request.body()
     if not raw:
         raise RequestValidationError([{"type": "missing", "loc": ("body",), "msg": "Field required"}])
@@ -1653,6 +1654,7 @@ async def _attachment_upload(
     so the body-limit middleware and authentication can reject it first.
     Keep strict JSON validation and omit submitted input from errors.
     """
+    check_same_origin(request)
     spend_write(session.user_id)
     raw = await request.body()
     _require_json(request)
