@@ -14,9 +14,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 import config
-from service.app import app, get_message_store
+from service import history, ratelimit
+from service.app import app, get_message_store, require_session
 from service.attachments import UnsupportedAttachmentError, cap_text, extract_text
 from service.history import InMemoryMessageStore
+from service.session import SessionData
 
 
 @pytest.fixture(autouse=True)
@@ -34,12 +36,12 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
-def _make_pdf(text: str) -> bytes:
-    """A minimal single-page PDF carrying `text`, as bytes (no temp file)."""
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), text)
-    return doc.tobytes()
+def _make_pdf(text: str, *, pages: int = 1) -> bytes:
+    """A PDF with the same line of text on each page, built in memory."""
+    with fitz.open() as doc:
+        for _ in range(pages):
+            doc.new_page().insert_text((72, 72), text)
+        return doc.tobytes()
 
 
 # ── Checkpoint A: extract_text + cap_text ─────────────────────────────────────
@@ -57,6 +59,22 @@ def test_extract_text_from_md() -> None:
 def test_extract_text_from_pdf() -> None:
     out = extract_text(_make_pdf("Homebrew: the Sword of Answers deals 2d6."), "hb.pdf")
     assert "Sword of Answers" in out
+
+
+@pytest.mark.parametrize(("char_limit", "pages_read"), [(15, 2), (6000, 50)])
+def test_pdf_stops_extracting_at_the_character_or_page_limit(monkeypatch, char_limit, pages_read):
+    monkeypatch.setattr(config, "ATTACHMENT_MAX_CHARS", char_limit)
+    pdf = _make_pdf("Map note", pages=51)
+    read = []
+    get_text = fitz.Page.get_text
+
+    def count_page(page, *args, **kwargs):
+        read.append(page.number)
+        return get_text(page, *args, **kwargs)
+
+    monkeypatch.setattr(fitz.Page, "get_text", count_page)
+    assert extract_text(pdf, "map.pdf") == "\n".join(["Map note\n"] * pages_read)[:char_limit]
+    assert read == list(range(pages_read))
 
 
 def test_unsupported_type_is_rejected() -> None:
@@ -97,6 +115,36 @@ def test_upload_endpoint_stores_and_get_lists() -> None:
     g = client.get("/conversations/c1/attachments")
     assert g.status_code == 200
     assert [a["filename"] for a in g.json()["attachments"]] == ["notes.txt"]
+
+
+def test_upload_stores_capped_text_and_enforces_the_conversation_limit(monkeypatch):
+    monkeypatch.setattr(config, "ATTACHMENT_MAX_CHARS", 4)
+    monkeypatch.setattr(history, "MAX_CONVERSATION_ATTACHMENTS", 2)
+    store = InMemoryMessageStore()
+    client = _client(store)
+    body = {"filename": "notes.txt", "content_type": "text/plain", "data": _b64("Café beyond".encode())}
+    for _ in range(2):
+        uploaded = client.post("/conversations/c1/attachments", json=body)
+        assert uploaded.status_code == 200
+        assert uploaded.json()["attachment"]["chars"] == 4
+    assert client.post("/conversations/c1/attachments", json=body).status_code == 409
+    assert [row.extracted_text for row in store.attachments_for("c1")] == ["Café", "Café"]
+    assert client.post("/conversations/c2/attachments", json=body).status_code == 200
+
+
+def test_upload_throttles_per_user_before_parsing(monkeypatch):
+    monkeypatch.setattr(ratelimit, "workbench_write_limiter", ratelimit.SlidingWindowLimiter(1, 60))
+    client = _client(InMemoryMessageStore())
+    body = {"filename": "notes.txt", "content_type": "text/plain", "data": _b64(b"a note")}
+    assert client.post("/conversations/c1/attachments", json=body).status_code == 200
+    throttled = client.post(
+        "/conversations/c2/attachments", content=b"{", headers={"Content-Type": "application/json"},
+    )
+    assert throttled.status_code == 429
+    assert throttled.json()["detail"]["code"] == "throttled_user"
+    assert int(throttled.headers["Retry-After"]) > 0
+    app.dependency_overrides[require_session] = lambda: SessionData(user_id=2, role="player")
+    assert client.post("/conversations/c2/attachments", json=body).status_code == 200
 
 
 def test_upload_rejects_unsupported_type() -> None:

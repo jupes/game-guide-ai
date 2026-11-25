@@ -61,7 +61,7 @@ from . import (
     tool_invocations_api,
     usage_capture,
 )
-from .attachments import UnsupportedAttachmentError, extract_text
+from .attachments import UnsupportedAttachmentError, cap_text, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
 from .evidence import RetrievalStageError
@@ -71,7 +71,7 @@ from .hashing import (
     hash_password,
     verify_password,
 )
-from .history import MessageStore, PostgresMessageStore, StoredAttachment
+from .history import AttachmentLimitReached, MessageStore, PostgresMessageStore
 from .invites import InviteError
 from .jobs import JobRunner, PostgresJobQueue
 from .metrics import (
@@ -101,7 +101,6 @@ from .model_catalog import (
     public_model_id,
 )
 from .models import (
-    Attachment,
     AttachmentResponse,
     AttachmentsResponse,
     AttachmentUploadRequest,
@@ -138,7 +137,7 @@ from .table_sessions import TableSessions
 from .table_streams import TableStreams, build_table_streams
 from .timeline_store import PostgresTimelineStore, TimelineStore, new_entry_id
 from .usage_ledger import UsageDayReader
-from .workbench_api import gm_session, install_workbench, reauth_failed
+from .workbench_api import gm_session, install_workbench, reauth_failed, spend_write
 from .workbench_contracts import CHAT_TEXT_MAX_CHARS, CONTRACT_VERSION, ErrorCode, check_plain_text
 
 log = logging.getLogger(__name__)
@@ -1005,7 +1004,7 @@ def _fetch_attachment_context(
         return None, None
     if not attachments:
         return None, None
-    context = "\n\n".join(a.extracted_text for a in attachments)
+    context = cap_text("\n\n".join(a.extracted_text for a in attachments), max(0, config.ATTACHMENT_MAX_CHARS))
     label = ", ".join(a.filename for a in attachments)
     return context, label
 
@@ -1645,24 +1644,16 @@ def conversation_messages(
     return MessagesResponse(conversation_id=conversation_id, messages=messages)
 
 
-def _to_attachment(sa: StoredAttachment) -> Attachment:
-    """Map a stored attachment to UI-facing metadata (extracted text omitted)."""
-    return Attachment(
-        id=sa.id, filename=sa.filename, content_type=sa.content_type,
-        chars=len(sa.extracted_text), created_at=sa.created_at,
-    )
-
-
 async def _attachment_upload(
-    request: Request, _session: SessionData = Depends(require_session),
+    request: Request, session: SessionData = Depends(require_session),
 ) -> AttachmentUploadRequest:
-    """The upload body, read only once the caller is signed in
-    (agent-forge-harness-ust7, review H2). FastAPI reads and parses a declared
-    body model before any dependency runs, so an anonymous caller could make the
-    app parse a body up to the attachment ceiling, about 94 MB of objects each,
-    only to be refused. Read raw here, the body-limit middleware caps it; a body
-    that is not JSON is refused as FastAPI's strict content type refused it, and
-    no 422 repeats what it was sent."""
+    """Read the upload after authentication and the account write throttle.
+
+    FastAPI parses a declared body model before dependencies run. Read it here
+    so the body-limit middleware and authentication can reject it first.
+    Keep strict JSON validation and omit submitted input from errors.
+    """
+    spend_write(session.user_id)
     raw = await request.body()
     _require_json(request)
     try:
@@ -1713,10 +1704,12 @@ def upload_attachment(
     _authorize_conversation(store, conversation_id, session.user_id, creating=True)
     try:
         stored = store.append_attachment(conversation_id, req.filename, req.content_type, text)
+    except AttachmentLimitReached as exc:
+        raise HTTPException(status_code=409, detail="this conversation has reached its attachment limit") from exc
     except _DB_ERRORS as exc:
         log.warning("attachment write failed (conversation_id=%s): %s", conversation_id, exc)
         raise HTTPException(status_code=503, detail="attachment storage unavailable") from exc
-    return AttachmentResponse(conversation_id=conversation_id, attachment=_to_attachment(stored))
+    return AttachmentResponse(conversation_id=conversation_id, attachment=stored.summary())
 
 
 @app.get("/conversations/{conversation_id}/attachments", response_model=AttachmentsResponse)
@@ -1733,14 +1726,11 @@ def conversation_attachments(
         # than re-reading an id that another user may have claimed since.
         return AttachmentsResponse(conversation_id=conversation_id, attachments=[])
     try:
-        stored = store.attachments_for(conversation_id)
+        summaries = store.attachment_summaries(conversation_id)
     except _DB_ERRORS as exc:
         log.warning("attachment read failed (conversation_id=%s): %s", conversation_id, exc)
         raise HTTPException(status_code=503, detail="attachments unavailable") from exc
-    return AttachmentsResponse(
-        conversation_id=conversation_id,
-        attachments=[_to_attachment(a) for a in stored],
-    )
+    return AttachmentsResponse(conversation_id=conversation_id, attachments=summaries)
 
 
 @app.post("/auth/signup", response_model=AuthUser)

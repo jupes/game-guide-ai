@@ -20,11 +20,23 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from threading import Lock
 from typing import Any, Protocol, cast
 
+from psycopg import IsolationLevel
+
+import config
+
+from .attachments import cap_text
 from .db import Database, default_dsn
 from .migrations import Mode, migrate
-from .models import ChatMode, MessageRole, StoredMessage, Suggestion
+from .models import Attachment, ChatMode, MessageRole, StoredMessage, Suggestion
+
+MAX_CONVERSATION_ATTACHMENTS = 10
+
+
+class AttachmentLimitReached(Exception):
+    """The conversation has no room for another attachment."""
 
 
 @dataclass
@@ -37,6 +49,12 @@ class StoredAttachment:
     content_type: str
     extracted_text: str
     created_at: datetime
+
+    def summary(self) -> Attachment:
+        return Attachment(
+            id=self.id, filename=self.filename, content_type=self.content_type,
+            chars=len(self.extracted_text), created_at=self.created_at,
+        )
 
 
 class MessageStore(Protocol):
@@ -55,6 +73,10 @@ class MessageStore(Protocol):
     ) -> StoredAttachment: ...  # pragma: no cover - structural type
 
     def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
+        """Read attachment text for chat, in context order."""
+        ...  # pragma: no cover - structural type
+
+    def attachment_summaries(self, conversation_id: str) -> list[Attachment]:
         ...  # pragma: no cover - structural type
 
     def claim_conversation(self, conversation_id: str, user_id: int) -> int:
@@ -115,6 +137,7 @@ class InMemoryMessageStore:
     _owners: dict[str, int] = field(default_factory=dict)
     _strategies: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     _revisions: dict[str, str] = field(default_factory=dict)
+    _attachment_lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
@@ -135,16 +158,24 @@ class InMemoryMessageStore:
     def append_attachment(
         self, conversation_id: str, filename: str, content_type: str, extracted_text: str,
     ) -> StoredAttachment:
-        att = StoredAttachment(
-            id=len(self._attachments) + 1, conversation_id=conversation_id,
-            filename=filename, content_type=content_type, extracted_text=extracted_text,
-            created_at=datetime.now(UTC),
-        )
-        self._attachments.append(att)
-        return att
+        text = cap_text(extracted_text, max(0, config.ATTACHMENT_MAX_CHARS))
+        with self._attachment_lock:
+            count = sum(a.conversation_id == conversation_id for a in self._attachments)
+            if count >= MAX_CONVERSATION_ATTACHMENTS:
+                raise AttachmentLimitReached()
+            att = StoredAttachment(
+                id=len(self._attachments) + 1, conversation_id=conversation_id,
+                filename=filename, content_type=content_type, extracted_text=text,
+                created_at=datetime.now(UTC),
+            )
+            self._attachments.append(att)
+            return att
 
     def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
         return [a for a in self._attachments if a.conversation_id == conversation_id]
+
+    def attachment_summaries(self, conversation_id: str) -> list[Attachment]:
+        return [attachment.summary() for attachment in self.attachments_for(conversation_id)]
 
     def claim_conversation(self, conversation_id: str, user_id: int) -> int:
         return self._owners.setdefault(conversation_id, user_id)
@@ -253,29 +284,70 @@ class PostgresMessageStore:
     def append_attachment(
         self, conversation_id: str, filename: str, content_type: str, extracted_text: str,
     ) -> StoredAttachment:
+        text = cap_text(extracted_text, max(0, config.ATTACHMENT_MAX_CHARS))
         with self._connect() as conn:
+            conn.isolation_level = IsolationLevel.READ_COMMITTED
+            # Serialize competing uploads for this conversation. The next
+            # statement sees attachments committed by the previous lock holder.
+            conn.execute(
+                "SELECT 1 FROM chat.conversations WHERE conversation_id = %s FOR NO KEY UPDATE",
+                (conversation_id,),
+            )
+            at_limit = conn.execute(
+                "SELECT 1 FROM chat.attachments WHERE conversation_id = %s OFFSET %s LIMIT 1",
+                (conversation_id, MAX_CONVERSATION_ATTACHMENTS - 1),
+            ).fetchone()
+            if at_limit is not None:
+                raise AttachmentLimitReached()
             row = conn.execute(
                 "INSERT INTO chat.attachments (conversation_id, filename, content_type, extracted_text) "
                 "VALUES (%s, %s, %s, %s) RETURNING id, created_at",
-                (conversation_id, filename, content_type, extracted_text),
+                (conversation_id, filename, content_type, text),
             ).fetchone()
         return StoredAttachment(
             id=row[0], conversation_id=conversation_id, filename=filename,
-            content_type=content_type, extracted_text=extracted_text, created_at=row[1],
+            content_type=content_type, extracted_text=text, created_at=row[1],
         )
 
     def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
+        # Match the existing prefix of texts joined by two newlines, even for
+        # oversized legacy rows. Keep all filenames for the attachment label.
+        limit = max(0, config.ATTACHMENT_MAX_CHARS)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, filename, content_type, extracted_text, created_at "
-                "FROM chat.attachments WHERE conversation_id = %s ORDER BY created_at, id",
-                (conversation_id,),
+                """
+                WITH ordered AS (
+                    SELECT id, filename, content_type, extracted_text, created_at,
+                           coalesce(sum(char_length(extracted_text) + 2) OVER (
+                               ORDER BY created_at, id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                           ), 0) AS preceding_chars
+                    FROM chat.attachments WHERE conversation_id = %s
+                )
+                SELECT id, filename, content_type,
+                       CASE WHEN preceding_chars < %s THEN left(extracted_text, (%s - preceding_chars)::integer)
+                            ELSE '' END,
+                       created_at
+                FROM ordered ORDER BY created_at, id
+                """,
+                (conversation_id, limit, limit),
             ).fetchall()
         return [
             StoredAttachment(
                 id=row[0], conversation_id=conversation_id, filename=row[1],
                 content_type=row[2], extracted_text=row[3], created_at=row[4],
             )
+            for row in rows
+        ]
+
+    def attachment_summaries(self, conversation_id: str) -> list[Attachment]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, filename, content_type, char_length(extracted_text), created_at "
+                "FROM chat.attachments WHERE conversation_id = %s ORDER BY created_at, id",
+                (conversation_id,),
+            ).fetchall()
+        return [
+            Attachment(id=row[0], filename=row[1], content_type=row[2], chars=row[3], created_at=row[4])
             for row in rows
         ]
 

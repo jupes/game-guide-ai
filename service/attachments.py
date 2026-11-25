@@ -11,6 +11,8 @@ import os
 
 import config
 
+MAX_PDF_PAGES = 50
+
 
 class UnsupportedAttachmentError(ValueError):
     """Raised when an uploaded file's type is not a supported attachment type."""
@@ -30,15 +32,28 @@ def _extract_pdf(data: bytes) -> str:
     # stays importable and only a PDF upload fails if a future build drops it.
     import fitz
 
+    chunks: list[str] = []
+    remaining = max(0, config.ATTACHMENT_MAX_CHARS)
     with fitz.open(stream=data, filetype="pdf") as doc:
-        return "\n".join(page.get_text() for page in doc)
+        for page_number in range(min(doc.page_count, MAX_PDF_PAGES)):
+            if remaining <= 0:
+                break
+            if page_number > 0:
+                chunks.append("\n")
+                remaining -= 1
+                if remaining == 0:
+                    break
+            text = cap_text(doc[page_number].get_text(), remaining)
+            chunks.append(text)
+            remaining -= len(text)
+    return "".join(chunks)
 
 
 def extract_text(data: bytes, filename: str) -> str:
     """Extract plain text from an uploaded attachment's bytes.
 
     `.txt`/`.md` → utf-8 decode (lossy); `.pdf` → PyMuPDF text. Any other type
-    raises `UnsupportedAttachmentError`. Callers cap the result with `cap_text`.
+    raises `UnsupportedAttachmentError`. The returned text is bounded.
     """
     ext = _ext(filename)
     if ext not in config.ATTACHMENT_TYPES:
@@ -48,4 +63,4 @@ def extract_text(data: bytes, filename: str) -> str:
         )
     if ext == "pdf":
         return _extract_pdf(data)
-    return data.decode("utf-8", errors="replace")
+    return cap_text(data.decode("utf-8", errors="replace"), max(0, config.ATTACHMENT_MAX_CHARS))
