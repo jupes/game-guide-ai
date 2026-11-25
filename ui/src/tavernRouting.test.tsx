@@ -61,11 +61,16 @@ function isUiMetricsPost(call: Call): boolean {
   return call.method === 'POST' && call.url === '/metrics/ui'
 }
 
-// Force the same fetch fallback a background metrics flush can use during a switch.
 function sendUiMetricsDuringSwitch(): Promise<void> {
   return transmitMetricPoints([buildWebVitalPoint('TTFB', 12, { environment: 'test' })], {
     navigator: { sendBeacon: () => false },
   })
+}
+
+function isCampaignViewRead(call: Call, campaignId: string): boolean {
+  const path = `/campaigns/${campaignId}/`
+  return (call.method === 'GET' && ['reveals', 'table-session', 'tool-availability', 'cues/capability']
+    .some((route) => call.url === path + route)) || (call.method === 'POST' && call.url === path + 'library')
 }
 
 /** LeftNavCampaign.test.tsx:50-66, plus the request headers (Critic 48). */
@@ -107,7 +112,7 @@ const defaultRoute: Route = ({ method, url, body }) => {
   if (method === 'POST' && url === '/chat') {
     return { status: 200, body: { answer: 'ok', sources: [], answerable: true, conversation_id: bodyId(body) } }
   }
-  if (method === 'POST' && url === '/metrics/ui') return { status: 200 }
+  if (method === 'POST' && url === '/metrics/ui') return { status: 202 }
   return { status: 404, body: {} }
 }
 
@@ -257,7 +262,7 @@ describe('a cold load of /tavern (74j, T-4 to T-6)', () => {
     expect(window.location.pathname).toBe('/tavern')
     expect(server.lines().filter((l) => l === 'GET /campaigns')).toHaveLength(1)
     expect(server.lines().filter((l) => l.includes('/conversations'))).toEqual(['GET /conversations'])
-    expect(server.calls.filter((c) => c.method === 'POST' || c.method === 'PATCH')).toEqual([])
+    expect(server.calls.filter((c) => !isUiMetricsPost(c) && (c.method === 'POST' || c.method === 'PATCH'))).toEqual([])
   })
 
   it('T-4 the seat read is one request per visit under StrictMode, for a dm and for a player', async () => {
@@ -438,11 +443,8 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_A'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
-      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
-      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
-      const isWorkbenchRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session|tool-availability)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead || isUiMetricsPost(call)).toBe(true)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail
+        || isCampaignViewRead(call, 'cmp_A') || isUiMetricsPost(call), `${call.method} ${call.url}`).toBe(true)
     }
     expect(server.calls.slice(pick).some((c) => c.url.includes(L) || (c.body ?? '').includes(L))).toBe(false)
     expect(storageHolds(P2)).toBe(false)
@@ -452,7 +454,8 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     const server = bootProbed('/', { route: listOf([]) })
     await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
+    await userEvent.click(await within(screen.getByRole('navigation', { name: 'Main navigation' }))
+      .findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
     await userEvent.type(screen.getByLabelText('Campaign name'), TYPED)
     await userEvent.click(screen.getByRole('button', { name: 'Create campaign' }))
@@ -470,7 +473,8 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     const server = bootProbed('/', { route })
     await userEvent.click(await screen.findByRole('button', { name: 'Sage' }))
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Channels' })).getByRole('button', { name: 'GM' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
+    await userEvent.click(await within(screen.getByRole('navigation', { name: 'Main navigation' }))
+      .findByRole('button', { name: 'Choose a campaign' }))
     await screen.findByText('Create your first campaign', { exact: false })
     await userEvent.type(screen.getByLabelText('Campaign name'), TYPED)
     const postIndex = server.calls.length
@@ -481,7 +485,7 @@ describe('picking a campaign from the tavern (74j, T-9, T-10, T-11, T-12a, T-14)
     expect(screen.getByLabelText('Campaign name')).toHaveValue(TYPED)
     expect(server.calls.filter((c) => c.method === 'POST' && c.url === '/campaigns')).toHaveLength(1)
     const after = server.calls.slice(postIndex + 1)
-    expect(after.every((c) => c.method === 'GET')).toBe(true)
+    expect(after.every((c) => c.method === 'GET' || isUiMetricsPost(c))).toBe(true)
     expect(after.some((c) => c.url === '/campaigns')).toBe(true)
   })
 
@@ -514,7 +518,7 @@ describe('a hostile fragment and web-storage leaks (74j, H-1, H-2)', () => {
     await flush()
     await flush()
     expect(server.calls.length).toBeGreaterThan(0)
-    expect(server.lines().filter((line) => !line.startsWith('GET '))).toEqual([])
+    expect(server.calls.every((c) => c.method === 'GET' || isUiMetricsPost(c))).toBe(true)
     expect(server.calls.some((c) => c.url === '/campaigns')).toBe(true)
     expect(server.calls.some((c) => c.url.includes('cmp_A') || c.url.includes('cnv_1')
       || (c.body ?? '').includes('cmp_A') || (c.body ?? '').includes('cnv_1'))).toBe(false)
@@ -660,7 +664,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
   it("T-8b LeftNav's Choose a campaign opens the tavern from uncampaigned GM and round-trips through history, focused (kills M-48)", async () => {
     bootProbed('/')
     await expectTavernRoundTrip(async () => {
-      await userEvent.click(await screen.findByRole('button', { name: 'Choose a campaign' }))
+      await userEvent.click(await within(screen.getByRole('navigation', { name: 'Main navigation' }))
+        .findByRole('button', { name: 'Choose a campaign' }))
     })
   })
 
@@ -694,11 +699,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(live.raw.conversationId).toBeNull()
     expect(window.history.length).toBe(len + 1)
     expect(seen).toEqual([])
-    // (The documents list's library read, 1kg.6.3, is a read of the campaign already selected, not a switch.)
-    // (So are the table session's and the reveal picture's reads, 1kg.7.3.)
     expect(
-      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') &&
-        !(c.method === 'GET' && /\/(library|reveals|table-session|tool-availability)$/.test(c.url))),
+      server.calls.slice(mark).some((c) => c.url.startsWith('/campaigns') && !isCampaignViewRead(c, 'cmp_A')),
     ).toBe(false)
     expect(server.lines()).toContain('GET /campaigns/cmp_A')
 
@@ -832,7 +834,7 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
     expect(live.nav.mode).toBe('sage')
     expect(window.location.pathname).toBe('/workspace')
     expect(window.history.length).toBe(len)
-    // Sage is empty; the previous uncampaigned GM row remains in its own channel.
+    // Sage is empty. The previous uncampaigned GM row remains in its channel.
     expect(live.raw.conversationId).toBeNull()
     expect(storageHolds(L as string)).toBe(true)
 
@@ -864,11 +866,8 @@ describe('tavern history, picks, vetoes and Continue (74j, H-3)', () => {
       const isThreadsList = call.method === 'GET' && call.url === '/conversations?campaign_id=cmp_New'
       const isModels = call.method === 'GET' && call.url === '/models'
       const isNewThreadDetail = call.method === 'GET' && call.url.startsWith('/conversations/cnv_new/')
-      // 1kg.6.3: a selected campaign lists its documents, a read made by POST so no search ever rides in a URL.
-      const isLibraryRead = call.method === 'POST' && /^\/campaigns\/[\w-]+\/library$/.test(call.url)
-      // 1kg.7.3: a selected campaign reads its table session and the GM's reveal picture, two GETs of the campaign's own.
-      const isWorkbenchRead = call.method === 'GET' && /^\/campaigns\/[\w-]+\/(reveals|table-session|tool-availability)$/.test(call.url)
-      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail || isLibraryRead || isWorkbenchRead || isUiMetricsPost(call)).toBe(true)
+      expect(isThreadCreate || isChat || isThreadsList || isModels || isNewThreadDetail
+        || isCampaignViewRead(call, 'cmp_New') || isUiMetricsPost(call), `${call.method} ${call.url}`).toBe(true)
     }
     expect(server.calls.slice(rel).some((c) => c.url.includes(L as string) || (c.body ?? '').includes(L as string))).toBe(false)
   })
