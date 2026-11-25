@@ -37,6 +37,7 @@ from service.body_limit import (
 )
 from service.history import InMemoryMessageStore
 from service.models import MAX_EMAIL_LENGTH, MAX_INVITE_LENGTH, MAX_PASSWORD_LENGTH, ChatResponse
+from service.workbench_api import FORBIDDEN_ORIGIN_DETAIL
 from service.workbench_contracts import ASSET_MAX_BYTES, CHAT_TEXT_MAX_CHARS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -99,9 +100,9 @@ class Answer:
 
 
 def drive(target: ASGIApp, method: str, path: str, channel: Channel, *, declared: bool = True,
-          content_type: bytes = b"application/json") -> Answer:
+          content_type: bytes = b"application/json", extra_headers: tuple[tuple[bytes, bytes], ...] = ()) -> Answer:
     """One request over raw ASGI: with a Content-Length, or chunked with none."""
-    headers = [(b"host", b"testserver"), (b"content-type", content_type)]
+    headers = [(b"host", b"testserver"), (b"content-type", content_type), *extra_headers]
     if declared:
         headers.append((b"content-length", str(channel.total).encode()))
     else:
@@ -378,6 +379,28 @@ def test_a_refused_body_is_let_go_once_answered(path: str, size: int, closed: bo
             tracemalloc.stop()
     budget = min(DEFAULT_MAX_BODY_BYTES, 5 * size)
     assert held < budget, f"{held / MIB:.2f} MiB still held after five refused bodies"
+
+
+@pytest.mark.parametrize("path", ["/chat", ATTACHMENT_PATH])
+@pytest.mark.parametrize("header", [
+    (b"origin", b"https://another.example"),
+    (b"origin", b"null"),
+    (b"sec-fetch-site", b"same-site"),
+])
+def test_legacy_writes_check_browser_origin_before_reading_body(path, header) -> None:
+    channel = Channel(b"{}")
+    answer = drive(app, "POST", path, channel, extra_headers=(header,))
+    assert answer.status == 403
+    assert json.loads(answer.body) == {"detail": FORBIDDEN_ORIGIN_DETAIL}
+    assert channel.pulled == 0
+
+
+@pytest.mark.parametrize("path", ["/chat", ATTACHMENT_PATH])
+def test_same_origin_legacy_writes_reach_payload_validation(path) -> None:
+    channel = Channel(b"{}")
+    headers = ((b"origin", b"http://testserver"), (b"sec-fetch-site", b"same-origin"))
+    assert drive(app, "POST", path, channel, extra_headers=headers).status == 422
+    assert channel.pulled == channel.total
 
 
 @pytest.mark.real_auth
