@@ -69,7 +69,7 @@ function sendUiMetricsDuringSwitch(): Promise<void> {
 
 function isCampaignViewRead(call: Call, campaignId: string): boolean {
   const path = `/campaigns/${campaignId}/`
-  return (call.method === 'GET' && ['reveals', 'table-session', 'tool-availability']
+  return (call.method === 'GET' && ['reveals', 'table-session', 'tool-availability', 'cues/capability']
     .some((route) => call.url === path + route)) || (call.method === 'POST' && call.url === path + 'library')
 }
 
