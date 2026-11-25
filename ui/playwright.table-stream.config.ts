@@ -8,9 +8,12 @@ export default defineConfig({
   outputDir: `./e2e-results/table-stream-${webkit ? 'webkit' : 'chromium'}`,
   reporter: 'list',
   workers: 1,
-  projects: [webkit
-    ? { name: 'table-stream-webkit', use: devices['iPhone 13'] }
-    : { name: 'table-stream-chromium', use: devices['Pixel 5'] }],
+  projects: webkit
+    ? [{ name: 'table-stream-webkit', use: devices['iPhone 13'] }]
+    : [
+      { name: 'table-stream-chromium', use: devices['Pixel 5'] },
+      { name: 'workbench-media-desktop', testMatch: '**/workbench-media.spec.ts', use: devices['Desktop Chrome'] },
+    ],
   use: {
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',

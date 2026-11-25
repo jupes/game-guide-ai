@@ -204,7 +204,7 @@ uv run python scripts/ci/eval_gate.py \
     --baseline <committed> --fresh ingestion/eval_results.json
 ```
 
-### Mobile table with two services
+### Mobile table and private media with two services
 
 Set `DATABASE_URL` to a local PostgreSQL 17 URI for a role that can create a
 temporary database. Install the UI dependencies and Playwright Chromium or WebKit,
@@ -217,9 +217,12 @@ uv run --frozen --extra dev python tests/run_table_stream_browser.py
 uv run --frozen --extra dev python tests/run_table_stream_browser.py --browser webkit
 ```
 
-The profile creates a temporary database, starts two loopback FastAPI
-services, and opens player and shared-screen browser contexts at 320 and
-390 pixels. It checks reconnect, slot visibility, GM Stop and End through
-the real API. The runner stops both services and drops only its temporary
-database. Playwright writes failure traces to `ui/e2e-results/table-stream-chromium`
-or `ui/e2e-results/table-stream-webkit`.
+The profile creates a temporary database and a shared temporary media
+directory, then starts two loopback FastAPI services. Player and shared-screen
+browser contexts at 320 and 390 pixels check reconnect, slot visibility,
+GM Stop and End. The private media check runs in desktop Chromium and both
+mobile profiles. It uploads an image to one service, verifies that only the
+owning GM can read the image and its thumbnail from the other service, and
+checks that deletion revokes access on both. The runner stops both services
+and removes its temporary data. Playwright writes failure traces to
+`ui/e2e-results/table-stream-chromium` or `ui/e2e-results/table-stream-webkit`.
