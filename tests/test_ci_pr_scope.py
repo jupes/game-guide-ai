@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from scripts.ci.pr_job_scope import classify_changes, scope_at_merge
+from scripts.ci.pr_size import added_lines, report_size
 
 
 @pytest.mark.parametrize(("paths", "scope"), [
@@ -58,3 +62,55 @@ def test_scope_reads_the_merge_against_its_first_parent(tmp_path: Path, rename_p
     _git(tmp_path, "commit", "-m", "Update the base branch")
     _git(tmp_path, "merge", "--no-ff", "-m", "Test merge", "proposal")
     assert scope_at_merge(tmp_path) == ("full" if rename_python_file else "docs")
+
+
+def test_pr_size_counts_the_proposed_additions_without_tests_or_pure_moves(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-b", "trunk")
+    original = tmp_path / "original.py"
+    original.write_text("old_value = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "Base")
+    _git(tmp_path, "switch", "-c", "proposal")
+    _git(tmp_path, "mv", "original.py", "renamed module.py")
+    for test_path in (
+        "tests/test_app.py", "service/tests/test_app.py", "ui/src/app.test.ts", "scripts/tools/tests/test.py",
+    ):
+        path = tmp_path / test_path
+        path.parent.mkdir(parents=True)
+        path.write_text("test\n" * 5, encoding="utf-8")
+    (tmp_path / "new.py").write_text("value = 1\n" * 15_001, encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "Proposal")
+    _git(tmp_path, "switch", "trunk")
+    (tmp_path / "on-base.py").write_text("base_value = 3\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "Update base")
+    _git(tmp_path, "merge", "--no-ff", "-m", "Test merge", "proposal")
+    assert added_lines(tmp_path) == 15_001
+    event = tmp_path / "event.json"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "ci" / "pr_size.py"
+
+    for labels, status, annotation in [
+        ([], 1, "::error::"),
+        ([{"name": "release-train"}], 0, "::warning::"),
+    ]:
+        event.write_text(json.dumps({"pull_request": {"labels": labels}}), encoding="utf-8")
+        check = subprocess.run(
+            [sys.executable, str(script)], cwd=tmp_path,
+            env={**os.environ, "GITHUB_EVENT_PATH": str(event)},
+            capture_output=True, text=True, check=False,
+        )
+        assert check.returncode == status, check.stderr
+        assert check.stdout.startswith(annotation)
+
+
+@pytest.mark.parametrize(("lines", "release_train", "status", "annotation"), [
+    (5000, False, 0, ""),
+    (5001, False, 0, "::warning::"),
+    (15000, False, 0, "::warning::"),
+    (15001, False, 1, "::error::"),
+    (15001, True, 0, "::warning::"),
+])
+def test_pr_size_enforces_thresholds(lines, release_train, status, annotation, capsys):
+    assert report_size(lines, release_train=release_train) == status
+    assert capsys.readouterr().out.startswith(annotation or "This pull request")
