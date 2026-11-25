@@ -6,6 +6,7 @@ Sign in with Google, the routes (agent-forge-harness-lvs7).
     POST /auth/google/start       sign up with an invite, or link while signed in (a native form)
     GET  /auth/google/callback    where Google sends the browser back; always a 303
     GET  /auth/google/link        Profile's view: is Google linked, and is there a password
+    POST /auth/google/unlink      remove Google from a password-backed account
 
 The protocol (PKCE, the flow cookie, the token exchange, ID-token verification)
 is `service/google_oidc.py`; the account rules are `service/auth_store.py`. This
@@ -53,6 +54,7 @@ from .auth_store import (
     EmailTaken,
     GoogleAlreadyLinked,
     GoogleIdentityTaken,
+    GooglePasswordRequired,
     IdentityRefused,
     User,
 )
@@ -596,5 +598,53 @@ def build_router(deps: GoogleDeps) -> APIRouter:
         except _StoreUnavailable:
             raise HTTPException(status_code=503, detail="auth backend unavailable") from None
         return {"linked": status.linked, "email": status.email, "has_password": status.has_password}
+
+    @router.post("/unlink")
+    async def unlink(
+        request: Request,
+        _settings: GoogleSettings = Depends(get_google_settings),
+        _origin: None = Depends(origin_check((FORM_CONTENT_TYPE,))),
+        store: AuthStore = Depends(deps.get_auth_store),
+    ) -> Response:
+        return await run_in_threadpool(_unlink_form, request, await request.body(), store)
+
+    def _unlink_form(request: Request, body: bytes, store: AuthStore) -> Response:
+        def to(outcome: Outcome) -> Response:
+            return _see_other(_destination(outcome.value, profile=True))
+
+        try:
+            user = deps.optional_user(request, store)
+        except HTTPException:
+            return to(Outcome.UNAVAILABLE)
+        if user is None:
+            return _see_other("/")
+        try:
+            status = _store_call(deps, "link status", lambda: store.google_link_status(user.id))
+        except _StoreUnavailable:
+            return to(Outcome.UNAVAILABLE)
+        if not status.has_password:
+            _record(deps, store, user.id, "unlink", "password_required")
+            return to(Outcome.UNLINK_PASSWORD_REQUIRED)
+        form = _parse_form(body)
+        password = form["password"] if form is not None and set(form) == {"password"} else ""
+        if not password or len(password) > MAX_PASSWORD_LENGTH:
+            return to(Outcome.UNLINK_REAUTH_FAILED)
+        try:
+            deps.reauthenticate(request, store, password)
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                _record(deps, store, user.id, "unlink", "reauth_failed")
+            mapped = {429: Outcome.THROTTLED, 503: Outcome.UNAVAILABLE}
+            return to(mapped.get(exc.status_code, Outcome.UNLINK_REAUTH_FAILED))
+        try:
+            _store_call(deps, "google unlink", lambda: store.unlink_google(user.id))
+        except GooglePasswordRequired:
+            _record(deps, store, user.id, "unlink", "password_required")
+            return to(Outcome.UNLINK_PASSWORD_REQUIRED)
+        except AccountGone:
+            return _see_other("/")
+        except _StoreUnavailable:
+            return to(Outcome.UNAVAILABLE)
+        return to(Outcome.UNLINKED)
 
     return router

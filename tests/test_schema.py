@@ -46,7 +46,8 @@ def test_the_migrations_load_through_the_package():
     packaged = discover()
     assert len(packaged) >= 3
     for migration in packaged:
-        assert "CREATE" in migration.sql.upper(), f"{migration.filename} loaded empty"
+        statements = [line.strip() for line in migration.sql.splitlines() if not line.lstrip().startswith("--")]
+        assert any(statements), f"{migration.filename} loaded without SQL"
 
 
 def test_packaging_ships_the_sql_and_its_manifest():

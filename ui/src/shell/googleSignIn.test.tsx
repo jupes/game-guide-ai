@@ -234,7 +234,7 @@ describe('ProfilePage', () => {
     expect(screen.queryByRole('region', { name: 'Google account' })).toBeNull()
   })
 
-  it('linked: says which address, as text, and offers no unlink', async () => {
+  it('offers a password-confirmed unlink and displays the linked address as text', async () => {
     googleOn(true)
     vi.spyOn(api, 'getGoogleLink').mockResolvedValue({
       linked: true, email: '<b>ada</b>@gmail.example', hasPassword: true,
@@ -244,8 +244,10 @@ describe('ProfilePage', () => {
     expect(section).toHaveTextContent('Linked to <b>ada</b>@gmail.example')
     expect(section.querySelector('b')).toBeNull()
     expect(container.querySelector('form[action="/auth/google/start"]')).toBeNull()
-    expect(within(section).queryByRole('button')).toBeNull()
-    expect(screen.queryByRole('button', { name: /unlink|disconnect|remove/i })).toBeNull()
+    const submit = within(section).getByRole('button', { name: 'Unlink Google' })
+    expect(submit.closest('form')).toHaveAttribute('action', '/auth/google/unlink')
+    expect(submit.closest('form')).toHaveAttribute('method', 'post')
+    expect(within(section).getByLabelText('Current password')).toBeRequired()
   })
 
   it('a Google-only account is told so, with nothing to submit', async () => {
@@ -257,6 +259,7 @@ describe('ProfilePage', () => {
     const section = await screen.findByRole('region', { name: 'Google account' })
     expect(section).toHaveTextContent('You sign in with Google.')
     expect(within(section).queryByLabelText(/password/i)).toBeNull()
+    expect(within(section).queryByRole('button', { name: 'Unlink Google' })).toBeNull()
   })
 
   it('not linked: a POST form with intent=link and a labelled current-password field', async () => {

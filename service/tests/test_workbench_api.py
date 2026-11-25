@@ -984,6 +984,7 @@ EXPECTED_LEGACY_ROUTES = {
     # is its audience), and every one of them is a 404 while the feature is off.
     ("GET", "/auth/google/available"), ("GET", "/auth/google/start"), ("POST", "/auth/google/start"),
     ("GET", "/auth/google/callback"), ("GET", "/auth/google/link"),
+    ("POST", "/auth/google/unlink"),
     # 1kg.2.7: Cloud Scheduler's route. Not a Workbench GM route — no session,
     # no `dm` gate — so legacy posture; it authenticates with the scheduler's
     # credential and, without it, matches nothing (`service/job_driver.py`).

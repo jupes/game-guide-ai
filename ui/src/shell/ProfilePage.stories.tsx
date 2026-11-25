@@ -229,14 +229,14 @@ export const GoogleLinkFormDark: Story = {
   },
 }
 
-/** Linked: says which address, and offers no way to remove it. */
+/** A password-backed account can unlink its Google account. */
 export const GoogleLinked: Story = {
   beforeEach: googleStub({ linked: true, email: 'alanna@gmail.example', has_password: true }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const section = await canvas.findByRole('region', { name: 'Google account' })
     await expect(section).toHaveTextContent('Linked to alanna@gmail.example')
-    await expect(within(section).queryByRole('button')).not.toBeInTheDocument()
+    await expect(within(section).getByRole('button', { name: 'Unlink Google' })).toBeVisible()
   },
 }
 

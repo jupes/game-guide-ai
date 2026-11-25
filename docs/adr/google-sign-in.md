@@ -75,11 +75,9 @@ is not proof of identity: it would turn "whoever controls an address at Google" 
 PostgreSQL's `lower()` disagree outside ASCII, which would break the case-folded
 unique index and admit look-alike addresses).
 
-**Why linking needs the password.** Adding a sign-in method is more sensitive than
-the SEC-40 actions (a seat's Remove, a document's delete): there is no unlink, a
-link survives a password change and a `SESSION_SECRET` rotation, and the owner cannot
-see it. A stolen session cookie, an unattended signed-in device or any future XSS
-must not be able to attach someone else's Google account permanently.
+**Why linking needs the password.** A link survives a password change and a
+`SESSION_SECRET` rotation. SEC-40 password re-authentication protects both adding
+and removing that sign-in method.
 
 ### 4. Enumeration safety
 
@@ -192,12 +190,13 @@ cross-site POST with the same 404.
 
 - **A Google-only account cannot pass SEC-40 yet.** Re-authentication checks the
   password, and such an account has none. It cannot remove a seat or delete a
-  document once the UI gains its re-authentication dialog (none exists yet, so
-  nothing visible breaks today). A follow-up adds Google re-authentication
-  (`prompt=login`, `max_age`, an `auth_time` check) or a set-password flow.
+  document. An application-controlled step-up or a set-password flow is still
+  needed. Google's `auth_time` measures a previous sign-in and Google does not
+  support forcing a new authentication request.
   **Until it lands, a DM should keep a password and link Google.**
-- **No unlink.** It would need the same re-authentication. An operator removes a link
-  with SQL (`docs/deploy-gcp.md` section 14).
+- **Unlink.** The Profile form verifies the current password before deleting the
+  Google identity. The store rechecks that a password remains and records the
+  unlink in the same transaction. Google-only accounts keep their sign-in method.
 - **Google's `email_verified` does not make the account Verified.** A Google-created
   account's email is Google-asserted: a non-Gmail address was verified once, at
   Google sign-up, which is no proof of current control of the mailbox. It must never
