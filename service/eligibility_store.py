@@ -467,6 +467,19 @@ _PRINCIPAL_COUNT: Final = {
 }
 
 
+def check_postgres_principals(unit: UnitOfWork, campaign_id: str, eligibility: Eligibility) -> None:
+    """Validate the campaign's principal list under the caller's exclusive lock."""
+    check_types(campaign_id=campaign_id, eligibility=eligibility)
+    unit.require_exclusive_campaign_lock(campaign_id)
+    if eligibility.field_class not in LIST_CLASSES:
+        return
+    found = pg(unit).conn.execute(
+        _PRINCIPAL_COUNT[eligibility.field_class], (campaign_id, list(eligibility.ids))
+    ).fetchone()
+    if found is None or int(found[0]) != len(eligibility.ids):
+        raise InvalidPrincipal()
+
+
 def _group(row: tuple) -> Group:
     return Group(row[0], row[1], row[2], row[3], row[4], row[5])
 
@@ -570,15 +583,7 @@ class PostgresEligibilityStore:
     # ── Writes ───────────────────────────────────────────────────────────────
 
     def check_principals(self, unit: UnitOfWork, campaign_id: str, eligibility: Eligibility) -> None:
-        check_types(campaign_id=campaign_id, eligibility=eligibility)
-        unit.require_exclusive_campaign_lock(campaign_id)
-        if eligibility.field_class not in LIST_CLASSES:
-            return
-        found = pg(unit).conn.execute(
-            _PRINCIPAL_COUNT[eligibility.field_class], (campaign_id, list(eligibility.ids))
-        ).fetchone()
-        if found is None or int(found[0]) != len(eligibility.ids):
-            raise InvalidPrincipal()
+        check_postgres_principals(unit, campaign_id, eligibility)
 
     def put(
         self,

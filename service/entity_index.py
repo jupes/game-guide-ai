@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from .campaign_store import MissingParent, pg
 from .db import UnitOfWork
 from .document_store import name_key
-from .eligibility_store import Eligibility, FieldClass, PostgresEligibilityStore
+from .eligibility_store import Eligibility, FieldClass, check_postgres_principals
 from .policy import SlotId, decode_class, eligible_alias_for_audience
 from .workbench_contracts import TEXT_FIELD_MAX_CHARS, check_stored_text
 
@@ -235,7 +235,7 @@ class PostgresEntityIndex:
             raise MissingParent()
         if row == (kind, principal_ids, source):
             return False
-        PostgresEligibilityStore().check_principals(unit, campaign_id, eligibility)
+        check_postgres_principals(unit, campaign_id, eligibility)
         conn.execute(
             """UPDATE campaign.entity_aliases SET eligibility_class = %s, principal_ids = %s,
                    classification_source = %s WHERE id = %s AND campaign_id = %s""",
