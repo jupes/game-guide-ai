@@ -11,8 +11,8 @@ recent N of a conversation (served oldest-first for display). Two impls:
 - `InMemoryMessageStore` — the test/dev fake with identical ordering + limit
   semantics.
 
-Persistence is deliberately best-effort at the call site: the /chat handler
-wraps `append` so a history failure can never fail an answer.
+The /chat handler saves each exchange atomically and treats a history failure
+as best-effort so it can still serve a generated answer.
 """
 
 from __future__ import annotations
@@ -64,6 +64,11 @@ class MessageStore(Protocol):
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
     ) -> int | None: ...  # pragma: no cover - structural type
+
+    def append_exchange(
+        self, conversation_id: str, mode: str, prompt: str, answer: str,
+        suggestions: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, int]: ...  # pragma: no cover - structural type
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         ...  # pragma: no cover - structural type
@@ -137,22 +142,38 @@ class InMemoryMessageStore:
     _owners: dict[str, int] = field(default_factory=dict)
     _strategies: dict[str, tuple[str, str | None]] = field(default_factory=dict)
     _revisions: dict[str, str] = field(default_factory=dict)
+    _message_lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
     _attachment_lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
 
     def append(
         self, conversation_id: str, mode: str, role: str, content: str,
         suggestions: list[dict[str, Any]] | None = None,
     ) -> int | None:
-        row = _Row(
-            id=len(self._rows) + 1, conversation_id=conversation_id,
-            mode=mode, role=role, content=content, suggestions=suggestions,
-            created_at=datetime.now(UTC),
-        )
-        self._rows.append(row)
+        with self._message_lock:
+            row = _Row(
+                id=len(self._rows) + 1, conversation_id=conversation_id,
+                mode=mode, role=role, content=content, suggestions=suggestions,
+                created_at=datetime.now(UTC),
+            )
+            self._rows.append(row)
         return row.id
 
+    def append_exchange(
+        self, conversation_id: str, mode: str, prompt: str, answer: str,
+        suggestions: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, int]:
+        with self._message_lock:
+            first = len(self._rows) + 1
+            created = datetime.now(UTC)
+            self._rows.extend((
+                _Row(first, conversation_id, mode, "user", prompt, None, created),
+                _Row(first + 1, conversation_id, mode, "assistant", answer, suggestions, created),
+            ))
+        return first, first + 1
+
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
-        rows = [r for r in self._rows if r.conversation_id == conversation_id]
+        with self._message_lock:
+            rows = [r for r in self._rows if r.conversation_id == conversation_id]
         return [_to_message(r) for r in rows[-limit:]]
 
     def append_attachment(
@@ -263,6 +284,21 @@ class PostgresMessageStore:
                  json.dumps(suggestions) if suggestions is not None else None),
             ).fetchone()
         return int(row[0])
+
+    def append_exchange(
+        self, conversation_id: str, mode: str, prompt: str, answer: str,
+        suggestions: list[dict[str, Any]] | None = None,
+    ) -> tuple[int, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "INSERT INTO chat.messages (conversation_id, mode, role, content, suggestions) "
+                "VALUES (%s, %s, 'user', %s, NULL), (%s, %s, 'assistant', %s, %s) "
+                "RETURNING role, id",
+                (conversation_id, mode, prompt, conversation_id, mode, answer,
+                 json.dumps(suggestions) if suggestions is not None else None),
+            ).fetchall()
+            ids = dict(rows)
+            return int(ids["user"]), int(ids["assistant"])
 
     def recent(self, conversation_id: str, limit: int) -> list[StoredMessage]:
         with self._connect() as conn:

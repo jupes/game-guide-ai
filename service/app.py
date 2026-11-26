@@ -918,25 +918,21 @@ async def set_security_headers(request: Request, call_next):
 
 def _persist_turn(
     store: MessageStore | None, conversation_id: str | None,
-    mode: str, role: str, content: str,
+    mode: str, prompt: str, answer: str,
     suggestions: list[dict[str, Any]] | None = None,
-) -> int | None:
-    """Best-effort history write: a failure is logged, never raised — a chat
-    answer must not fail because persistence did (deliberately outside the
-    _DB_ERRORS → 503 taxonomy, which is reserved for retrieval).
-
-    Answers the new row's id, or `None` when nothing was written: the turn's
-    timeline entry links the rows it carries (1kg.4.2, ruling R-1)."""
+) -> tuple[int | None, int | None]:
+    """Save both history rows atomically. A generated answer is still served
+    if the history write fails. The typed timeline links any saved row IDs."""
     if store is None or conversation_id is None:
-        return None
+        return None, None
     try:
-        return store.append(conversation_id, mode, role, content, suggestions=suggestions)
-    except Exception:
+        return store.append_exchange(conversation_id, mode, prompt, answer, suggestions=suggestions)
+    except Exception as exc:
         log.warning(
-            "history write failed (mode=%s, conversation_id=%s, role=%s)",
-            mode, conversation_id, role, exc_info=True,
+            "history write failed (mode=%s, conversation_id=%s): %s",
+            mode, conversation_id, type(exc).__name__,
         )
-        return None
+        return None, None
 
 
 #: What `/chat` answered, under the names `ChatAnswer` keeps it by. `text` is
@@ -957,7 +953,7 @@ def _record_timeline_entry(
     never fail because a record of it did. The call sits inside `chat()`'s
     `try:`, so this catch-all is load-bearing — without it a failure here
     would be answered as a 500. It runs only once `svc.answer` has returned
-    and both message rows are written, on one short transaction of its own,
+    and the paired message write has been attempted, on one short transaction of its own,
     and makes no provider call. A turn it cannot write — the contract bounds
     what `/chat`'s own models do not — is served by the legacy adapter from its
     rows instead.
@@ -1532,9 +1528,8 @@ def chat(
                 labels=MetricLabels(mode=req.mode.value, route_template="/chat"),
             ),
         )
-        user_message_id = _persist_turn(store, conversation_id, req.mode.value, "user", req.prompt)
-        assistant_message_id = _persist_turn(
-            store, conversation_id, req.mode.value, "assistant", resp.answer,
+        user_message_id, assistant_message_id = _persist_turn(
+            store, conversation_id, req.mode.value, req.prompt, resp.answer,
             suggestions=(
                 [s.model_dump(mode="json") for s in resp.suggestions]
                 if resp.suggestions else None

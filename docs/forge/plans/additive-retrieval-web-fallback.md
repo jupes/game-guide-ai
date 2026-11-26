@@ -236,7 +236,7 @@ provider/domain policy changes.
 | Generation provider error | Existing typed provider error; no false successful response |
 | Authentication/ownership failure | Fail closed with the correct 401/403 |
 | Entitlement failure | Paywall/access result; not retrieval degradation |
-| Message persistence failure | Apply the separately decided consistency policy; do not label as retrieval failure |
+| Message persistence failure | The generated answer is served. Conversation history stores the prompt and reply together or leaves both absent. If the typed timeline write succeeds, the complete outcome is still available there. Persistence failures are logged without message content and remain outside retrieval errors. |
 
 Persistence is already isolated: `_persist_turn` and
 `_fetch_attachment_context` swallow their own errors, and the
