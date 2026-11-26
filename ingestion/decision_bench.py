@@ -585,9 +585,9 @@ def _fmt(v: Any, pct: bool = False) -> str:
 
 def summary_table(reports: Sequence[Mapping[str, Any]]) -> str:
     """Markdown summary: one row per arm. The template-grouped adversarial column reads
-    ``adversarial_template_grouped`` (only the embedding arm carries it, and only when that
-    pass came back ``"ok"``, see ``run_embedding``/``evaluate``) and prints n/a for every arm
-    without one -- README Limitations says Pilot 1 test 3 must read this score, not the
+    ``adversarial_template_grouped`` when the pass completed, prints `skipped`
+    when it could not run, and prints `n/a` for arms without a grouped pass.
+    README Limitations says Pilot 1 test 3 reads this score, not the
     per-instance ``Adversarial held @0.99`` column beside it (``agent-forge-harness-fzx``)."""
     head = ("| Arm | Status | Macro-F1 | ECE | Coverage / precision @0.99 | None-veto precision / coverage @0.99 "
             "| Adversarial held @0.99 | Adversarial held @0.99 (template-grouped) | p50 / p95 ms | $ per 1,000 "
@@ -600,12 +600,13 @@ def summary_table(reports: Sequence[Mapping[str, Any]]) -> str:
         cov, veto, ds = r["coverage"]["0.99"], r["none_veto_on_heuristic_positives"]["0.99"], r["downstream_per_1000"]
         template_adv = r.get("adversarial_template_grouped")
         template_held = template_adv["held_to_none_at_0.99"] if template_adv else None
+        template_display = "skipped" if r.get("template_grouped_status") == "skipped" else _fmt(template_held, True)
         rows.append(
             f"| {r['arm']} | ok (n={r['n']}) | {_fmt(r['macro_f1'])} | {_fmt(r['ece_10_bins'])} "
             f"| {_fmt(cov['coverage'], True)} / {_fmt(cov['precision'], True)} "
             f"| {_fmt(veto['precision'], True)} / {_fmt(veto['coverage'], True)} "
             f"| {_fmt(r['adversarial']['held_to_none_at_0.99'], True)} "
-            f"| {_fmt(template_held, True)} "
+            f"| {template_display} "
             f"| {_fmt(r['latency_ms']['p50'])} / {_fmt(r['latency_ms']['p95'])} "
             f"| {r['cost_per_1000_usd']:.4f} | {ds['wasted_calls']:.0f} / {ds['missed_cards']:.0f} |"
         )

@@ -670,6 +670,16 @@ def test_summary_table_pins_the_template_grouped_adversarial_column():
     assert rows["llm"][8] == "n/a"  # llm never runs a template-grouped pass
 
 
+def test_summary_table_distinguishes_a_skipped_template_pass_from_no_template_pass():
+    embedding = _bare_ok_report("embedding")
+    embedding["template_grouped_status"] = "skipped"
+    embedding["template_grouped_reason"] = "one fold has no training items"
+    table = db.summary_table([embedding, _bare_ok_report("llm")])
+    embedding_row, llm_row = table.splitlines()[2:]
+    assert embedding_row.split("|")[8].strip() == "skipped"
+    assert llm_row.split("|")[8].strip() == "n/a"
+
+
 def test_summary_table_fills_every_new_column_with_na_for_a_non_ok_arm():
     table = db.summary_table([db.evaluate([], db.ArmResult("jev", "refused", "no key"), {})])
     line = next(line for line in table.splitlines() if line.startswith("| jev"))
