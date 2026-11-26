@@ -409,6 +409,34 @@ def test_claim_conversation_strategy_wins_the_race_against_a_real_database(db):
 
 
 @needs_db
+def test_history_exchange_is_atomic_and_returns_the_paired_ids(db):
+    from psycopg.errors import NotNullViolation
+
+    from service.history import PostgresMessageStore
+
+    current = db.execute("SELECT current_database()").fetchone()[0]
+    real = PostgresMessageStore(dsn=_target_dsn(DSN, current))
+    conv = f"exchange-{uuid.uuid4().hex[:8]}"
+    user_id = db.execute(
+        "INSERT INTO auth.users (email, password_hash) VALUES (%s, 'x') RETURNING id",
+        (f"{conv}@example.com",),
+    ).fetchone()[0]
+    real.claim_conversation(conv, user_id)
+
+    with pytest.raises(NotNullViolation):
+        real.append_exchange(conv, "spell", "An otherwise valid prompt", None)
+    assert real.recent(conv, 10) == []
+
+    suggestions = [{"style": "practical", "text": "Clear a room."}]
+    prompt_id, answer_id = real.append_exchange(conv, "spell", "A prompt", "An answer", suggestions)
+    prompt, reply = real.recent(conv, 10)
+    assert (prompt.id, prompt.role, prompt.content, prompt.suggestions) == (prompt_id, "user", "A prompt", None)
+    assert (reply.id, reply.role, reply.content) == (answer_id, "assistant", "An answer")
+    assert reply.suggestions is not None
+    assert [s.model_dump(mode="json") for s in reply.suggestions] == suggestions
+
+
+@needs_db
 def test_claim_conversation_strategy_without_an_ownership_row_raises(db):
     from service.history import PostgresMessageStore
 

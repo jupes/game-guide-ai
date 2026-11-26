@@ -113,9 +113,6 @@ SLATED: dict[str, str] = {
     "test_additive_evidence_preserves_fault_free_turns": _EVIDENCE_POLICY,
     "test_additive_evidence_shared_credentials_fail_closed":
         "agent-forge-harness-xiu.2.2: credential degradation requires independent generation credentials",
-    "test_history_write_failure_does_not_fail_the_answer":
-        "agent-forge-harness-ul21: the message-persistence consistency policy may change the status or the "
-        "partial rows",
     "test_gm_channel_refuses_a_non_dm_session_before_retrieval":
         "agent-forge-harness-ubw: the dm-role check becomes campaign ownership plus tier (TA-3); "
         "any caller still refused must still spend nothing",
@@ -380,7 +377,6 @@ class ProbedStore(InMemoryMessageStore):
     """The in-memory twin, counting calls and raising an injected fault per method."""
 
     faults: dict[str, BaseException] = field(default_factory=dict)
-    append_fault_roles: frozenset[str] = frozenset()
     calls: Counter[str] = field(default_factory=Counter)
     raised: list[BaseException] = field(default_factory=list)
 
@@ -391,16 +387,12 @@ class ProbedStore(InMemoryMessageStore):
             self.raised.append(exc)
             raise exc
 
-    def append(
-        self, conversation_id: str, mode: str, role: str, content: str,
+    def append_exchange(
+        self, conversation_id: str, mode: str, prompt: str, answer: str,
         suggestions: list[dict[str, object]] | None = None,
-    ) -> int | None:
-        self.calls[f"append:{role}"] += 1
-        if role in self.append_fault_roles:
-            exc = db_down(f"history write ({role})")
-            self.raised.append(exc)
-            raise exc
-        return super().append(conversation_id, mode, role, content, suggestions=suggestions)
+    ) -> tuple[int, int]:
+        self._enter("append_exchange")
+        return super().append_exchange(conversation_id, mode, prompt, answer, suggestions=suggestions)
 
     def attachments_for(self, conversation_id: str) -> list[StoredAttachment]:
         self._enter("attachments_for")
@@ -794,36 +786,28 @@ def test_attachment_fetch_failure_does_not_fail_a_grounded_answer(post_chat: Cal
 
 # ── History writes ────────────────────────────────────────────────────────────
 
-_HISTORY_FAULTS = [
-    pytest.param(frozenset({"user", "assistant"}), [], id="fail_both"),
-    pytest.param(frozenset({"user"}), [("assistant", FAKE_ANSWER)], id="fail_user_only"),
-    pytest.param(frozenset({"assistant"}), [("user", PROSE)], id="fail_assistant_only"),
-]
-
-
-@pytest.mark.parametrize(("roles", "rows_left"), _HISTORY_FAULTS)
 def test_history_write_failure_is_not_reported_as_a_retrieval_failure(
-    post_chat: Callable[..., ChatRun], roles: frozenset[str], rows_left: list[tuple[str, str]],
+    post_chat: Callable[..., ChatRun],
 ) -> None:
-    store = ProbedStore(append_fault_roles=roles)
+    store = ProbedStore(faults={"append_exchange": db_down(CANARY)})
     run = post_chat(PROSE, rows=HIT, store=store)
     assert run.response.status_code != 503
     assert "retrieval backend unavailable" not in run.response.text
     assert "embedding backend unavailable" not in run.response.text
     assert run.body.get("answer") != REFUSAL
     assert_gate_metric(run, True, "sage")
-    assert all(store.calls[f"append:{role}"] == 1 for role in roles)
+    assert store.calls["append_exchange"] == 1
 
 
-@pytest.mark.parametrize(("roles", "rows_left"), _HISTORY_FAULTS)
-def test_history_write_failure_does_not_fail_the_answer(
-    post_chat: Callable[..., ChatRun], roles: frozenset[str], rows_left: list[tuple[str, str]],
+def test_history_write_failure_leaves_no_partial_exchange_and_serves_the_answer(
+    post_chat: Callable[..., ChatRun], caplog: pytest.LogCaptureFixture,
 ) -> None:
-    store = ProbedStore(append_fault_roles=roles)
+    store = ProbedStore(faults={"append_exchange": db_down(CANARY)})
     run = post_chat(PROSE, rows=HIT, store=store)
     assert_answer(run, answer=FAKE_ANSWER, answerable=True, sources=[corpus_source(r) for r in HIT], mode="sage")
-    assert run.rows() == rows_left
-    assert all(store.calls[f"append:{role}"] == 1 for role in roles)
+    assert run.rows() == []
+    assert store.calls["append_exchange"] == 1
+    assert "history write failed" in caplog.text and CANARY not in caplog.text
 
 
 # ── Reranker ──────────────────────────────────────────────────────────────────
@@ -1521,7 +1505,7 @@ def test_characterization_registries_name_real_tests() -> None:
     assert all(_SLATED_VALUE.match(owner) for owner in SLATED.values()), SLATED
     # The split pins: the slated halves are owned as recorded, the invariant halves are unregistered.
     assert SLATED["test_gm_channel_refuses_a_non_dm_session_before_retrieval"].startswith("agent-forge-harness-ubw: ")
-    assert SLATED["test_history_write_failure_does_not_fail_the_answer"].startswith("agent-forge-harness-ul21: ")
+    assert not any(owner.startswith("agent-forge-harness-ul21: ") for owner in SLATED.values())
     # The default characterization pins survive local opt-in.
     assert {"test_embedding_api_errors_are_typed_embed_faults",
             "test_embedding_and_generation_failures_are_distinguishable"} <= FLAG_DEFAULT

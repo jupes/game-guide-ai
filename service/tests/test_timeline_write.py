@@ -1,7 +1,7 @@
 """`POST /chat` writes one typed timeline entry per answered turn (1kg.4.2 slice A).
 
 The write is best-effort and comes after the answer: `_record_timeline_entry`
-runs immediately after the two `_persist_turn` calls, inside `chat()`'s `try:`,
+runs immediately after the paired `_persist_turn` call, inside `chat()`'s `try:`,
 on one short transaction of its own. So the four partial writes of requirement 8
 are all reachable. What this file proves:
 
@@ -181,7 +181,7 @@ def test_what_chat_answered_is_what_the_timeline_reads_back_field_for_field(clie
     assert set(entry["answer"]) == {*ANSWER_FIELDS, "created_at"}
 
 
-# ── C11: the four partial writes, through the route ──────────────────────────
+# ── C11: best-effort history and timeline writes, through the route ───────────
 
 
 class _TimelineThatCannotWrite:
@@ -198,15 +198,10 @@ class _TimelineThatCannotWrite:
         return getattr(self._inner, name)
 
 
-class _AssistantRowsFail(InMemoryMessageStore):
-    """A message store that loses every assistant row: the user row is written
-    and the answer's row is not."""
-
-    def append(self, conversation_id: str, mode: str, role: str, content: str,
-               suggestions: list[dict[str, Any]] | None = None) -> int | None:
-        if role == "assistant":
-            raise RuntimeError("the assistant row was lost")
-        return super().append(conversation_id, mode, role, content, suggestions=suggestions)
+class _HistoryWriteFails(InMemoryMessageStore):
+    def append_exchange(self, conversation_id: str, mode: str, prompt: str, answer: str,
+                        suggestions: list[dict[str, Any]] | None = None) -> tuple[int, int]:
+        raise RuntimeError("the history write failed")
 
 
 def test_a_turn_whose_every_write_succeeded_is_one_entry_carrying_the_whole_outcome(
@@ -232,26 +227,27 @@ def test_a_failed_entry_write_never_fails_the_answer_and_the_turn_reads_back_ada
     assert item["answer"]["answerable"] is None and item["answer"]["sources"] is None
 
 
-def test_a_lost_assistant_row_still_reads_back_as_one_complete_entry() -> None:
-    world = _World(_AssistantRowsFail())
+def test_a_lost_history_write_still_reads_back_as_one_complete_timeline_entry() -> None:
+    world = _World(_HistoryWriteFails())
     try:
         _serve(world)
         assert _ask(TestClient(app)).status_code == 200
         [row] = world.entries()
-        assert row.user_message_id is not None and row.assistant_message_id is None
+        assert row.user_message_id is None and row.assistant_message_id is None
+        assert world.messages.recent(CONVERSATION, 10) == []
         [item] = _timeline(TestClient(app))
-        assert item["entry_id"] == row.entry_id, "the orphan user row is suppressed, not shown beside it"
+        assert item["entry_id"] == row.entry_id
         assert item["answer"]["text"] == _rich_response().answer and item["answer"]["answerable"] is True
     finally:
         for dependency in (get_message_store, get_service, get_timeline_store, get_timeline_database):
             app.dependency_overrides.pop(dependency, None)
 
 
-def test_a_turn_whose_only_stored_row_is_its_prompt_reads_back_unanswered() -> None:
-    world = _World(_AssistantRowsFail())
+def test_a_legacy_turn_whose_only_stored_row_is_its_prompt_reads_back_unanswered() -> None:
+    world = _World(InMemoryMessageStore())
     try:
-        _serve(world, timeline=_TimelineThatCannotWrite(world.timeline))
-        assert _ask(TestClient(app)).status_code == 200
+        world.messages.claim_conversation(CONVERSATION, 1)
+        assert world.messages.append(CONVERSATION, "sage", "user", PROMPT) is not None
         _serve(world)
         [item] = _timeline(TestClient(app))
         assert item["entry_id"].isdecimal() and item["prompt"] == PROMPT and item["answer"] is None
@@ -344,10 +340,10 @@ class _LedgerDatabase:
 class _LedgerMessages(InMemoryMessageStore):
     ledger: _Ledger
 
-    def append(self, conversation_id: str, mode: str, role: str, content: str,
-               suggestions: list[dict[str, Any]] | None = None) -> int | None:
-        self.ledger.events.append(f"{role} row")
-        return super().append(conversation_id, mode, role, content, suggestions=suggestions)
+    def append_exchange(self, conversation_id: str, mode: str, prompt: str, answer: str,
+                        suggestions: list[dict[str, Any]] | None = None) -> tuple[int, int]:
+        self.ledger.events.append("message pair")
+        return super().append_exchange(conversation_id, mode, prompt, answer, suggestions=suggestions)
 
 
 def test_the_entry_is_written_after_the_answer_and_both_rows_and_nothing_is_held_across_it() -> None:
@@ -371,7 +367,7 @@ def test_the_entry_is_written_after_the_answer_and_both_rows_and_nothing_is_held
         for dependency in (get_message_store, get_service, get_timeline_store, get_timeline_database):
             app.dependency_overrides.pop(dependency, None)
     assert ledger.events == [
-        "answer", "user row", "assistant row", "timeline transaction opens", "timeline transaction ends",
+        "answer", "message pair", "timeline transaction opens", "timeline transaction ends",
     ]
     assert len(world.entries()) == 1
 
@@ -488,7 +484,7 @@ def _span(source: str, node: ast.expr | ast.stmt | ast.arg) -> tuple[int, int]:
 
 def test_chat_gains_two_dependencies_and_one_call_and_nothing_else() -> None:
     """Requirement 8: two dependency parameters, one call — placed after the
-    two `_persist_turn` calls, whose ids it passes on, and before `return
+    paired `_persist_turn` call, whose ids it passes on, and before `return
     resp`, inside the `try:` — and no other mention of the timeline. A diff
     can be read once; this fails the day someone moves the call.
 
@@ -508,12 +504,10 @@ def test_chat_gains_two_dependencies_and_one_call_and_nothing_else() -> None:
         "req", "request", "svc", "store", "metrics", "session", "timeline", "tdb", "day",
     ]
     [attempt] = [node for node in handler.body if isinstance(node, ast.Try)]
-    *_, user_row, assistant_row, record, answer = attempt.body
-    for statement, target, role in ((user_row, "user_message_id", "user"),
-                                    (assistant_row, "assistant_message_id", "assistant")):
-        assert isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call)
-        assert ast.unparse(statement.targets[0]) == target
-        assert ast.unparse(statement.value.func) == "_persist_turn" and f"'{role}'" in ast.unparse(statement.value)
+    *_, pair, record, answer = attempt.body
+    assert isinstance(pair, ast.Assign) and isinstance(pair.value, ast.Call)
+    assert ast.unparse(pair.targets[0]) == "(user_message_id, assistant_message_id)"
+    assert ast.unparse(pair.value.func) == "_persist_turn"
     assert isinstance(record, ast.Expr) and isinstance(record.value, ast.Call)
     assert ast.unparse(record.value.func) == "_record_timeline_entry"
     assert {"timeline", "tdb", "user_message_id", "assistant_message_id", "resp"} <= {
