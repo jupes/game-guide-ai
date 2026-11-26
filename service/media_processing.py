@@ -434,15 +434,22 @@ def image_child(pillow_format: str, source: str, target: str) -> dict[str, objec
             if width > IMAGE_MAX_SIDE or height > IMAGE_MAX_SIDE or width * height > IMAGE_MAX_PIXELS:
                 return {"failure": AssetFailure.TOO_MANY_PIXELS.value}
             opened.load()
-            upright = ImageOps.exif_transpose(opened)
-            alpha = upright.mode in ("RGBA", "LA", "PA") or "transparency" in upright.info
-            grey = upright.mode in ("1", "L")
+            ImageOps.exif_transpose(opened, in_place=True)
+            alpha = opened.mode in ("RGBA", "LA", "PA") or "transparency" in opened.info
+            grey = opened.mode in ("1", "L")
             if pillow_format == "JPEG":
                 mode = "L" if grey else "RGB"
             else:
                 mode = "RGBA" if alpha else ("L" if grey else "RGB")
-            pixels = upright.convert(mode)
-            clean = Image.frombytes(mode, pixels.size, pixels.tobytes())
+            pixels = opened if opened.mode == mode else opened.convert(mode)
+            # Paste into a metadata-free image without materializing the whole
+            # raster as a Python byte string under the child's RLIMIT_AS.
+            clean = Image.new(mode, pixels.size)
+            clean.paste(pixels)
+            if pixels is not opened:
+                pixels.close()
+            opened.close()
+        with clean:
             clean.save(target, pillow_format, **({} if pillow_format == "PNG" else {"quality": 90}))
             width, height = clean.size
             # The preview is rendered from the cleaned pixels, with no
