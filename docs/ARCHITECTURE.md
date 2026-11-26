@@ -803,9 +803,8 @@ budget.
 
 ### Who may see what: the decision point and the principals
 
-`1ir.2.2` adds `service/policy.py`, pure functions over facts one snapshot read
-(read in SQL, decide in Python; the loaders, one statement each and no lock,
-follow in its PR-2 and PR-3). **Two functions, never one** (ED-25):
+`1ir.2.2` adds `service/policy.py`, pure functions over facts from one
+snapshot (read in SQL, decide in Python). The two decisions (ED-25) are
 `eligible_for_audience(facts, document, key, audience)` on identities (the
 table is `None`, else a participant id), first match deciding: a participant
 not active -> no; a key off the type version's allowlist -> no (an orphan row
@@ -816,6 +815,15 @@ admitting nobody. `ineligible_keys` (all or nothing over the audience) and
 `ineligible_copies` (ED-12's scan) compose it. `entitled(outcome, slot)`
 reads only the principal: every principal reads the table slot, a confirmed
 seat also its own, any other slot is `ABSENT`, exactly an empty table.
+
+`service/policy_facts.py` reads eligibility for up to 500 documents in the
+caller's unit. Its one statement reads the campaign's documents, stored
+classes, named sheet links and groups, and active seats. It takes no lock,
+so Confirm can call it after acquiring its shared lock and narrowing can
+use it for its first scan. The loader retains orphan classes for the registry
+check, keeps archived documents, and treats unreadable classes as GM-only.
+Connection failures raise `PolicyUnavailable` with a fixed message. The API
+guard maps driver errors to a retryable 503.
 
 `decide_table` follows the threat model's 15.2: a live screen grant decides
 alone (`SCREEN`, or `inactive` for another campaign's); then no account is
