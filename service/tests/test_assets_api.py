@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 import zlib
-from collections.abc import Callable, Iterable, Iterator, MutableMapping
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, MutableMapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -37,15 +37,16 @@ from pathlib import Path
 from threading import Event
 from typing import Any, cast
 
+import anyio.to_thread
 import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
-from httpx import Response
+from httpx import ASGITransport, AsyncClient, Response
 from PIL import Image, ImageCms
 
 import config
 from service import app as appmod
-from service import assets_api
+from service import assets_api, media_objects
 from service import media_processing as mp
 from service.app import app, get_timeline_database, require_session
 from service.asset_store import DELETE_JOB, SWEEP_JOB, AssetRow, InMemoryAssetStore, asset_rows, visible_rows
@@ -752,6 +753,60 @@ def test_a_body_without_a_length_is_411(client: TestClient, world: World) -> Non
 
 
 # ── AC 15: one at a time, and a bounded queue ───────────────────────────────
+
+
+def test_a_stalled_upload_uses_only_the_media_limiter_and_leaves_a_retryable_intent(
+    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limiter = media_objects.StoreLimiter(total=1)
+    monkeypatch.setattr(media_objects, "STORE_LIMITER", limiter)
+    campaign = world.campaign()
+    data = image_bytes("PNG")
+    first, second = [_create(client, campaign, size=len(data)).json()["asset_id"] for _ in range(2)]
+    headers = {"content-type": "image/png", "content-length": str(len(data))}
+
+    async def scenario() -> None:
+        reading = asyncio.Event()
+        resume = asyncio.Event()
+        second_read = False
+        shared = anyio.to_thread.current_default_thread_limiter()
+        before = shared.borrowed_tokens
+
+        async def stalled_body() -> AsyncIterator[bytes]:
+            reading.set()
+            await resume.wait()
+            yield data
+
+        async def refused_body() -> AsyncIterator[bytes]:
+            nonlocal second_read
+            second_read = True
+            yield data
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as async_client:
+            active = asyncio.create_task(
+                async_client.put(_bytes_path(campaign, first), headers=headers, content=stalled_body()),
+            )
+            try:
+                await asyncio.wait_for(reading.wait(), timeout=8)
+                assert limiter.borrowed == 1
+                assert shared.borrowed_tokens == before
+
+                refused = await async_client.put(
+                    _bytes_path(campaign, second), headers=headers, content=refused_body(),
+                )
+                assert refused.status_code == 503
+                assert refused.headers["retry-after"] == str(mp.RETRY_AFTER_S)
+                assert not second_read and world.row(second).state == "uploading"
+            finally:
+                resume.set()
+                finished = await asyncio.wait_for(active, timeout=15)
+            assert finished.status_code == 200 and limiter.borrowed == 0
+            assert world.row(first).tmp_key not in world.objects.keys()
+
+            retried = await async_client.put(_bytes_path(campaign, second), headers=headers, content=data)
+            assert retried.status_code == 200 and limiter.borrowed == 0
+
+    asyncio.run(scenario())
 
 
 def test_a_queue_wait_past_its_bound_is_503_retry_after_and_the_asset_waits_again(
