@@ -292,7 +292,7 @@ class StoreLimiter:
     Counted under a lock rather than by an event loop, so it is one count for
     the process whichever loop or thread asks, and it never waits: a caller
     that finds no token free is told `StoreBusy` at once. A token is held in
-    one of two ways — for a byte response's whole life by a `StoreLease`, or
+    one of two ways — for a byte request's whole life by a `StoreLease`, or
     for one call by `via_store`.
     """
 
@@ -322,7 +322,7 @@ class StoreLimiter:
             self._borrowed -= 1
 
     def lease(self) -> StoreLease:
-        """A token held until the lease is closed: one byte response's (MS-7)."""
+        """A token held until a byte upload or response closes its lease."""
         self.take()
         return StoreLease(self)
 

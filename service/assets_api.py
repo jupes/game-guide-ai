@@ -38,7 +38,8 @@ upload has no cue kind (AUDIO-26; `1kg.8.5` checks `CUE_MAX_MS`).
 request is several short transactions. The accepted PUT claims `processing`
 before it can write the temporary key, then ends in `ready` or `failed`. The
 streaming, the copy to the scratch directory and the processed write run in a
-worker thread with no connection open, every store call through `via_store`.
+worker thread under one media store lease, with no connection open. The
+request is refused before claiming the asset when no lease is available.
 
 **Processing** is `media_processing.process`, one job per instance (MS-6):
 an upload waits at most `QUEUE_BOUND_S` for its turn, and past that answers
@@ -73,7 +74,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio.from_thread
-import anyio.to_thread
 import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -85,6 +85,7 @@ from starlette.routing import Match
 from starlette.types import Scope
 
 from . import campaign_identity as ident
+from . import media_objects
 from . import media_processing as processing
 from .asset_store import AccountMediaQuotaExceeded, AssetRecord, AssetStore, IllegalTransition, Measured, QuotaExceeded
 from .campaign_store import MissingParent
@@ -96,6 +97,8 @@ from .media_objects import (
     ObjectStore,
     ObjectStoreError,
     ObjectTooLarge,
+    StoreBusy,
+    StoreLease,
     asset_rendition_keys,
     via_store,
 )
@@ -277,12 +280,22 @@ class Upload:
         declared = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if declared != record.declared_media_type:
             raise _refusal(415, ErrorCode.VALIDATION_FAILED, TYPE_MESSAGE, field="content-type")
+        try:
+            lease = media_objects.STORE_LIMITER.lease()
+        except StoreBusy:
+            raise _busy() from None
+        try:
+            return await self._run_leased(request, length, lease)
+        finally:
+            lease.close()
+
+    async def _run_leased(self, request: Request, length: int, lease: StoreLease) -> JSONResponse:
         # The tmp key is shared by retries of this intent. Only the request
         # that wins the database transition may touch it.
         record = await run_in_threadpool(_guarded, self._transition("start_processing"))
         refused: AssetFailure | None = None
         try:
-            await anyio.to_thread.run_sync(self._receive, request, record, length)
+            await lease.run(lambda: self._receive(request, record, length))
         except _BodyRefused as body:
             refused = body.failure
         except ObjectTooLarge:
@@ -290,25 +303,25 @@ class Upload:
         except ClientDisconnect:
             refused = AssetFailure.UNREADABLE
         except ObjectStoreError:
-            await self._back_to_uploading(record)
+            await self._back_to_uploading(record, lease)
             raise _unavailable() from None
         if refused is not None:
-            return await self._failed(record, refused)
+            return await self._failed(record, refused, lease)
         if not await processing.GATE.acquire(processing.QUEUE_BOUND_S):
-            await self._back_to_uploading(record)
+            await self._back_to_uploading(record, lease)
             raise _busy()
         try:
-            result = await anyio.to_thread.run_sync(self._process, record)
+            result = await lease.run(lambda: self._process(record))
         except (ObjectStoreError, processing.ProcessingUnavailable):
             result = None
         finally:
             processing.GATE.release()
         if result is None:
-            await self._back_to_uploading(record)
+            await self._back_to_uploading(record, lease)
             raise _unavailable()
         if isinstance(result, AssetFailure):
-            return await self._failed(record, result)
-        return await self._ready(record, result)
+            return await self._failed(record, result, lease)
+        return await self._ready(record, result, lease)
 
     # Transactions: each short, each committed before any byte moves.
 
@@ -396,11 +409,11 @@ class Upload:
             # The original passed its cap. Omit a rendition that exceeds its own.
             return
 
-    async def _delete(self, *keys: str) -> None:
+    async def _delete(self, lease: StoreLease, *keys: str) -> None:
         """Idempotent; a store that cannot delete now leaves the objects to the
         sweep and the reconcile (L-10), never to a 500."""
         try:
-            await anyio.to_thread.run_sync(self._delete_now, keys)
+            await lease.run(lambda: self._delete_now(keys))
         except ObjectStoreError:
             return
 
@@ -413,32 +426,32 @@ class Upload:
 
     # The endings.
 
-    async def _failed(self, record: AssetRecord, failure: AssetFailure) -> JSONResponse:
+    async def _failed(self, record: AssetRecord, failure: AssetFailure, lease: StoreLease) -> JSONResponse:
         try:
             failed = await run_in_threadpool(_guarded, self._transition("mark_failed", failure=failure))
         finally:
-            await self._delete(record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
+            await self._delete(lease, record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
         return answer(failed)
 
-    async def _back_to_uploading(self, record: AssetRecord) -> None:
+    async def _back_to_uploading(self, record: AssetRecord, lease: StoreLease) -> None:
         # The next request can acquire the key as soon as this transaction
         # commits. Clean this request's bytes while it still owns the claim.
-        await self._delete(record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
+        await self._delete(lease, record.tmp_key, record.object_key, *asset_rendition_keys(record.object_key))
         await run_in_threadpool(_guarded, self._transition("return_to_uploading"))
 
-    async def _ready(self, record: AssetRecord, measured: Measured) -> JSONResponse:
+    async def _ready(self, record: AssetRecord, measured: Measured, lease: StoreLease) -> JSONResponse:
         try:
             finished = await run_in_threadpool(_guarded, self._transition("mark_ready", measured=measured))
         except HTTPException as refused:
             # If the DB failed to acknowledge the write, leave the original
             # for a possibly committed ready record or the processing sweep.
-            await self._delete(record.tmp_key)
+            await self._delete(lease, record.tmp_key)
             if refused.status_code in (404, 409):
-                await self._delete(record.object_key, *asset_rendition_keys(record.object_key))
+                await self._delete(lease, record.object_key, *asset_rendition_keys(record.object_key))
             raise
-        await self._delete(record.tmp_key)
+        await self._delete(lease, record.tmp_key)
         if finished.state is not AssetState.READY:
-            await self._delete(record.object_key, *asset_rendition_keys(record.object_key))
+            await self._delete(lease, record.object_key, *asset_rendition_keys(record.object_key))
         return answer(finished)
 
 
@@ -557,8 +570,8 @@ def build_router(
         runtime: MediaRuntime | None = Depends(media),
         clock: Callable[[], datetime] = Depends(get_clock),
     ) -> JSONResponse:
-        """`async`: a waiting upload holds no thread (F-2); the bytes and the
-        processing run in worker threads, the transactions in the pool."""
+        """The body, processing, and cleanup use a dedicated media worker.
+        Only short database operations use the shared worker pool."""
         length = content_length(request)
         live_db, live = _available(db, runtime)
         _shaped(campaign_id, asset_id)
