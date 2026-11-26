@@ -23,6 +23,7 @@ import pytest
 from fastapi import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
+from starlette.types import Message, Receive, Scope, Send
 
 from service.app import app, get_auth_store
 from service.auth_store import InMemoryAuthStore
@@ -98,12 +99,18 @@ def test_a_handled_error_response_carries_the_new_security_headers(store) -> Non
         assert response.headers[header_name] == expected
 
 
-def test_unexpected_route_failure_is_generic_and_logs_only_stack_locations(monkeypatch, caplog) -> None:
+@pytest.mark.parametrize("generated_name", [None, "SyntheticSource\nSyntheticAuthorization"])
+def test_unexpected_route_failure_is_generic_and_logs_only_stack_locations(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, generated_name: str | None,
+) -> None:
     canaries = ("SyntheticCookie", "SyntheticAuthorization", "SyntheticQuery", "SyntheticSource", "SyntheticError")
 
     def fail():
         code = compile("raise RuntimeError('SyntheticError')", "SyntheticSource", "exec")
-        exec(code)
+        frame_globals = {"__file__": "SyntheticSource"}
+        if generated_name is not None:
+            frame_globals["__name__"] = generated_name
+        exec(code, frame_globals)
 
     monkeypatch.setitem(app.dependency_overrides, get_auth_store, fail)
     response = TestClient(app).get(
@@ -125,17 +132,20 @@ def test_unexpected_route_failure_is_generic_and_logs_only_stack_locations(monke
 
 
 def test_started_response_gets_no_second_headers_or_private_transport_error() -> None:
-    messages = []
+    messages: list[Message] = []
 
-    async def broken_body(scope, receive, send):
+    async def broken_body(scope: Scope, receive: Receive, send: Send) -> None:
         await send({"type": "http.response.start", "status": 200, "headers": []})
         raise ValueError("synthetic private stream failure")
 
-    async def send(message):
+    async def receive() -> Message:
+        raise AssertionError("The body producer does not read the request")
+
+    async def send(message: Message) -> None:
         messages.append(message)
 
     with pytest.raises(RuntimeError, match="HTTP response stopped after sending headers") as error:
-        asyncio.run(RouteErrors(broken_body)({"type": "http"}, None, send))
+        asyncio.run(RouteErrors(broken_body)({"type": "http"}, receive, send))
     assert error.value.__suppress_context__
     assert messages == [{"type": "http.response.start", "status": 200, "headers": []}]
 

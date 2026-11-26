@@ -45,7 +45,14 @@ class RouteErrors:
             locations: deque[str] = deque(maxlen=40)
             for frame, line in walk_tb(exc.__traceback__):
                 globals_ = frame.f_globals
-                module = globals_["__name__"] if frame.f_code.co_filename == globals_.get("__file__") else "<generated>"
+                name = globals_.get("__name__")
+                module = (
+                    name
+                    if frame.f_code.co_filename == globals_.get("__file__")
+                    and isinstance(name, str) and len(name) <= 120
+                    and all(part.isidentifier() for part in name.split("."))
+                    else "<generated>"
+                )
                 locations.append(f"  {module}, line {line}")
             _log.error("Unexpected route failure\nTraceback (module and line only):\n%s", "\n".join(locations))
             await JSONResponse(
