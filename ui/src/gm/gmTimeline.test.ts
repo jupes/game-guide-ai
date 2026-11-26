@@ -103,6 +103,25 @@ describe('readTimeline — only a null cursor ends the list (2026-09-25 note)', 
 })
 
 describe('readEarlierTimeline — Load earlier continues the same walk from a kept cursor (1kg.3.6)', () => {
+  it('stops at a cursor cycle without fetching the starting page twice', async () => {
+    const load = vi.fn<LoadTimelinePageFn>(async (conversationId, cursor) => ({
+      kind: 'ok',
+      page: {
+        conversation_id: conversationId,
+        items: [chatEntry({ entry_id: cursor === 'a' ? 'ent_newer' : 'ent_older' })],
+        next_cursor: cursor === 'a' ? 'b' : 'a',
+      },
+    }))
+
+    const read = await readEarlierTimeline('cnv_1', 'a', load)
+
+    expect(load.mock.calls.map(([, cursor]) => cursor)).toEqual(['a', 'b'])
+    expect(read.kind).toBe('ok')
+    if (read.kind !== 'ok') return
+    expect(ids(read.items)).toEqual(['ent_older', 'ent_newer'])
+    expect(read.cursor).toBeNull()
+  })
+
   it('starts from the given cursor and keeps following next_cursor through a short page', async () => {
     const load = pagedTimeline([
       [chatEntry({ entry_id: 'ent_new' })],
@@ -539,6 +558,35 @@ describe('useGmTimeline', () => {
     // B's thread must still be showing, not reset to loading and not carrying A's entry.
     expect(result.current.loading).toBe(false)
     expect(ids(result.current.items)).toEqual(['ent_b'])
+  })
+
+  it('keeps the current transcript when an abandoned conversation read rejects', async () => {
+    let rejectFirst!: (error: Error) => void
+    const first = new Promise<TimelinePageResult>((_resolve, reject) => {
+      rejectFirst = reject
+    })
+    const load = vi.fn<LoadTimelinePageFn>(async (conversationId) => {
+      if (conversationId === 'cnv_a') return first
+      return {
+        kind: 'ok',
+        page: { conversation_id: conversationId, items: [chatEntry({ entry_id: 'ent_b' })], next_cursor: null },
+      }
+    })
+    const { result, rerender } = renderHook(({ id }) => useGmTimeline(id, true, load), {
+      initialProps: { id: 'cnv_a' },
+    })
+    expect(load).toHaveBeenCalledWith('cnv_a', null)
+    rerender({ id: 'cnv_b' })
+    await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_b']))
+
+    await act(async () => {
+      rejectFirst(new Error('Old conversation is unavailable'))
+      await first.catch(() => undefined)
+    })
+
+    expect(ids(result.current.items)).toEqual(['ent_b'])
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBeNull()
   })
 })
 
