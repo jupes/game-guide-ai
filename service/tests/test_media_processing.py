@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 from service import media_processing as mp
 from service.workbench_contracts import AMBIENCE_MAX_MS, IMAGE_MAX_PIXELS, MEDIA_TYPES, AssetFailure, AssetKind
@@ -263,6 +263,29 @@ def test_the_image_child_decodes_under_the_address_space_limit(tmp_path: Path) -
     assert (made["width"], made["address_space"]) == (24, mp.ADDRESS_SPACE_BYTES)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="exercise the Linux RLIMIT_AS")
+@pytest.mark.parametrize(("mode", "color"), [("RGB", (123, 10, 234)), ("RGBA", (123, 10, 234, 122))])
+def test_a_cap_sized_png_processes_within_the_address_space_limit(
+    tmp_path: Path, mode: str, color: tuple[int, ...],
+) -> None:
+    size = (5_000, 5_000)
+    assert size[0] * size[1] == IMAGE_MAX_PIXELS
+    source = tmp_path / "in"
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("Comment", "Private source metadata")
+    with Image.new(mode, size, color) as original:
+        original.save(source, "PNG", pnginfo=metadata)
+
+    made = mp.process(AssetKind.IMAGE, "image/png", source, tmp_path)
+
+    assert (made.width, made.height) == size
+    assert made.thumbnail is not None and made.thumbnail.is_file()
+    with Image.open(made.path) as saved:
+        assert (saved.format, saved.mode, saved.size) == ("PNG", mode, size)
+        assert saved.getpixel((4_999, 4_999)) == color
+        assert not saved.info
+
+
 def test_the_wall_clock_is_sixty_seconds_and_a_child_past_it_is_timed_out(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -357,6 +380,26 @@ def test_an_image_is_re_encoded_in_its_family_and_measured(tmp_path: Path) -> No
         assert (made.media_type, made.width, made.height, made.duration_ms) == (declared, 30, 20, None)
         with Image.open(made.path) as out:
             assert out.format == fmt
+
+
+def test_jpeg_orientation_is_applied_to_pixels_before_metadata_is_removed(tmp_path: Path) -> None:
+    source = io.BytesIO()
+    orientation = Image.Exif()
+    orientation[0x0112] = 6
+    with Image.new("RGB", (32, 16), "blue") as original:
+        original.paste("red", (0, 0, 16, 8))
+        original.save(source, "JPEG", exif=orientation)
+
+    made = run_image(tmp_path, source.getvalue(), "image/jpeg")
+
+    assert isinstance(made, mp.Processed)
+    assert (made.width, made.height) == (16, 32)
+    with Image.open(made.path) as saved:
+        pixel = saved.getpixel((12, 4))
+        assert isinstance(pixel, tuple)
+        red, green, blue = pixel
+        assert red > 200 and green < 40 and blue < 40
+        assert not saved.getexif()
 
 
 def test_a_jpeg_under_a_png_label_is_not_decoded_as_anything_else(tmp_path: Path) -> None:
