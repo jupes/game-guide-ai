@@ -10,13 +10,12 @@ nginx contract test compares two files we control, the E2E test reads the value
 out of nginx.conf. `img-src *` would sail through all of them. The two tests at
 the bottom pin what the policy MEANS, absolutely.
 
-Not asserted anywhere, deliberately: that EVERY response carries the header. A
-500 from an unhandled exception is produced by Starlette's
-`ServerErrorMiddleware`, outside all user middleware, so it carries no policy.
+Unexpected route errors also pass through the security-header middleware.
 """
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -24,9 +23,11 @@ import pytest
 from fastapi import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
+from starlette.types import Message, Receive, Scope, Send
 
 from service.app import app, get_auth_store
 from service.auth_store import InMemoryAuthStore
+from service.route_errors import RouteErrors
 from service.security_headers import (
     CONTENT_SECURITY_POLICY,
     CROSS_ORIGIN_OPENER_POLICY,
@@ -35,6 +36,7 @@ from service.security_headers import (
     STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
 )
+from service.spa_fallback import SPA_MOUNT_NAME, SPA_ROUTE_PREFIX
 
 # y58 — the four headers this bead added, keyed by the response header name
 # `TestClient` hands back (lower-cased, like the CSP checks above already do),
@@ -97,6 +99,64 @@ def test_a_handled_error_response_carries_the_new_security_headers(store) -> Non
         assert response.headers[header_name] == expected
 
 
+@pytest.mark.parametrize("generated_name", [None, "SyntheticSource\nSyntheticAuthorization"])
+def test_unexpected_route_failure_is_generic_and_logs_only_stack_locations(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, generated_name: str | None,
+) -> None:
+    canaries = ("SyntheticCookie", "SyntheticAuthorization", "SyntheticQuery", "SyntheticSource", "SyntheticError")
+
+    def fail():
+        code = compile("raise RuntimeError('SyntheticError')", "SyntheticSource", "exec")
+        frame_globals = {"__file__": "SyntheticSource"}
+        if generated_name is not None:
+            frame_globals["__name__"] = generated_name
+        exec(code, frame_globals)
+
+    monkeypatch.setitem(app.dependency_overrides, get_auth_store, fail)
+    response = TestClient(app).get(
+        "/auth/me?canary=SyntheticQuery",
+        headers={"Cookie": "gga_session=SyntheticCookie", "Authorization": "Bearer SyntheticAuthorization"},
+    )
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal error"}
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
+    for header_name, expected in NEW_HEADERS.items():
+        assert response.headers[header_name] == expected
+    reports = [record for record in caplog.records if record.name == "service.route_errors"]
+    assert len(reports) == 1
+    assert "Traceback (module and line only)" in reports[0].getMessage()
+    assert "<generated>, line 1" in reports[0].getMessage()
+    assert reports[0].exc_info is None
+    assert all(canary not in response.text and canary not in caplog.text for canary in canaries)
+
+
+def test_started_response_gets_no_second_headers_or_private_transport_error() -> None:
+    messages: list[Message] = []
+
+    async def broken_body(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise ValueError("synthetic private stream failure")
+
+    async def receive() -> Message:
+        raise AssertionError("The body producer does not read the request")
+
+    async def send(message: Message) -> None:
+        messages.append(message)
+
+    with pytest.raises(RuntimeError, match="HTTP response stopped after sending headers") as error:
+        asyncio.run(RouteErrors(broken_body)({"type": "http"}, receive, send))
+    assert error.value.__suppress_context__
+    assert messages == [{"type": "http.response.start", "status": 200, "headers": []}]
+
+
+def _without_built_ui(routes):
+    return [
+        route for route in routes
+        if (name := getattr(route, "name", None) or "") != SPA_MOUNT_NAME and not name.startswith(SPA_ROUTE_PREFIX)
+    ]
+
+
 def test_the_spa_document_from_the_static_mount_carries_the_policy() -> None:
     """In production one process serves the API and the built SPA (app.py mounts
     ui/dist at "/"), so the document itself has to carry the header — that is the
@@ -107,7 +167,7 @@ def test_the_spa_document_from_the_static_mount_carries_the_policy() -> None:
         saved_routes = list(app.router.routes)
         # Drop a real ui/dist mount if this checkout has one built, so the test
         # serves ITS index.html and not whatever happens to be on disk.
-        app.router.routes[:] = [r for r in saved_routes if getattr(r, "name", None) != "ui"]
+        app.router.routes[:] = _without_built_ui(saved_routes)
         app.mount("/", StaticFiles(directory=tmp, html=True), name="_test_static")
         try:
             response = TestClient(app).get("/")
@@ -167,6 +227,7 @@ def test_a_route_that_sets_its_own_policy_keeps_it(header_name: str, route_value
     assert route_value != _ALL_HEADERS[header_name.lower()]
     path = f"/_y58_route_with_its_own_{header_name.lower()}"
     saved_routes = list(app.router.routes)
+    app.router.routes[:] = _without_built_ui(saved_routes)
 
     @app.get(path)
     def _route_with_its_own_policy() -> Response:

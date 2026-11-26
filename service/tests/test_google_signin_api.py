@@ -991,11 +991,13 @@ def test_an_ordinary_oserror_from_the_store_is_unavailable_too(store, google):
     assert _location(response) == "/?google=unavailable"
 
 
-def test_a_bug_in_the_store_is_not_swallowed_as_an_outage(store, google):
+def test_a_bug_in_the_store_returns_a_generic_500(store, google):
     exploding = _ExplodingStore(TypeError("a real bug"))
     app.dependency_overrides[get_auth_store] = lambda: exploding
-    with pytest.raises(TypeError):
-        _google_sign_in(TestClient(app, follow_redirects=False, raise_server_exceptions=True), google)
+    response = _google_sign_in(TestClient(app, follow_redirects=False), google)
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal error"}
+    assert "location" not in response.headers
 
 
 def test_the_client_secret_never_appears_in_any_log_response_or_cookie(store, google, monkeypatch, caplog, capsys):

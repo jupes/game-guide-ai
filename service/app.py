@@ -122,6 +122,7 @@ from .ratelimit import (
     client_source,
 )
 from .reveals import Reveals
+from .route_errors import RouteErrors
 from .security_headers import (
     CONTENT_SECURITY_POLICY,
     CROSS_ORIGIN_OPENER_POLICY,
@@ -822,6 +823,11 @@ def _chat_error_category(status_code: int) -> str:
     return "unknown"
 
 
+# Convert unhandled route and dependency errors before chat metrics and the
+# security-header layer see the response.
+app.add_middleware(RouteErrors)
+
+
 @app.middleware("http")
 async def capture_chat_metrics(request: Request, call_next):
     if request.url.path != "/chat":
@@ -901,10 +907,8 @@ async def set_security_headers(request: Request, call_next):
     sandbox` on asset responses — and must not have to unpick this middleware
     to keep it.
 
-    Known and accepted: a 500 raised by an UNHANDLED exception is produced by
-    Starlette's `ServerErrorMiddleware`, which sits outside all user middleware,
-    so it carries no policy. Handled responses — including `HTTPException`, 401,
-    404 and 422 — do.
+    `RouteErrors` converts unexpected failures from routes and dependencies
+    to a JSON 500 inside this layer, alongside handled API errors.
     """
     response = await call_next(request)
     response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
