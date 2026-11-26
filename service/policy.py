@@ -35,7 +35,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Final
+from typing import Final, Protocol
 
 from .campaign_store import MissingParent, aware
 from .eligibility_store import (
@@ -131,7 +131,30 @@ def eligible_for_audience(facts: PolicyFacts, document_id: str, key: str, audien
     document = facts.documents.get(document_id)
     if document is None or key not in facts.revealable(document.type, document.type_version):
         return Verdict(False, EligReason.NOT_REVEALABLE)  # ED-5, ED-24: an orphan row is never read
-    stored = facts.classes.get((document_id, key))
+    return _eligible_class(facts, facts.classes.get((document_id, key)), audience)
+
+
+class AudienceFacts(Protocol):
+    """Campaign facts shared by document fields and resolver aliases."""
+
+    @property
+    def active_participants(self) -> frozenset[str]: ...
+
+    @property
+    def sheet_links(self) -> Mapping[str, str | None]: ...
+
+    @property
+    def group_members(self) -> Mapping[str, frozenset[str]]: ...
+
+
+def eligible_alias_for_audience(facts: AudienceFacts, stored: Eligibility | None, audience: SlotId) -> Verdict:
+    """ED-23 applies the same eligibility classes to a registered alias."""
+    if audience is not None and audience not in facts.active_participants:
+        return Verdict(False, EligReason.INACTIVE_PARTICIPANT)
+    return _eligible_class(facts, stored, audience)
+
+
+def _eligible_class(facts: AudienceFacts, stored: Eligibility | None, audience: SlotId) -> Verdict:
     field_class = FieldClass.UNCLASSIFIED if stored is None else stored.field_class
     if field_class is FieldClass.UNCLASSIFIED:
         return Verdict(False, EligReason.UNCLASSIFIED)
