@@ -263,8 +263,8 @@ export type TimelineRead =
  * at a `missing` conversation, or once only a `null` cursor is left to try —
  * never on a short or empty page, which is not the end of the list (the
  * contract's *Pagination*, the bead's 2026-09-25 note). The returned cursor
- * is where a later walk should resume: `null` only when the list truly ended
- * or a server that hands back the same cursor forced the spin guard below.
+ * is where a later walk should resume. A server that repeats any cursor
+ * already requested during this walk is treated as having reached the end.
  */
 async function walkTimeline(
   conversationId: string,
@@ -273,8 +273,10 @@ async function walkTimeline(
   target: number,
 ): Promise<TimelineRead> {
   const newestFirst: TimelineItem[] = []
+  const requested = new Set<string | null>()
   let cursor: string | null = startCursor
   for (let page = 0; page < MAX_PAGES_PER_READ; page += 1) {
+    requested.add(cursor)
     const result = await loadPage(conversationId, cursor)
     // Nothing this user can read yet — a conversation made in the sidebar is
     // not on the server until its first turn.
@@ -285,14 +287,12 @@ async function walkTimeline(
     if (result.kind === 'error') return result
     newestFirst.push(...result.page.items)
     const next = result.page.next_cursor
-    // A server that hands back the cursor it was just given cannot be walked
-    // further; treat it as ended rather than spin against it forever.
-    if (next === cursor) {
+    if (next === null || requested.has(next)) {
       cursor = null
       break
     }
     cursor = next
-    if (cursor === null || newestFirst.length >= target) break
+    if (newestFirst.length >= target) break
   }
   return { kind: 'ok', items: newestFirst.reverse(), cursor }
 }
