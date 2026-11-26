@@ -33,6 +33,9 @@ def write(conn: psycopg.Connection, state: State) -> WrittenWorld:
     suffix = "_" + uuid4().hex
     now = pdp.T0
     started_at = now - timedelta(hours=2)
+    # The matrix models a stale grant one generation before generation one.
+    # Shift that entire world's generations to satisfy PostgreSQL's lower bound.
+    generation_shift = max(0, 1 - min((grant.generation for grant in state.grants.values()), default=1))
     rows = WrittenWorld(ident.new_id(ident.CAMPAIGN), suffix, {}, {})
     with conn.transaction(), conn.cursor() as cursor:
         accounts = {world.owner} | {p.account for p in world.participants.values() if p.account is not None}
@@ -113,9 +116,10 @@ def write(conn: psycopg.Connection, state: State) -> WrittenWorld:
             [
                 (
                     rows.id(ident.TABLE_SESSION, s.id), rows.campaign_id, owner_id,
-                    "live" if s.live else "ended", started_at,
+                    "live" if s.live else ("expired" if s.expired else "ended"), started_at,
                     now + timedelta(seconds=-1 if s.expired else 3600),
-                    None if s.live else now, s.generation, s.epoch,
+                    None if s.live else (now - timedelta(seconds=1) if s.expired else now),
+                    s.generation + generation_shift, s.epoch,
                 )
                 for s in state.sessions.values()
             ],
@@ -129,7 +133,7 @@ def write(conn: psycopg.Connection, state: State) -> WrittenWorld:
                    VALUES (%s, %s, %s, %s, %s)""",
                 (
                     rows.id(ident.TABLE_CREDENTIAL, grant.id), rows.id(ident.TABLE_SESSION, grant.session),
-                    grant.generation, secret.digest, now if grant.revoked else None,
+                    grant.generation + generation_shift, secret.digest, now if grant.revoked else None,
                 ),
             )
     return rows

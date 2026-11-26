@@ -520,6 +520,9 @@ _CALLED_ONLY_IN: Final = {
     "TablePrincipal": {"service/policy.py"},
     "GmPrincipal": {"service/policy.py"},
     "decode_session": {"service/app.py"},
+    "SessionData": {"service/session.py", "service/app.py"},
+    "LiveScreen": {"service/table_session_store.py"},
+    "Principal": {"service/table_api.py"},
 }
 _PINNED: Final = {**_REFERENCED_ONLY_IN, **_CALLED_ONLY_IN}
 
