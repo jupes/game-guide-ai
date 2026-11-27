@@ -28,7 +28,9 @@ from .workbench_contracts import (
 )
 
 _POLL_S: Final = 2.0
-_HEARTBEAT_S: Final = 5.0
+# Older WebKit can hold fetch stream bytes until the next write (WebKit 322545).
+# An idle stream sends a comment within one second to release buffered updates.
+_HEARTBEAT_S: Final = 1.0
 _FRESH_FOR_S: Final = 5.0
 _QUEUE_MAX: Final = 64
 _WAKES: Final = (SESSION_WAKEUP_CHANNEL, CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL)
