@@ -38,13 +38,14 @@ from httpx import Response
 
 import config
 from service import app as appmod
-from service import ratelimit, reveals_api, security_headers, table_api, table_session_api
+from service import gm_stream_api, ratelimit, reveals_api, security_headers, table_api, table_session_api
 from service.app import app, get_auth_store
 from service.audit_log import InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
 from service.campaign_store import InMemoryCampaignStore
 from service.db import InMemoryDatabase
 from service.document_store import InMemoryDocumentStore
+from service.gm_streams import GmStreams
 from service.invites import Role
 from service.jobs import InMemoryJobQueue
 from service.participant_store import InMemoryParticipantStore
@@ -66,7 +67,7 @@ from service.workbench_api import (
     api_routes,
     install_workbench,
 )
-from service.workbench_contracts import Author, DocumentTypeId, TableSnapshot
+from service.workbench_contracts import Author, DocumentTypeId, GmReadyEvent, GmSnapshot, TableSnapshot
 
 pytestmark = pytest.mark.real_auth
 
@@ -781,6 +782,93 @@ def test_stream_is_off_by_default_and_opt_in_reuses_the_table_route_guards(world
 
 
 # ── The snapshot read (1kg.7.2 PR-2; ID-15, SEC-46, SEC-47, T-1, T-23) ───────
+
+
+def test_gm_stream_and_snapshot_require_the_owner_account_not_a_table_grant(world: _World, monkeypatch) -> None:
+    campaign, _ = world.live()
+    deadlines: list[datetime] = []
+    released = []
+    ready = GmReadyEvent(schema_version=1, event="ready")
+
+    class Streams:
+        admission_result: Exception | None = None
+        projection_error = False
+
+        @property
+        def admission(self):
+            return self
+
+        async def open(self, campaign_id, *, account_id, now):
+            if self.admission_result is not None:
+                raise self.admission_result
+            return "lease" if campaign_id == campaign and account_id == GM_A else None
+
+        async def snapshot(self, campaign_id, *, account_id, now):
+            if self.projection_error:
+                raise gm_stream_api.GmProjectionUnavailable("private projection details")
+            if campaign_id == campaign and account_id == GM_A:
+                return GmSnapshot(schema_version=1, frames=[ready])
+            return None
+
+        async def release(self, lease):
+            released.append(lease)
+
+        async def bytes(self, lease, *, auth_expires_at):
+            assert lease == "lease"
+            deadlines.append(auth_expires_at)
+            yield f"event: ready\ndata: {ready.model_dump_json()}\n\n".encode()
+
+    streams = Streams()
+    local = FastAPI()
+    install_workbench(local)
+    local.include_router(gm_stream_api.build_router(appmod.WORKBENCH_GM, lambda: cast(GmStreams, streams)))
+    local.dependency_overrides[get_auth_store] = lambda: world.auth
+    client = TestClient(local, base_url="https://testserver")
+    resources = [f"/campaigns/{campaign}/{name}" for name in ("snapshot", "stream")]
+    assert {path for path, _ in api_routes(local) if path.startswith("/campaigns/")} == {
+        "/campaigns/{campaign_id}/snapshot", "/campaigns/{campaign_id}/stream",
+    }
+
+    def account(account_id: int):
+        return {"cookie": f"{config.SESSION_COOKIE_NAME}={_account(account_id)}"}
+
+    grant = world.grant(campaign)
+    for path in resources:
+        assert client.get(path, headers={"sec-fetch-mode": "navigate"}).status_code == 403
+        assert client.get(path, headers={"origin": "https://other.example"}).status_code == 403
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers={"cookie": f"{table_api.SCREEN_COOKIE}={grant}"}).status_code == 401
+        assert client.get(path, headers=account(PLAYER)).status_code == 403
+        assert client.get(path, headers=account(GM_B)).status_code == 404
+        assert client.get(path.replace(campaign, "malformed"), headers=account(GM_A)).status_code == 404
+    opening = client.get(resources[0], headers=account(GM_A))
+    assert opening.json()["frames"] == [ready.model_dump(mode="json")]
+    assert opening.headers["cross-origin-resource-policy"] == "same-origin"
+    streams.projection_error = True
+    failed = client.get(resources[0], headers=account(GM_A))
+    assert failed.status_code == 503 and "private projection details" not in failed.text
+    response = client.get(resources[1], headers=account(GM_A))
+    assert response.status_code == 200 and response.text.startswith("event: ready\n")
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-store" and response.headers["x-accel-buffering"] == "no"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
+    delta = deadlines[0] - (datetime.now(UTC) + timedelta(days=config.SESSION_TTL_DAYS))
+    assert abs(delta.total_seconds()) < 5
+    streams.admission_result = TableFull()
+    full = client.get(resources[1], headers=account(GM_A))
+    assert full.status_code == 503 and full.headers["retry-after"] == "5"
+    streams.admission_result = psycopg.OperationalError("private connection details")
+    unavailable = client.get(resources[1], headers=account(GM_A))
+    assert unavailable.status_code == 503 and "private connection details" not in unavailable.text
+
+    async def disconnected_before_headers(self, send):
+        raise OSError("disconnected")
+
+    streams.admission_result = None
+    monkeypatch.setattr(gm_stream_api.StreamingResponse, "stream_response", disconnected_before_headers)
+    TestClient(local, raise_server_exceptions=False).get(resources[1], headers=account(GM_A))
+    assert released == ["lease"] and len(deadlines) == 1
+
 
 SNAPSHOT_AT = "/table/snapshot?campaign_id="
 CANARY: dict[str, Any] = {

@@ -111,6 +111,7 @@ from .reveal_scope import (
     TableTarget,
     Targets,
 )
+from .table_audio_projection import AUDIO_SLOT_ROWS, table_audio_frames
 from .table_session_store import _LIVE_GRANT, LIVE, ScreenGrant, TableSession, check_command_id
 from .table_stream_events import SESSION_WAKEUP_CHANNEL
 from .workbench_contracts import (
@@ -118,6 +119,7 @@ from .workbench_contracts import (
     PRESENCE_MAX_PARTICIPANTS,
     RESERVED_MASK_KEYS,
     REVEAL_MAX_SLOTS,
+    TableAudioEvent,
 )
 
 #: ED-2's flat field key, as `0018`'s mask CHECK spells it.
@@ -345,6 +347,7 @@ class TableView:
     #: Whether table audio is on for the session (AUDIO-19): the session's own
     #: flag, read in the same query as the slots. It belongs to no slot.
     audio: bool = True
+    audio_frames: tuple[TableAudioEvent, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)
@@ -905,7 +908,7 @@ class PostgresRevealStore(_Writes):
             "SELECT s.id, s.campaign_id, s.link_generation, (c.owner_id = %(u)s) AS is_owner, p.id, "
             "(c.owner_id <> %(u)s AND p.confirmed_at IS NOT NULL) AS own_slot, "
             "t.id, t.seq, td.document_id, tdoc.type, td.version_number, td.mask, "
-            "m.id, m.seq, md.document_id, mdoc.type, md.version_number, md.mask, s.table_audio "
+            f"m.id, m.seq, md.document_id, mdoc.type, md.version_number, md.mask, s.table_audio, {AUDIO_SLOT_ROWS} "
             "FROM campaign.table_sessions s "
             "JOIN campaign.campaigns c ON c.id = s.campaign_id "
             "LEFT JOIN campaign.participants p ON p.campaign_id = s.campaign_id AND p.user_id = %(u)s "
@@ -934,6 +937,7 @@ class PostgresRevealStore(_Writes):
             table=_content(row[6:12]),
             mine=_content(row[12:18]) if own else None,
             audio=bool(row[18]),
+            audio_frames=table_audio_frames(row[19], now),
         )
 
     def view_for_screen(
@@ -941,7 +945,7 @@ class PostgresRevealStore(_Writes):
     ) -> TableView | None:
         row = pg(unit).conn.execute(
             f"SELECT s.id, s.campaign_id, s.link_generation, "
-            f"t.id, t.seq, td.document_id, tdoc.type, td.version_number, td.mask, s.table_audio "
+            f"t.id, t.seq, td.document_id, tdoc.type, td.version_number, td.mask, s.table_audio, {AUDIO_SLOT_ROWS} "
             f"FROM campaign.table_credentials g JOIN campaign.table_sessions s ON s.id = g.session_id "
             f"LEFT JOIN campaign.reveal_slots t ON t.session_id = s.id AND t.participant_id IS NULL "
             f"LEFT JOIN campaign.reveal_disclosures td ON td.id = t.disclosure_id AND td.ended_at IS NULL "
@@ -951,7 +955,10 @@ class PostgresRevealStore(_Writes):
         ).fetchone()
         if row is None:
             return None
-        return TableView(row[0], row[1], int(row[2]), False, None, False, _content(row[3:9]), audio=bool(row[9]))
+        return TableView(
+            row[0], row[1], int(row[2]), False, None, False, _content(row[3:9]), audio=bool(row[9]),
+            audio_frames=table_audio_frames(row[10], now),
+        )
 
     def stale_slots(self, unit: UnitOfWork, campaign_id: str, *, now: datetime) -> list[StaleSlots]:
         moment = aware(now, "a clock")

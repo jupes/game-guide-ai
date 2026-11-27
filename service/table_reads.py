@@ -19,7 +19,7 @@ text (T-23): the route imports this module and never the document store.
 3. `table_projection.build` makes the projection from the mask.
 4. The frames: `session` (audio, and the role: `participant` iff the own slot is
    entitled, else `guest`, ID-15), `snapshot` (`table`, and `mine` iff entitled)
-   and `ready`. There are no audio frames until cue slots exist (1kg.8.6).
+   followed by the authoritative audio slots and `ready`.
 
 `TableSnapshot` validates the frames. When it refuses them, the same frames are
 emitted with **every** `content` empty, and the log line names the exception
@@ -50,10 +50,13 @@ from .campaign_store import aware
 from .db import Database, TransactionalDatabase, UnitOfWork
 from .document_store import DocumentStore
 from .reveal_store import EMPTY_SLOT, RevealStore, SlotContent, TableView
+from .table_audio_projection import AUDIO_SLOT_ROWS, opening_audio, table_audio_frames
 from .table_projection import build
 from .workbench_contracts import (
     CONTRACT_VERSION,
+    AudioSlot,
     SchemaVersion,
+    TableAudioEvent,
     TableProjection,
     TableReadyEvent,
     TableRevealSnapshotEvent,
@@ -98,7 +101,7 @@ class TableReads:
             slots = [self._slot(unit, view, TableSlotName.TABLE, view.table)]
             if view.own_slot:
                 slots.append(self._slot(unit, view, TableSlotName.MINE, view.mine or EMPTY_SLOT))
-        return _frames(view.own_slot, view.audio, slots)
+        return _frames(view.own_slot, view.audio, slots, [opening_audio(f, moment) for f in view.audio_frames])
 
     def _slot(self, unit: UnitOfWork, view: TableView, name: TableSlotName, held: SlotContent) -> TableSlot:
         return TableSlot(slot=name, seq=held.seq, content=self._content(unit, view.campaign_id, held))
@@ -130,14 +133,15 @@ class TableStreamWatch:
             raise ValueError("a stream is watched for one principal")
 
 
-_STREAM_READ_SQL: Final = """
+_STREAM_READ_SQL: Final = f"""
 WITH watched AS (
     SELECT * FROM unnest(%(campaigns)s::text[], %(sessions)s::text[], %(generations)s::int[],
                          %(accounts)s::bigint[], %(grants)s::text[])
     WITH ORDINALITY AS w(campaign_id, session_id, generation, account_id, grant_id, ordinal)
 ), eligible AS (
     SELECT w.ordinal, s.id AS session_id, s.campaign_id, s.table_audio, p.id AS participant_id,
-           (w.account_id IS NOT NULL AND c.owner_id <> w.account_id AND p.confirmed_at IS NOT NULL) AS own_slot
+           (w.account_id IS NOT NULL AND c.owner_id <> w.account_id AND p.confirmed_at IS NOT NULL) AS own_slot,
+           {AUDIO_SLOT_ROWS} AS audio_slots
     FROM watched w
     JOIN campaign.table_sessions s ON s.id = w.session_id AND s.campaign_id = w.campaign_id
         AND s.state = 'live' AND s.expires_at > %(now)s AND s.link_generation = w.generation
@@ -149,7 +153,7 @@ WITH watched AS (
     WHERE c.owner_id = w.account_id OR p.id IS NOT NULL OR g.id IS NOT NULL
 )
 SELECT e.ordinal, e.own_slot, e.table_audio, audience.region, COALESCE(r.seq, 0), d.type, f.mask,
-       (SELECT jsonb_object_agg(key, v.data -> key) FROM unnest(f.mask) AS k(key) WHERE v.data ? key)
+       (SELECT jsonb_object_agg(key, v.data -> key) FROM unnest(f.mask) AS k(key) WHERE v.data ? key), e.audio_slots
 FROM eligible e
 CROSS JOIN LATERAL (
     SELECT 'table' AS region, NULL::text AS participant_id, 0 AS ordering
@@ -199,15 +203,24 @@ class TableStreamReads:
                     slot=TableSlotName(region), seq=seq,
                     content=None if doc_type is None or data is None else build(doc_type, data, mask),
                 )
-                for _, _, _, region, seq, doc_type, mask, data in entries
+                for _, _, _, region, seq, doc_type, mask, data, _ in entries
             ]
             _, own_slot, audio, *_ = entries[0]
-            snapshots[ordinal - 1] = _frames(own_slot, audio, slots)
+            snapshots[ordinal - 1] = _frames(own_slot, audio, slots, table_audio_frames(entries[0][-1], now))
         return snapshots
 
 
-def _frames(own_slot: bool, audio: bool, slots: list[TableSlot]) -> TableSnapshot:
+def _frames(
+    own_slot: bool, audio: bool, slots: list[TableSlot], audio_frames: Sequence[TableAudioEvent] = (),
+) -> TableSnapshot:
     role = TableRole.PARTICIPANT if own_slot else TableRole.GUEST
+    by_slot = {frame.slot: frame for frame in audio_frames}
+    audio_picture = [
+        by_slot[slot] if slot in by_slot else TableAudioEvent(
+            schema_version=WIRE_VERSION, event="audio", slot=slot, seq=0, playing=None,
+        )
+        for slot in AudioSlot
+    ] if audio else []
 
     def assemble(shown: list[TableSlot]) -> TableSnapshot:
         return TableSnapshot.model_validate(
@@ -216,6 +229,7 @@ def _frames(own_slot: bool, audio: bool, slots: list[TableSlot]) -> TableSnapsho
                 "frames": [
                     TableSessionEvent(schema_version=WIRE_VERSION, event="session", audio=audio, role=role),
                     TableRevealSnapshotEvent(schema_version=WIRE_VERSION, event="snapshot", slots=shown),
+                    *audio_picture,
                     TableReadyEvent(schema_version=WIRE_VERSION, event="ready"),
                 ],
             }

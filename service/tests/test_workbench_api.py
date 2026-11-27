@@ -1046,6 +1046,9 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/delete"),
     ("GET", "/campaigns/{campaign_id}/cues/{cue_id}"),
     ("POST", "/campaigns/{campaign_id}/cues/{cue_id}/attach"),
+    ("GET", "/campaigns/{campaign_id}/sessions/{session_id}/audio"),
+    ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/play"),
+    ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/stop"),
     ("GET", "/campaigns/{campaign_id}/table-session"), ("POST", "/campaigns/{campaign_id}/table-session"),
     ("DELETE", "/campaigns/{campaign_id}/table-session/screens/{screen_id}"),
     # 1kg.7.2 PR-1: the GM's reveal picture, Confirm and Stop.
@@ -1062,6 +1065,11 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}"),
     ("POST", "/campaigns/{campaign_id}/groups/{group_id}/members/{participant_id}/remove"),
 }
+if config.TABLE_STREAMS_ENABLED:
+    EXPECTED_WORKBENCH_ROUTES.update({
+        ("GET", "/campaigns/{campaign_id}/stream"), ("GET", "/campaigns/{campaign_id}/snapshot"),
+        ("GET", "/table/stream"),
+    })
 
 
 def _census(target: FastAPI) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
@@ -1401,7 +1409,8 @@ def test_the_route_module_derivation_finds_real_module_files(world: _World, tmp_
 @pytest.mark.real_auth
 def test_no_workbench_route_on_the_real_app_builds_its_own_status() -> None:
     modules = _workbench_route_modules(app)
-    assert modules == {  # a route bead adds its module
+    stream_modules = {(REPO_ROOT / "service" / "gm_stream_api.py").resolve()} if config.TABLE_STREAMS_ENABLED else set()
+    assert modules == stream_modules | {  # a route bead adds its module
         (REPO_ROOT / "service" / "conversations_api.py").resolve(),
         (REPO_ROOT / "service" / "timeline_api.py").resolve(),
         (REPO_ROOT / "service" / "campaigns_api.py").resolve(),

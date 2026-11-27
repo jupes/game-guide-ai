@@ -23,6 +23,7 @@ import * as React from 'react'
 import { cueCapability } from '../gm/cueApi'
 import { useCampaign } from './campaignContext'
 import { useWorkbenchActive } from './canvasContext'
+import { useTableSession } from './tableSession'
 import { LIBRARY_TABS, type LibraryCategoryId as DocumentCategoryId } from './useLibraryList'
 
 export { LIBRARY_TABS }
@@ -34,6 +35,7 @@ export const LIBRARY_HEADING_ID = 'workbench-library-heading'
 export const PARTICIPANTS_PANEL_ID = 'workbench-participants-panel'
 
 export interface LibraryPanelState {
+  readonly cueMediaEnabled: boolean
   readonly open: boolean
   readonly participantsOpen: boolean
   /** The tab shown while open, and the one the next open starts on. */
@@ -57,6 +59,7 @@ type Stored = { readonly scopeKey: string } & (
 )
 
 const INERT: LibraryPanelState & LibraryPanelActions = {
+  cueMediaEnabled: false,
   open: false,
   participantsOpen: false,
   category: 'npcs',
@@ -90,18 +93,47 @@ function canTakeFocus(element: HTMLElement | null | undefined): element is HTMLE
 export function LibraryPanelProvider({ children, fallback }: LibraryPanelProviderProps): React.JSX.Element {
   const { scope } = useCampaign()
   const active = useWorkbenchActive()
+  const { liveSession } = useTableSession()
+  const checkCues = active || liveSession !== null
   const scopeKey = scope?.key ?? null
   const campaign = scope?.campaignId ?? null
   const [cueScope, setCueScope] = React.useState<string | null>(null)
-  const tabs: readonly LibraryCategoryId[] = active && scopeKey !== null && cueScope === scopeKey ? TABS_WITH_CUES : LIBRARY_TABS
+  const cueMediaEnabled = scopeKey !== null && cueScope === scopeKey
+  const tabs: readonly LibraryCategoryId[] = active && cueMediaEnabled ? TABS_WITH_CUES : LIBRARY_TABS
   React.useEffect(() => {
-    if (!active || campaign === null || scopeKey === null) return
+    if (!checkCues || campaign === null || scopeKey === null) return
+    const campaignId = campaign
     const abort = new AbortController()
-    void cueCapability(campaign, abort.signal, fetch).then((enabled) => {
-      if (!abort.signal.aborted) setCueScope(enabled ? scopeKey : null)
-    })
-    return () => abort.abort()
-  }, [active, campaign, scopeKey])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let backoff = 1000
+    let checking = false
+    let settled = false
+    async function check() {
+      if (checking || settled || abort.signal.aborted) return
+      clearTimeout(timer)
+      checking = true
+      const result = await cueCapability(campaignId, AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]), fetch)
+      checking = false
+      if (abort.signal.aborted) return
+      if (result === 'unavailable') {
+        timer = setTimeout(() => void check(), backoff)
+        backoff = Math.min(30000, backoff * 2)
+      } else {
+        settled = true
+        setCueScope(result === 'enabled' ? scopeKey : null)
+      }
+    }
+    const onResume = () => { if (!document.hidden) void check() }
+    void check()
+    window.addEventListener('online', onResume)
+    document.addEventListener('visibilitychange', onResume)
+    return () => {
+      abort.abort()
+      clearTimeout(timer)
+      window.removeEventListener('online', onResume)
+      document.removeEventListener('visibilitychange', onResume)
+    }
+  }, [checkCues, campaign, scopeKey])
   const [stored, setStored] = React.useState<Stored | null>(null)
   /** The tab the next open starts on: the last one shown (the first time, NPCs). */
   const [last, setLast] = React.useState<LibraryCategoryId>('npcs')
@@ -175,8 +207,8 @@ export function LibraryPanelProvider({ children, fallback }: LibraryPanelProvide
   }, [kind, rail, participantsRail, main])
 
   const value = React.useMemo(
-    () => ({ open, participantsOpen, category, tabs, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory }),
-    [open, participantsOpen, category, tabs, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory],
+    () => ({ open, participantsOpen, category, tabs, cueMediaEnabled, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory }),
+    [open, participantsOpen, category, tabs, cueMediaEnabled, openLibrary, toggleLibrary, toggleParticipants, closeLibrary, setCategory],
   )
   return <LibraryPanelContext.Provider value={value}>{children}</LibraryPanelContext.Provider>
 }

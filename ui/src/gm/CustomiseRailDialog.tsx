@@ -19,6 +19,7 @@
  */
 
 import * as React from 'react'
+import { DialogTableStop } from '../shell/DialogTableStop'
 import type { ToolId } from './contracts'
 import { RAIL_LIMIT, REGISTRY } from './registry'
 import type { Tool, ToolAvailability } from './registry'
@@ -127,6 +128,7 @@ export function CustomiseRailDialog({
         // The scrim's own mousedown closes; a press inside must not bubble to it.
         onMouseDown={(e) => e.stopPropagation()}
       >
+        <DialogTableStop />
         <h2 id={titleId} className="gm-customise__title">
           Customise rail
         </h2>

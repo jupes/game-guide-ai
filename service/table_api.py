@@ -272,6 +272,11 @@ def _spend_read(principal: Principal) -> None:
         key = f"account:{principal.account.user_id}"
     else:
         raise ValueError("a principal is a screen or an account")
+    spend_stream_read(key)
+
+
+def spend_stream_read(key: str) -> None:
+    """Charge a snapshot or stream open to its authenticated principal."""
     refused: ratelimit.RateLimited | None = None
     try:
         ratelimit.check_table_read(key)

@@ -21,6 +21,30 @@
   display: contents;
 }
 
+.app-header__live {
+  display: contents;
+}
+
+/* The live reveal and sound share a row without squeezing the channel buttons. */
+.app-header:has(.gm-audio-strip) {
+  flex-wrap: wrap;
+}
+
+.app-header__live:has(.gm-audio-strip) {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--aether-space-2);
+  order: 1;
+  min-width: 0;
+}
+
+.app-header__live .gm-audio-strip {
+  flex: 1 1 19rem;
+  min-width: 0;
+}
+
 .app-header__channels {
   display: flex;
   align-items: center;

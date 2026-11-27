@@ -3,7 +3,7 @@
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
@@ -13,15 +13,23 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, ValidationError
 
 from . import campaign_identity as ident
+from . import cue_playback
 from .asset_serving_api import get_audit_log, tombstone_asset
 from .assets_api import MediaRuntime, get_clock, media_route
 from .audit_log import AuditLog
 from .campaign_store import pg
+from .campaigns_api import unavailable
 from .db import CampaignAuthzMissing, PgTransaction, TransactionalDatabase
 from .job_driver import JobDriver, run_after_response
 from .session import SessionData
 from .timeline_store import new_entry_id, validated_entry
-from .workbench_api import SessionDependency, body_reader, not_found, reads_by_post, workbench_router
+from .workbench_api import (
+    SessionDependency,
+    body_reader,
+    not_found,
+    reads_by_post,
+    workbench_router,
+)
 from .workbench_contracts import (
     CUE_MAX_MS,
     ArchivedDeleteRequest,
@@ -33,11 +41,15 @@ from .workbench_contracts import (
     CueKind,
     CueListQuery,
     CuePage,
+    CuePlayRequest,
     CueRenameRequest,
+    CueStopRequest,
+    GmAudioEvent,
     LibrarySort,
 )
 
 PREFIX = "/campaigns/{campaign_id}/cues"
+PLAYBACK = "/campaigns/{campaign_id}/sessions/{session_id}/audio"
 _BODY = body_reader(8192)
 _COLUMNS = """
     q.id AS cue_id, q.campaign_id, q.title, q.kind, q.asset_id,
@@ -71,39 +83,67 @@ def _conflict(message: str) -> HTTPException:
 
 
 @contextmanager
+def _transaction(db: TransactionalDatabase | None) -> Iterator[PgTransaction]:
+    if db is None:
+        raise unavailable("Cues are unavailable.")
+    try:
+        with db.transaction() as unit:
+            yield pg(unit)
+        return
+    except CampaignAuthzMissing:
+        not_found()
+    except psycopg.Error:
+        pass
+    raise unavailable("Cues are unavailable.")
+
+
+def _check_owner(transaction: PgTransaction, campaign: str, owner: int) -> None:
+    query = "SELECT 1 FROM campaign.campaigns WHERE id = %s AND owner_id = %s AND archived_at IS NULL"
+    if transaction.conn.execute(query, (campaign, owner)).fetchone() is None:
+        not_found()
+
+
+@contextmanager
 def _owned(
     db: TransactionalDatabase | None,
     runtime: MediaRuntime | None,
     campaign: str,
     owner: int,
     *,
-    write: bool = False,
+    lock: Literal["shared", "exclusive"] | None = None,
 ) -> Iterator[PgTransaction]:
     if not ident.is_id(ident.CAMPAIGN, campaign):
         not_found()
-    unavailable = HTTPException(
-        503,
-        detail={"code": "backend_unavailable", "message": "Cues are unavailable.", "retryable": True},
-    )
-    if db is None or runtime is None:
-        raise unavailable
+    if runtime is None:
+        raise unavailable("Cues are unavailable.")
+    with _transaction(db) as transaction:
+        _check_owner(transaction, campaign, owner)
+        if lock is not None:
+            transaction.lock_campaign(campaign, shared=lock == "shared")
+            _check_owner(transaction, campaign, owner)
+        yield transaction
+
+
+@contextmanager
+def _playback_refusals() -> Iterator[None]:
     try:
-        with db.transaction() as unit:
-            transaction = pg(unit)
-            lookup = "SELECT 1 FROM campaign.campaigns WHERE id = %s AND owner_id = %s AND archived_at IS NULL"
-            if transaction.conn.execute(lookup, (campaign, owner)).fetchone() is None:
-                not_found()
-            if write:
-                transaction.lock_campaign(campaign, shared=True)
-                if transaction.conn.execute(lookup, (campaign, owner)).fetchone() is None:
-                    not_found()
-            yield transaction
+        yield
         return
-    except CampaignAuthzMissing:
+    except (cue_playback.NoSuchSession, cue_playback.NoSuchCue):
+        failure: Exception | None = None
+    except cue_playback.StaleAudioEpoch:
+        failure = _conflict("Playback changed. Check the table and try again.")
+    except cue_playback.Collision:
+        failure = _conflict("This command was already used.")
+    except cue_playback.AudioDisabled:
+        failure = _conflict("Table audio is off.")
+    except cue_playback.CueIsPlaying:
+        failure = _conflict("Stop the live cue before archiving it.")
+    except cue_playback.InvalidLoop:
+        failure = _invalid("loop")
+    if failure is None:
         not_found()
-    except psycopg.Error:
-        pass
-    raise unavailable
+    raise failure
 
 
 def create(transaction: PgTransaction, campaign: str, owner: int, body: CueCreateRequest) -> Cue:
@@ -324,10 +364,45 @@ def build_router(
 ) -> APIRouter:
     router = workbench_router(gm)
     router.route_class = media_route(enabled)
+    # SEC-35: audio Stop must always be available, including when other write budgets are exhausted.
+    narrowing = workbench_router(gm, throttle=None)
+    narrowing.route_class = media_route(enabled)
     User = Annotated[SessionData, Depends(gm)]
     DB = Annotated[TransactionalDatabase | None, Depends(database)]
     Media = Annotated[MediaRuntime | None, Depends(media)]
     Body = Annotated[bytes, Depends(_BODY)]
+    Clock = Annotated[Callable[[], datetime], Depends(get_clock)]
+
+    @router.get(PLAYBACK, include_in_schema=False)
+    def audio_state(
+        campaign_id: str, session_id: str, user: User, db: DB, clock: Clock,
+    ) -> tuple[GmAudioEvent, GmAudioEvent]:
+        if not ident.is_id(ident.CAMPAIGN, campaign_id) or not ident.is_id(ident.TABLE_SESSION, session_id):
+            not_found()
+        with _playback_refusals(), _transaction(db) as transaction:
+            return cue_playback.read_state(transaction, campaign_id, session_id, user.user_id, clock())
+
+    @router.post(f"{PLAYBACK}/play", include_in_schema=False)
+    def play(
+        campaign_id: str, session_id: str, raw: Body, user: User, db: DB, runtime: Media, clock: Clock,
+    ) -> tuple[GmAudioEvent, GmAudioEvent]:
+        body = _parse(CuePlayRequest, raw)
+        if not ident.is_id(ident.TABLE_SESSION, session_id) or not ident.is_id(ident.CUE, body.cue_id):
+            not_found()
+        with _playback_refusals(), _owned(db, runtime, campaign_id, user.user_id, lock="shared") as transaction:
+            return cue_playback.play(transaction, campaign_id, session_id, user.user_id, body, clock())
+
+    @narrowing.post(f"{PLAYBACK}/stop", include_in_schema=False)
+    def stop(
+        campaign_id: str, session_id: str, raw: Body, user: User, db: DB, clock: Clock,
+    ) -> tuple[GmAudioEvent, GmAudioEvent]:
+        body = _parse(CueStopRequest, raw)
+        if not ident.is_id(ident.CAMPAIGN, campaign_id) or not ident.is_id(ident.TABLE_SESSION, session_id):
+            not_found()
+        if body.cue_id is not None and not ident.is_id(ident.CUE, body.cue_id):
+            not_found()
+        with _playback_refusals(), _transaction(db) as transaction:
+            return cue_playback.stop(transaction, campaign_id, session_id, user.user_id, body, clock())
 
     @router.get(f"{PREFIX}/capability", status_code=204, include_in_schema=False)
     def capability(campaign_id: str, user: User, db: DB, runtime: Media) -> Response:
@@ -342,7 +417,7 @@ def build_router(
 
     @router.post(PREFIX, status_code=201, include_in_schema=False)
     def create_cue(campaign_id: str, raw: Body, user: User, db: DB, runtime: Media) -> Cue:
-        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+        with _owned(db, runtime, campaign_id, user.user_id, lock="shared") as transaction:
             return create(transaction, campaign_id, user.user_id, _parse(CueCreateRequest, raw))
 
     @router.get(f"{PREFIX}/{{cue_id}}", include_in_schema=False)
@@ -369,23 +444,29 @@ def build_router(
         runtime: Media,
         clock: Annotated[Callable[[], datetime], Depends(get_clock)],
     ) -> AttachedCueEntry:
-        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+        with _owned(db, runtime, campaign_id, user.user_id, lock="shared") as transaction:
             body = _parse(CueAttachRequest, raw)
             return attach(transaction, campaign_id, cue_id, body.conversation_id, user.user_id, clock())
 
     @router.patch(f"{PREFIX}/{{cue_id}}", include_in_schema=False)
     def rename(campaign_id: str, cue_id: str, raw: Body, user: User, db: DB, runtime: Media) -> Cue:
-        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+        with _owned(db, runtime, campaign_id, user.user_id, lock="shared") as transaction:
             return change(transaction, campaign_id, cue_id, title=_parse(CueRenameRequest, raw).title)
 
     @router.post(f"{PREFIX}/{{cue_id}}/archive", include_in_schema=False)
-    def archive(campaign_id: str, cue_id: str, user: User, db: DB, runtime: Media) -> Cue:
-        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+    def archive(
+        campaign_id: str, cue_id: str, user: User, db: DB, runtime: Media, clock: Clock,
+        confirm_stop: Literal["true"] | None = None,
+    ) -> Cue:
+        with _playback_refusals(), _owned(db, runtime, campaign_id, user.user_id, lock="exclusive") as transaction:
+            cue_playback.prepare_archive(
+                transaction, campaign_id, cue_id, user.user_id, clock(), confirm_stop=confirm_stop == "true",
+            )
             return change(transaction, campaign_id, cue_id, archived=True)
 
     @router.post(f"{PREFIX}/{{cue_id}}/restore", include_in_schema=False)
     def restore(campaign_id: str, cue_id: str, user: User, db: DB, runtime: Media) -> Cue:
-        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+        with _owned(db, runtime, campaign_id, user.user_id, lock="shared") as transaction:
             return change(transaction, campaign_id, cue_id, archived=False)
 
     @router.post(f"{PREFIX}/{{cue_id}}/delete", status_code=204, include_in_schema=False)
@@ -404,7 +485,7 @@ def build_router(
     ) -> Response:
         body = _parse(ArchivedDeleteRequest, raw)
         check_password(body.password.get_secret_value())
-        with _owned(db, runtime, campaign_id, user.user_id, write=True) as transaction:
+        with _owned(db, runtime, campaign_id, user.user_id, lock="shared") as transaction:
             assert runtime is not None  # _owned refuses an unavailable runtime
             job_id = delete_archived(
                 transaction,
@@ -418,4 +499,7 @@ def build_router(
         run_after_response(tasks, runner, job_id)
         return Response(status_code=204)
 
-    return router
+    routes = APIRouter()
+    routes.include_router(router)
+    routes.include_router(narrowing)
+    return routes

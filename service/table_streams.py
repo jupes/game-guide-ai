@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator
-from contextlib import aclosing
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, aclosing
 from datetime import UTC, datetime
 from functools import partial
 
@@ -13,6 +13,7 @@ import anyio
 import psycopg
 
 from .db import Database, default_dsn
+from .gm_stream_reads import GM_STREAM_LIMIT
 from .table_admission import LEASE_HEARTBEAT_S, TABLE_STREAM_LIMIT, StreamLease, TableAdmission
 from .table_fanout import RECONNECT_FRAME, TableFanout, listen_table_wakeups
 from .table_reads import TableStreamReads
@@ -52,10 +53,19 @@ class TableStreams:
     async def close(self) -> None:
         await self._fanout.close()
 
-    def health(self) -> dict[str, str | int]:
-        active = self._fanout.stream_count
-        listener = "listening" if self._fanout.listening else ("reconnecting" if active else "idle")
-        return {"listener": listener, "streams": active, "cap": TABLE_STREAM_LIMIT}
+    def subscribe_wakeups(self, callback: Callable[[str, str], None]) -> AbstractAsyncContextManager[None]:
+        return self._fanout.subscribe(callback)
+
+    def health(self, *, gm_count: int | None = None) -> dict[str, str | int]:
+        table_count = self._fanout.stream_count
+        gm_cap = GM_STREAM_LIMIT if gm_count is not None else 0
+        total = table_count + (gm_count or 0)
+        listener = "listening" if self._fanout.listening else ("reconnecting" if total else "idle")
+        return {
+            "listener": listener, "streams": table_count, "cap": TABLE_STREAM_LIMIT,
+            "gm_streams": gm_count or 0, "gm_cap": gm_cap,
+            "total_streams": total, "total_cap": TABLE_STREAM_LIMIT + gm_cap,
+        }
 
 
 def build_table_streams(db: Database) -> TableStreams:

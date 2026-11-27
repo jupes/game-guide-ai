@@ -22,31 +22,38 @@ import { useAppNav } from './AppNav'
 import { useCanvasState, useWorkbenchActive } from './canvasContext'
 import { useReveals } from './revealContext'
 import { STOP_ALL } from './revealStop'
+import { useCuePlayback } from './cuePlayback'
+import { kindSummary } from '../gm/audioHelpers'
 import './RevealIndicator.css'
 
 export interface RevealIndicatorProps {
+  readonly compactLive?: boolean
   /** Where focus goes when the indicator goes away while it holds focus (the last Stop was pressed). */
   readonly fallbackFocus?: () => void
 }
 
-export function RevealIndicator({ fallbackFocus }: RevealIndicatorProps): React.JSX.Element | null {
+export function RevealIndicator({ fallbackFocus, compactLive = false }: RevealIndicatorProps): React.JSX.Element | null {
+  const audio = useCuePlayback()
   const reveals = useReveals()
   const projections = React.useMemo(
     () => revealProjections(reveals.state, reveals.titles, reveals.seats ?? []),
     [reveals.state, reveals.titles, reveals.seats],
   )
   const unknown = reveals.status === 'unknown'
-  if (!unknown && (reveals.status !== 'live' || projections.length === 0)) return null
-  return <IndicatorBody projections={projections} unknown={unknown} fallbackFocus={fallbackFocus} />
+  const combined = compactLive && audio.playback !== null
+  const audioVisible = combined && (!audio.connected || audio.stopError !== null || audio.frames.some((frame) => frame.playing))
+  if (!audioVisible && !unknown && (reveals.status !== 'live' || projections.length === 0)) return null
+  return <IndicatorBody projections={projections} unknown={unknown} fallbackFocus={fallbackFocus} audio={combined ? audio : null} />
 }
 
 interface IndicatorBodyProps {
+  readonly audio: ReturnType<typeof useCuePlayback> | null
   readonly projections: readonly Projection[]
   readonly unknown: boolean
   readonly fallbackFocus: (() => void) | undefined
 }
 
-function IndicatorBody({ projections, unknown, fallbackFocus }: IndicatorBodyProps): React.JSX.Element {
+function IndicatorBody({ projections, unknown, fallbackFocus, audio }: IndicatorBodyProps): React.JSX.Element {
   const reveals = useReveals()
   const { setMode } = useAppNav()
   const inGm = useWorkbenchActive()
@@ -82,6 +89,9 @@ function IndicatorBody({ projections, unknown, fallbackFocus }: IndicatorBodyPro
   const stopping = (documentId: string): boolean => reveals.stopping.has(documentId) || reveals.stopping.has(STOP_ALL)
   const anyStopping = reveals.stopping.size > 0
   const stale = projections.find((entry) => entry.staleText)
+  const cues = audio?.frames.flatMap(({ slot, playing }) => playing ? [{ slot, ...playing }] : []) ?? []
+  const count = cues.length + projections.length
+  const combined = audio !== null
 
   function openSheet(documentId: string, opener: Element): void {
     // The opener is the control pressed, so focus returns to it when the sheet closes.
@@ -117,12 +127,12 @@ function IndicatorBody({ projections, unknown, fallbackFocus }: IndicatorBodyPro
       ref={rootRef}
       className="reveal-indicator"
       role="group"
-      aria-label={REVEAL_COPY.indicatorLabel}
+      aria-label={combined ? 'Live at the table' : REVEAL_COPY.indicatorLabel}
       data-state={unknown ? 'unknown' : 'live'}
       data-mode={inGm ? undefined : 'stop-only'}
       onKeyDown={onKeyDown}
     >
-      {unknown ? (
+      {unknown && !combined ? (
         <span className="reveal-indicator__text">{REVEAL_COPY.indicatorUnknown}</span>
       ) : (
         <button
@@ -136,14 +146,16 @@ function IndicatorBody({ projections, unknown, fallbackFocus }: IndicatorBodyPro
           <span className="material-symbols-rounded reveal-indicator__icon" aria-hidden="true">
             visibility
           </span>
-          <span className="reveal-indicator__text">{projectionSummary(projections)}</span>
+          <span className="reveal-indicator__text">{combined
+            ? unknown || !audio.connected ? 'Reconnecting…' : `${count} live`
+            : projectionSummary(projections)}</span>
         </button>
       )}
 
-      {!unknown && stale !== undefined && (
+      {!combined && !unknown && stale !== undefined && (
         <span className="reveal-indicator__note">{REVEAL_COPY.earlierVersionShort}</span>
       )}
-      {!unknown && stale !== undefined && inGm && (
+      {!combined && !unknown && stale !== undefined && inGm && (
         <button
           type="button"
           className="reveal-indicator__button"
@@ -153,17 +165,31 @@ function IndicatorBody({ projections, unknown, fallbackFocus }: IndicatorBodyPro
         </button>
       )}
       {anyStopping && reveals.stopFailed && <span className="reveal-indicator__note" data-tone="error">{REVEAL_COPY.stopFailedShort}</span>}
+      {audio?.stopError && <span role="status" className="reveal-indicator__note" data-tone="error">{audio.stopError}</span>}
 
       <button
         type="button"
         className="reveal-indicator__button reveal-indicator__button--stop"
-        onClick={() => reveals.stop(STOP_ALL, REVEAL_COPY.everything)}
+        onClick={() => {
+          reveals.stop(STOP_ALL, REVEAL_COPY.everything)
+          void audio?.playback?.stop(null)
+        }}
       >
-        {REVEAL_COPY.stopAll(unknown ? null : projections.length)}
+        {REVEAL_COPY.stopAll(unknown || combined ? null : projections.length)}
       </button>
 
-      {open && !unknown && (
-        <ul id={listId} className="reveal-indicator__list" aria-label={REVEAL_COPY.indicatorListLabel}>
+      {open && (!unknown || combined) && (
+        <ul id={listId} className="reveal-indicator__list" aria-label={combined ? 'Live reveals and sounds' : REVEAL_COPY.indicatorListLabel}>
+          {cues.map((cue) => (
+            <li key={cue.slot} className="reveal-indicator__row">
+              <span className="reveal-indicator__open">{cue.title} · {kindSummary(cue.slot, cue.loop)}</span>
+              <button type="button" className="reveal-indicator__button reveal-indicator__button--stop"
+                aria-label={`Stop ${cue.title}`} onClick={() => {
+                  void audio?.playback?.stop(cue.cue_id)
+                  toggleRef.current?.focus()
+                }}>Stop</button>
+            </li>
+          ))}
           {projections.map((entry) => (
             <li key={entry.documentId} className="reveal-indicator__row">
               <button

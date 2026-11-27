@@ -26,6 +26,7 @@ import { useCurrentUser } from './currentUser'
 import { ModelPicker } from './ModelPicker'
 import { modesForRole, accentClass } from './modes'
 import { RevealIndicator } from './RevealIndicator'
+import { LiveCueControls } from './cuePlayback'
 import './AppHeader.css'
 import './modeAccents.css'
 
@@ -35,9 +36,10 @@ export interface AppHeaderProps {
   showSettings?: boolean
   /** A modal is open: everything in the band but the reveal indicator is inert. @default false */
   inert?: boolean
+  compactLive?: boolean
 }
 
-export function AppHeader({ showSettings = true, inert = false }: AppHeaderProps): React.JSX.Element {
+export function AppHeader({ showSettings = true, inert = false, compactLive = false }: AppHeaderProps): React.JSX.Element {
   const { mode } = useAppNav()
   const switchChannel = useChannelSwitch()
   const { user } = useCurrentUser()
@@ -66,7 +68,10 @@ export function AppHeader({ showSettings = true, inert = false }: AppHeaderProps
         </div>
       </div>
 
-      <RevealIndicator fallbackFocus={focusSelectedChannel} />
+      <div className="app-header__live">
+        <RevealIndicator fallbackFocus={focusSelectedChannel} compactLive={compactLive} />
+        {!compactLive && <LiveCueControls />}
+      </div>
 
       {showSettings && (
         <div className="app-header__controls" inert={inert}>

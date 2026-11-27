@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppNavProvider } from './AppNav'
 import { CampaignProvider, useCampaign, type CampaignContextValue, type CampaignScope } from './campaignContext'
 import { CurrentUserContext, STUB } from './currentUser'
-import { TableSessionProvider, useTableSession, type TableSessionValue } from './tableSession'
+import { SESSION_REFRESH_EVENT, TableSessionProvider, useTableSession, type TableSessionValue } from './tableSession'
 import { EndCourier } from './tableSessionApi'
 
 const SECOND = 1_000
@@ -132,6 +132,29 @@ afterEach(() => {
 })
 
 describe('TableSessionProvider', () => {
+  it('discovers a session opened in another tab and rechecks changed identities on return', async () => {
+    let changed: ((event: MessageEvent) => void) | null = null
+    class Channel {
+      set onmessage(value: (event: MessageEvent) => void) { changed = value }
+      close() {}
+    }
+    vi.stubGlobal('BroadcastChannel', Channel)
+    const t = mount({ scope: A1 })
+    try {
+      await t.answer(200, envelope(null))
+      act(() => changed?.(new MessageEvent('message', { data: 'changed' })))
+      await t.answer(200, envelope(LIVE))
+      expect(t.now().liveSession?.sessionId).toBe('tss_1')
+      act(() => window.dispatchEvent(new Event(SESSION_REFRESH_EVENT)))
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      await t.answer(200, envelope(stored({ session_id: 'tss_2' })), 1)
+      await t.answer(200, envelope(ENDED))
+      expect(t.now().liveSession?.sessionId).toBe('tss_2')
+    } finally {
+      t.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
   it('is idle and asks nothing without a scope (positive control: a scope reads once)', async () => {
     const t = mount({ scope: null })
     await flush()
@@ -689,7 +712,7 @@ describe('TableSessionProvider in the app: the campaign context scopes it', () =
   it('reads the table only after the server confirms the campaign, and goes idle when it is cleared', async () => {
     const { calls, live } = await inApp('dm')
     expect(calls).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns/cmp_A/table-session'])
-    expect(live.table.liveSession).toEqual({ sessionId: 'tss_1', campaignId: 'cmp_A', revealEpoch: 3, audioEpoch: 2 })
+    expect(live.table.liveSession).toEqual({ sessionId: 'tss_1', campaignId: 'cmp_A', revealEpoch: 3, audioEpoch: 2, audioEnabled: false })
     await act(async () => {
       await expect(live.campaign.clearCampaign()).resolves.toBe('switched')
     })

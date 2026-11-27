@@ -484,7 +484,7 @@ def archive_step_one(
     """Its own transaction, which NEVER calls `lock_campaign` and is never
     refused on state: the campaign with its owner in the statement, then — if
     it is not archived yet — narrow its live session (the session row, the
-    reveal epoch, every slot, as `campaign_archived`, stamped with the request's
+    reveal and audio epochs, every slot, as `campaign_archived`, stamped with the request's
     clock). Committed before step 2 asks for the lock."""
     with db.transaction() as unit:
         campaign = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
@@ -495,7 +495,7 @@ def archive_step_one(
         live = stores.sessions.live_session_for_campaign(unit, campaign_id)
         if live is not None:
             stores.sessions.narrow(
-                unit, campaign_id, live.id, clears=EverySlot(EndReason.CAMPAIGN_ARCHIVED), now=now
+                unit, campaign_id, live.id, clears=EverySlot(EndReason.CAMPAIGN_ARCHIVED), audio=True, now=now
             )
 
 
@@ -524,7 +524,7 @@ def archive_step_two(
             live = stores.sessions.live_session_for_campaign(unit, campaign_id)
             if live is not None:
                 stores.sessions.narrow(
-                    unit, campaign_id, live.id, clears=EverySlot(EndReason.CAMPAIGN_ARCHIVED), now=now
+                    unit, campaign_id, live.id, clears=EverySlot(EndReason.CAMPAIGN_ARCHIVED), audio=True, now=now
                 )
             stores.campaigns.set_archived(unit, campaign_id, owner_id=owner_id, archived=True, now=now)
             revision = unit.advance_authz_revision(campaign_id)

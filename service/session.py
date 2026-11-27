@@ -10,7 +10,8 @@ test without HTTP; the endpoints that set/read the cookie are Checkpoint C.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
@@ -25,6 +26,7 @@ _SESSION_SALT = "gga-session-v1"
 class SessionData:
     user_id: int
     role: Role
+    expires_at: datetime | None = field(default=None, compare=False, repr=False)
 
 
 def _serializer(secret: str) -> URLSafeTimedSerializer:
@@ -42,10 +44,13 @@ def decode_session(token: str, secret: str, max_age_seconds: int) -> SessionData
     payload — is a plain None (the caller treats that as "no session" → 401).
     `SignatureExpired` is a subclass of `BadSignature`, so one except covers both."""
     try:
-        payload = _serializer(secret).loads(token, max_age=max_age_seconds)
+        payload, issued_at = _serializer(secret).loads(token, max_age=max_age_seconds, return_timestamp=True)
     except BadSignature:
         return None
     try:
-        return SessionData(user_id=int(payload["uid"]), role=payload["role"])
+        return SessionData(
+            user_id=int(payload["uid"]), role=payload["role"],
+            expires_at=issued_at + timedelta(seconds=max_age_seconds),
+        )
     except (KeyError, TypeError, ValueError):
         return None

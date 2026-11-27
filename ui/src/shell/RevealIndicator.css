@@ -99,7 +99,7 @@
   overflow-y: auto;
   list-style: none;
   border: 1px solid var(--md-sys-color-outline-variant);
-  border-radius: var(--aether-radius-button);
+  border-radius: var(--aether-radius-card);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface);
   box-shadow: var(--md-sys-elevation-level3);

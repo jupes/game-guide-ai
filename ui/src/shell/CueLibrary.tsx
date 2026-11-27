@@ -7,7 +7,8 @@ import {
   CONTRACT_VERSION, CUE_TITLE_MAX_CHARS, CueListQuerySchema, SEARCH_MAX_CHARS, SEARCH_MIN_CHARS, codePointLength, trimWire,
   type Cue, type CueKind, type CuePage,
 } from '../gm/contracts'
-import { CueApiError, deleteCue, discardCueUpload, listCues, updateCue, uploadCue, type CueUploadIntent } from '../gm/cueApi'
+import { CueApiError, LiveCueArchiveError, deleteCue, discardCueUpload, listCues, updateCue, uploadCue, type CueUploadIntent } from '../gm/cueApi'
+import { LibraryDialog } from './LibraryDialog'
 import { PasswordDeleteDialog, type DeleteOutcome } from './LibraryDialogs'
 import { mintCommandId } from './tableSessionApi'
 import { LIBRARY_PAGE_SIZE, SEARCH_DEBOUNCE_MS } from './useLibraryList'
@@ -121,6 +122,7 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce, onAttach }: 
   const [editError, setEditError] = React.useState('')
   const [undoCue, setUndoCue] = React.useState<Cue | null>(null)
   const [deleteTarget, setDeleteTarget] = React.useState<Cue | null>(null)
+  const [liveArchive, setLiveArchive] = React.useState<Cue | null>(null)
   const requestScope = React.useRef<AbortController | null>(null)
   const panelRef = React.useRef<HTMLDivElement>(null)
   const uploadButton = React.useRef<HTMLButtonElement>(null)
@@ -172,12 +174,13 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce, onAttach }: 
     }
   }
 
-  async function change(cue: Cue, action: { title: string } | 'archive' | 'restore'): Promise<void> {
+  async function change(cue: Cue, action: { title: string } | 'archive' | 'restore', confirmStop = false): Promise<void> {
     if (saving) return
     setSaving(true)
     setEditError('')
     try {
-      const saved = await updateCue(cue, action, fetchImpl)
+      const saved = await updateCue(cue, action, fetchImpl, confirmStop)
+      setLiveArchive(null)
       if (typeof action === 'string') setExpanded(null)
       if (action === 'archive') setUndoCue(saved)
       if (action === 'restore') setUndoCue((previous) => previous?.cue_id === saved.cue_id ? null : previous)
@@ -186,7 +189,8 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce, onAttach }: 
       refresh()
       announce(typeof action === 'string' ? `${saved.title} ${action === 'archive' ? 'archived' : 'restored'}` : 'Cue renamed')
     } catch (reason) {
-      setEditError(reason instanceof CueApiError ? reason.message : "Couldn't save the change.")
+      if (reason instanceof LiveCueArchiveError) setLiveArchive(cue)
+      else setEditError(reason instanceof CueApiError ? reason.message : "Couldn't save the change.")
     } finally {
       setSaving(false)
     }
@@ -261,7 +265,13 @@ export function CueLibrary({ campaign, fetchImpl = fetch, announce, onAttach }: 
           <Button variant="text" disabled={saving} onClick={() => void change(undoCue, 'restore')}>Undo</Button>
         </div>
       )}
-      {editError && <p role="alert">{editError}</p>}
+      {liveArchive && <LibraryDialog heading={`Archive ${liveArchive.title}?`}
+        body="This cue is playing at the table. Archiving it will stop playback for everyone."
+        confirmLabel="Stop and archive" cancelLabel="Cancel" initialFocus="cancel" busy={saving}
+        onConfirm={() => void change(liveArchive, 'archive', true)} onCancel={() => { setLiveArchive(null); setEditError('') }}>
+        {editError && <p role="alert">{editError}</p>}
+      </LibraryDialog>}
+      {!liveArchive && editError && <p role="alert">{editError}</p>}
       {!query.success ? <p>{LIBRARY_COPY.searchInvalid}</p> : active === null ? <p>Loading cues…</p> : active.page === null ? (
         <p>Couldn't load cues. <Button variant="text" onClick={refresh}>Retry</Button></p>
       ) : active.page.items.length === 0 ? (

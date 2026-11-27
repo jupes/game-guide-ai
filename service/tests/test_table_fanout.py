@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import psycopg
@@ -11,10 +12,11 @@ import pytest
 
 from service import table_fanout, table_streams
 from service.table_admission import StreamLease
+from service.table_audio_projection import opening_audio, table_audio_frames
 from service.table_fanout import TableFanout, _Viewer
 from service.table_reads import TableStreamWatch, _frames
 from service.table_streams import TableStreams
-from service.workbench_contracts import TableSlot, TableSlotName
+from service.workbench_contracts import AudioSlot, TableAudioEvent, TableSlot, TableSlotName
 
 WATCH = TableStreamWatch("cmp_test", "ses_test", 1, account_id=1)
 
@@ -35,6 +37,58 @@ def test_a_gap_or_stop_behind_buffered_content_drops_the_queue() -> None:
         viewer.queue.get_nowait()
     viewer.apply(_snapshot(4), 2)
     assert viewer.queue.qsize() == 1 and viewer.queue.get_nowait().event == "reconnect"
+
+
+def _with_audio(*frames):
+    return _frames(False, True, [TableSlot(slot=TableSlotName.TABLE, seq=0, content=None)], frames)
+
+
+def test_audio_slots_advance_independently_and_stale_buffered_plays_cannot_escape() -> None:
+    viewer = _Viewer(WATCH)
+    viewer.apply(_with_audio(), 0)
+    opening = [viewer.queue.get_nowait() for _ in range(viewer.queue.qsize())]
+    assert [f.event for f in opening] == ["session", "snapshot", "audio", "audio", "ready"]
+    assert [(f.slot, f.seq, f.playing) for f in opening if isinstance(f, TableAudioEvent)] == [
+        (AudioSlot.AMBIENCE, 0, None), (AudioSlot.ONE_SHOT, 0, None),
+    ]
+    now = datetime.now(UTC)
+    ambience, shot = table_audio_frames([
+        ("ambience", 1, "audio/mpeg", "a" * 32, now, True, 5000),
+        ("one_shot", 1, "audio/mpeg", "b" * 32, now, False, 5000),
+    ], now)
+    viewer.apply(_with_audio(ambience), 1)
+    assert viewer.queue.get_nowait() == ambience
+    viewer.apply(_with_audio(ambience), 2)
+    assert viewer.queue.empty()
+    viewer.apply(_with_audio(ambience, shot), 3)
+    stopped = shot.model_copy(update={"seq": 2, "playing": None})
+    viewer.apply(_with_audio(ambience, stopped), 4)
+    assert viewer.queue.qsize() == 1 and viewer.queue.get_nowait().event == "reconnect"
+
+    viewer = _Viewer(WATCH)
+    viewer.apply(_with_audio(ambience), 0)
+    while not viewer.queue.empty():
+        viewer.queue.get_nowait()
+    viewer.apply(_with_audio(ambience, stopped), 1)
+    assert viewer.queue.qsize() == 1 and viewer.queue.get_nowait().event == "reconnect"
+
+
+def test_one_shot_reconnect_boundary_and_natural_expiry_preserve_the_sequence() -> None:
+    now = datetime.now(UTC)
+    started = now - timedelta(seconds=6)
+    rows = [("one_shot", 3, "audio/mpeg", "a" * 32, started, False, 5000)]
+    [active] = table_audio_frames(rows, started)
+    assert active.playing is not None
+    assert opening_audio(active, started + timedelta(seconds=4)) == active
+    assert opening_audio(active, started + timedelta(milliseconds=4001)).playing is None
+    [expired] = table_audio_frames(rows, now)
+    assert expired.seq == active.seq and expired.playing is None
+    viewer = _Viewer(WATCH)
+    viewer.apply(_with_audio(active), 0)
+    opening = [viewer.queue.get_nowait() for _ in range(viewer.queue.qsize())]
+    assert expired in opening
+    viewer.apply(_with_audio(expired), 1)
+    assert viewer.queue.empty() and not viewer.closed
 
 
 @asynccontextmanager
@@ -99,6 +153,34 @@ def test_planned_reconnect_and_shutdown_do_not_leave_workers_running() -> None:
         await fanout.close()
         received = [frame async for frame in fanout.stream(WATCH)]
         assert len(received) == 1 and received[0].startswith(b"event: reconnect")
+
+    asyncio.run(scenario())
+
+
+def test_replacement_subscription_keeps_the_shared_listener_after_the_first_closes() -> None:
+    async def scenario():
+        pending = asyncio.Queue()
+        received = asyncio.Queue()
+
+        @asynccontextmanager
+        async def listen():
+            async def notices():
+                while True:
+                    yield await pending.get()
+            yield notices()
+
+        def notified(channel, value):
+            received.put_nowait((channel, value))
+
+        fanout = TableFanout(None, listen)
+        async with AsyncExitStack() as initial, AsyncExitStack() as replacement:
+            await initial.enter_async_context(fanout.subscribe(notified))
+            await replacement.enter_async_context(fanout.subscribe(notified))
+            await initial.aclose()
+            pending.put_nowait(("table_session", "ses_current"))
+            assert await asyncio.wait_for(received.get(), 1) == ("table_session", "ses_current")
+            assert fanout.listening and received.empty()
+        assert not fanout.listening
 
     asyncio.run(scenario())
 

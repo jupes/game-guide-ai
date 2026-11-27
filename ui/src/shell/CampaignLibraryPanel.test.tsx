@@ -79,6 +79,16 @@ const many = (count: number): LibraryRow[] =>
   Array.from({ length: count }, (_, index) => ({ id: `doc_${index + 1}`, type: 'npc', title: `Npc ${index + 1}` }))
 
 describe('the tabs (LIB-5, WAI-ARIA tabs)', () => {
+  it('recovers the Cues controls after a temporary capability outage', async () => {
+    const capability = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValue(new Response(null, { status: 204 }))
+    await mountPanel(libraryRoute(ROWS))
+    expect(screen.queryByRole('tab', { name: 'Cues' })).toBeNull()
+    act(() => { window.dispatchEvent(new Event('online')) })
+    expect(await screen.findByRole('tab', { name: 'Cues' })).toBeVisible()
+    expect(capability.mock.calls.filter(([url]) => String(url).endsWith('/cues/capability'))).toHaveLength(2)
+  })
   it('has four tabs and no Cues, the first selected, and a tabpanel named by the selected tab', async () => {
     await mountPanel(libraryRoute(ROWS))
     const tabs = within(screen.getByRole('tablist', { name: 'Library categories' })).getAllByRole('tab')

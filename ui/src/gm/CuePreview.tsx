@@ -6,10 +6,14 @@ import { clampPositionMs } from './audioHelpers'
 import type { Cue } from './contracts'
 import { previewPeaks } from './cueApi'
 import { assetPath } from './documentFields'
+import { useCuePlayback } from '../shell/cuePlayback'
+import { useTableSession } from '../shell/tableSession'
 
 let activePreview: HTMLAudioElement | null = null
 
 export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fetch }): React.JSX.Element {
+  const { playback, frames, connected, pendingPlay, pendingStops, failedPlay } = useCuePlayback()
+  const audioEnabled = useTableSession().liveSession?.audioEnabled === true
   const [media, setMedia] = React.useState<HTMLAudioElement | null>(null)
   const audioRef = React.useRef<HTMLAudioElement | null>(null)
   const linkMedia = React.useCallback((node: HTMLAudioElement | null) => {
@@ -26,6 +30,8 @@ export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fet
   const [peaks, setPeaks] = React.useState<readonly number[]>()
   const seekOnLoad = React.useRef(0)
   const previewGain = usePreviewGain({ media, volume, muted })
+  const live = frames.some((frame) => frame.playing?.cue_id === cue.cue_id)
+  const controls = !cue.archived && playback !== null
 
   React.useEffect(() => {
     const abort = new AbortController()
@@ -98,6 +104,14 @@ export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fet
         cue={cue}
         preview={{ playing, positionMs, muted, volume, blocked }}
         previewGain={previewGain}
+        live={live}
+        tableHearing={playing && !live ? frames.flatMap(({ playing: heard }) => heard ? [heard.title] : []).join(', ') : null}
+        connection={controls && !connected ? 'reconnecting' : 'connected'}
+        pushDisabled={!audioEnabled || pendingPlay || pendingStops > 0}
+        pushFailed={failedPlay?.cue_id === cue.cue_id}
+        onPlayToTable={controls ? () => void playback.play(cue.cue_id, loop) : undefined}
+        onRetryPush={controls ? () => void playback.play(cue.cue_id, loop, true) : undefined}
+        onStop={controls ? () => void playback.stop(cue.cue_id) : undefined}
         loop={loop}
         peaks={peaks}
         onPreviewToggle={toggle}

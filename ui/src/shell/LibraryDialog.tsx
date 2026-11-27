@@ -20,6 +20,7 @@
 
 import * as React from 'react'
 import { wrapTab } from './focusTrap'
+import { DialogTableStop } from './DialogTableStop'
 import './LibraryDialog.css'
 
 export interface LibraryDialogProps {
@@ -86,6 +87,7 @@ export function LibraryDialog({
         className="library-dialog"
         onKeyDown={handleKeyDown}
       >
+        <DialogTableStop />
         <form
           className="library-dialog__form"
           noValidate

@@ -121,6 +121,33 @@ def test_healthz_ready_is_a_json_boolean():
         app.dependency_overrides.clear()
 
 
+def test_healthz_includes_gm_only_activity_and_listener_outage(monkeypatch):
+    from unittest.mock import Mock
+
+    from service import app as appmod
+    from service.gm_stream_reads import GmWatch
+    from service.gm_streams import GmStreams, _Viewer
+    from service.table_streams import TableStreams
+
+    fanout = Mock(stream_count=0, listening=False)
+    table = TableStreams(Mock(), fanout)
+    gm = GmStreams(Mock(), Mock(), table)
+    viewer = _Viewer(GmWatch("private-campaign", 42))
+    gm._viewers.add(viewer)
+    monkeypatch.setitem(appmod._state, "table_streams", table)
+    monkeypatch.setitem(appmod._state, "gm_streams", gm)
+    client = TestClient(app)
+    expected = {"listener": "reconnecting", "streams": 0, "cap": 16, "gm_streams": 1, "gm_cap": 4,
+                "total_streams": 1, "total_cap": 20}
+    assert client.get("/healthz").json()["realtime"] == expected
+    fanout.listening = True
+    assert client.get("/healthz").json()["realtime"] == {**expected, "listener": "listening"}
+    viewer.closed = True
+    fanout.listening = False
+    assert client.get("/healthz").json()["realtime"] == {**expected, "listener": "idle", "gm_streams": 0,
+                                                         "total_streams": 0}
+
+
 def test_get_models_returns_default_and_enabled_catalog():
     # b8o.1 (Checkpoint 1): only the read surface exists yet — no request
     # actually uses model_preference until b8o.2.
