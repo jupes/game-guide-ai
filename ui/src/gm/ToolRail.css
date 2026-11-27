@@ -3,11 +3,12 @@
 
    Wide:   one row with the `/ for all tools` hint.
    Medium: one row; the hint hides below 900px.
-   Narrow: one line that scrolls sideways under edge fades, More pinned right,
-           no hint.
+   When the composer is narrow (including beside Canvas), pins scroll on one
+   line, More stays pinned on the right, and the hint is hidden.
    ─────────────────────────────────────────────────────────────────────────── */
 
 .gm-tool-rail {
+  container: gm-tool-rail / inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--aether-space-2);
@@ -28,6 +29,8 @@
   gap: 7px;
   flex: 1;
   min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .gm-tool-rail__tool {
@@ -66,6 +69,11 @@
 .gm-tool-rail__notice-action:focus-visible {
   outline: 3px solid var(--md-sys-color-secondary);
   outline-offset: 2px;
+}
+
+/* Keep the pin's focus ring inside the scrollport. */
+.gm-tool-rail__tool:focus-visible {
+  outline-offset: -4px;
 }
 
 .gm-tool-rail__icon {
@@ -119,19 +127,16 @@
   }
 }
 
-/* §10.2 — narrow: one sideways-scrolling line under edge fades, More pinned. */
-@media (max-width: 767px) {
-  .gm-tool-rail__tools {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
+/* §10.2 — use the compact presentation in a narrow composer at any viewport width. */
+@container gm-tool-rail (width < 600px) {
+  .gm-tool-rail__hint {
+    display: none;
+  }
+
+  .gm-tool-rail__tools:not(:focus-within) {
     /* The edge fades. Only the ALPHA of these stops is used — a mask paints no
        colour — so this is not a palette value and needs no token. */
     mask-image: linear-gradient(to right, transparent 0, black 12px, black calc(100% - 12px), transparent 100%);
-  }
-
-  .gm-tool-rail__tools::-webkit-scrollbar {
-    display: none;
   }
 }
 

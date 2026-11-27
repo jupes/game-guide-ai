@@ -23,7 +23,11 @@ const meta = {
 export default meta
 type Story = StoryObj<typeof meta>
 
-export const Playground: Story = {}
+export const Playground: Story = {
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText('/ for all tools')).toBeVisible()
+  },
+}
 
 /** RAIL-1: a tap arms the composer. There is no prop that could run anything. */
 export const TapArms: Story = {

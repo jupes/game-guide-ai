@@ -59,10 +59,6 @@ describe('§10.2: the rail on medium and narrow layouts', () => {
     expect(css('ToolRail.css')).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.gm-tool-rail__hint\s*\{[\s\S]*?display: none/)
   })
 
-  it('makes the rail one sideways-scrolling line below 768px, with More outside it', () => {
-    expect(css('ToolRail.css')).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.gm-tool-rail__tools\s*\{[\s\S]*?overflow-x: auto/)
-  })
-
   it('makes Customise rail a full-screen sheet below 768px', () => {
     expect(css('CustomiseRailDialog.css')).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.gm-customise\s*\{[\s\S]*?height: 100dvh/)
   })
