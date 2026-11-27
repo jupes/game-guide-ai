@@ -59,6 +59,7 @@ import * as React from 'react'
 import { CanvasHost } from '../gm/CanvasHost'
 import { RevealSheetHost } from '../gm/RevealSheetHost'
 import { AppHeader } from './AppHeader'
+import { DialogTableStop } from './DialogTableStop'
 import { CuePlaybackProvider, LiveCueControls } from './cuePlayback'
 import { useShellLayout, type ShellLayout } from './breakpoints'
 import { canvasShown, CanvasProvider, useCanvasActions, useCanvasState, useWorkbenchActive } from './canvasContext'
@@ -382,6 +383,7 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
                   close
                 </span>
               </button>
+              <DialogTableStop />
             </div>
           )}
           <LeftNav

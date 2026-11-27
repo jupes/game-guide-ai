@@ -1,0 +1,23 @@
+/* The header contains the pointer action. This copy belongs to the focus trap
+   and becomes visible as soon as a keyboard user reaches it. */
+.dialog-table-stop {
+  position: absolute;
+  z-index: calc(var(--aether-z-overlay) + 1);
+  min-height: var(--aether-touch-min);
+  padding: var(--aether-space-2) var(--aether-space-3);
+  border: 1px solid var(--md-sys-color-error);
+  border-radius: var(--aether-radius-button);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-error);
+  font: inherit;
+}
+
+.dialog-table-stop:not(:focus) {
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

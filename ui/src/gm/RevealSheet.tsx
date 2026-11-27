@@ -24,6 +24,7 @@
 import * as React from 'react'
 import { Switch } from '../ds/Switch'
 import { FOCUSABLE_SELECTOR, wrapTab } from '../shell/focusTrap'
+import { DialogTableStop } from '../shell/DialogTableStop'
 import type { Seat } from './contracts'
 import { REVEAL_COPY } from './revealCopy'
 import { tickedKeys, type DraftAudience, type RevealEffect, type RevealRow } from './revealFields'
@@ -178,6 +179,7 @@ export function RevealSheet(props: RevealSheetProps): React.JSX.Element {
         <h2 id={headingId} ref={headingRef} className="gm-reveal__heading" tabIndex={-1}>
           {heading}
         </h2>
+        <DialogTableStop />
         {/* Mounted empty with the dialog, filled later: a live region that appears with its text is not reliably announced. */}
         <p role="status" className="gm-reveal__sr">
           {props.liveMessage}

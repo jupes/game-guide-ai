@@ -21,6 +21,7 @@
 import * as React from 'react'
 import { useCanvasActions, useCanvasState } from './canvasContext'
 import { wrapTab } from './focusTrap'
+import { DialogTableStop } from './DialogTableStop'
 import { WORKBENCH_COPY } from './workbenchCopy'
 import './LossGuardDialog.css'
 
@@ -82,6 +83,7 @@ export function LossGuardDialog({
         className="loss-guard"
         onKeyDown={handleKeyDown}
       >
+        <DialogTableStop />
         <h2 id={headingId} className="loss-guard__heading">
           {WORKBENCH_COPY.guardHeading(title)}
         </h2>
