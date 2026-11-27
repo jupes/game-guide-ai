@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts.ci.pr_job_scope import classify_changes, scope_at_merge
+from scripts.ci.pr_review_tags import check
 from scripts.ci.pr_size import added_lines, report_size
 
 
@@ -114,3 +115,39 @@ def test_pr_size_counts_the_proposed_additions_without_tests_or_pure_moves(tmp_p
 def test_pr_size_enforces_thresholds(lines, release_train, status, annotation, capsys):
     assert report_size(lines, release_train=release_train) == status
     assert capsys.readouterr().out.startswith(annotation or "This pull request")
+
+
+@pytest.mark.parametrize("forbidden", [False, True])
+def test_pr_review_tags_checks_only_new_production_lines(tmp_path: Path, capsys, forbidden: bool) -> None:
+    _git(tmp_path, "init", "-b", "trunk")
+    service = tmp_path / "service"
+    service.mkdir()
+    (service / "legacy.py").write_text("# critic item 42\n\nVALUE = 2\n", encoding="utf-8")
+    config = tmp_path / "config.py"
+    config.write_text("# PR #456 review\n\nVALUE = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "Base")
+    _git(tmp_path, "switch", "-c", "proposal")
+    _git(tmp_path, "mv", "service/legacy.py", "service/renamed.py")
+    with config.open("a", encoding="utf-8") as file:
+        file.write("# release review S4\n" if forbidden else "# SEC-43\n")
+    ui = tmp_path / "ui" / "src"
+    ui.mkdir(parents=True)
+    (ui / "result.ts").write_text(
+        'const result = 2 // agent-forge-harness-example\n'
+        + ('const history = "PR #123 review"\n' if forbidden else ""),
+        encoding="utf-8",
+    )
+    (ui / "result.test.ts").write_text("// release review S4\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "Proposal")
+    _git(tmp_path, "switch", "trunk")
+    _git(tmp_path, "merge", "--no-ff", "-m", "Test merge", "proposal")
+
+    assert check(tmp_path) == int(forbidden)
+    output = capsys.readouterr().out
+    assert "::warning file=ui/src/result.ts,line=1::" in output
+    assert ("::error file=ui/src/result.ts,line=2::" in output) is forbidden
+    assert ("::error file=config.py,line=4::" in output) is forbidden
+    assert "renamed.py" not in output
+    assert "result.test.ts" not in output
