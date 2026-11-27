@@ -26,6 +26,7 @@ import {
   expectWorkspaceFits,
   type ViewportName,
 } from '../../.storybook/viewports'
+import { TOOL_IDS } from '../gm/contracts'
 import { DOCUMENT_FIXTURES } from '../gm/documentFixtures'
 import { CampaignProvider } from './campaignContext'
 import { WorkspaceShell } from './WorkspaceShell'
@@ -138,6 +139,9 @@ function workbenchApi({ turns = 40, chatMs = 0, toolLink = false }: ApiOptions =
     // 1kg.7.3: the reveal surface at rest, so the header reads GM ONLY and no state of its own is drawn.
     if (url === `/campaigns/${CAMPAIGN_ID}/reveals`) return json({ schema_version: 1, state: null })
     if (url === `/campaigns/${CAMPAIGN_ID}/table-session`) return json({ schema_version: 1, session: null })
+    if (url === `/campaigns/${CAMPAIGN_ID}/tool-availability`) {
+      return json(Object.fromEntries(TOOL_IDS.map((id) => [id, null])))
+    }
     if (url === `/campaigns/${CAMPAIGN_ID}`) return json(CAMPAIGN)
     if (url === `/campaigns/${CAMPAIGN_ID}/documents/${DOC_ID}`) return json(DOCUMENT)
     if (url.startsWith(`/campaigns/${CAMPAIGN_ID}/documents/${DOC_ID}/versions`)) return json(HISTORY)
@@ -185,6 +189,32 @@ function box(canvasElement: HTMLElement, selector: string): DOMRect {
 }
 
 const near = (actual: number, expected: number, slack = 1): boolean => Math.abs(actual - expected) <= slack
+
+async function expectCompactToolRail(canvas: ReturnType<typeof within>): Promise<void> {
+  const group = canvas.getByRole('group', { name: 'GM tools' })
+  const rail = within(group)
+  const firstPin = await rail.findByRole('button', { name: 'NPC' })
+  const lastPin = rail.getByRole('button', { name: 'Rules' })
+  const more = rail.getByRole('button', { name: 'More' })
+  const pins = firstPin.parentElement!
+
+  await expect(rail.getByText('/ for all tools')).not.toBeVisible()
+  await expect(getComputedStyle(pins).overflowX).toBe('auto')
+  await expect(pins.scrollWidth).toBeGreaterThan(pins.clientWidth)
+  await expect(pins.getBoundingClientRect().right).toBeLessThan(more.getBoundingClientRect().left)
+  await expect(more.getBoundingClientRect().right).toBeLessThanOrEqual(group.getBoundingClientRect().right)
+
+  firstPin.focus()
+  await tabTo(lastPin, 4)
+  // Scroll offsets may round fractional CSS pixels.
+  await expect(lastPin.getBoundingClientRect().right).toBeLessThanOrEqual(pins.getBoundingClientRect().right + 1)
+  await userEvent.tab()
+  await expect(more).toHaveFocus()
+  await userEvent.keyboard('{Enter}')
+  await expect(rail.getByRole('menu', { name: 'More tools' })).toBeVisible()
+  await userEvent.keyboard('{Escape}')
+  await expect(more).toHaveFocus()
+}
 
 async function openCanvas(canvasElement: HTMLElement): Promise<ReturnType<typeof within>> {
   const canvas = within(canvasElement)
@@ -234,6 +264,7 @@ export const Wide1280Canvas: Story = {
     await expect(column.width).toBeGreaterThan(600)
     await expect(canvas.queryByRole('group', { name: 'Workbench view' })).toBeNull()
     await expectComposerOnScreen(canvasElement)
+    await expectCompactToolRail(canvas)
     await expectNoPageOverflow()
     await expectTouchTargets(canvas, ['Open navigation', 'Close canvas'])
   },
@@ -332,6 +363,7 @@ export const Phone375Chat: Story = {
     const chat = box(canvasElement, '.workbench__chat')
     await expect(chat.width).toBe(375)
     await expectComposerOnScreen(canvasElement)
+    await expectCompactToolRail(canvas)
     await expectNoPageOverflow()
   },
 }

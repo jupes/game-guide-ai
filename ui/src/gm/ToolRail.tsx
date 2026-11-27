@@ -96,8 +96,7 @@ export function ToolRail({
       )}
 
       <div className="gm-tool-rail__row">
-        {/* One line that scrolls sideways on narrow, with More pinned outside
-            it at the right (§10.2) — so the overflow is never scrolled away. */}
+        {/* More stays outside the scrollable pins, within reach at any composer width (§10.2). */}
         <div className="gm-tool-rail__tools">
           {pinned.map((tool) => {
             const state = availability[tool.id]
@@ -112,6 +111,15 @@ export function ToolRail({
                 aria-disabled={disabled || undefined}
                 aria-describedby={reasonId}
                 data-touch-target="true"
+                onFocus={(event) => {
+                  const pin = event.currentTarget
+                  const scroller = pin.parentElement
+                  if (!pin.matches(':focus-visible') || scroller === null) return
+                  const bounds = scroller.getBoundingClientRect()
+                  const button = pin.getBoundingClientRect()
+                  if (button.left < bounds.left) scroller.scrollLeft -= bounds.left - button.left
+                  else if (button.right > bounds.right) scroller.scrollLeft += button.right - bounds.right
+                }}
                 onClick={() => {
                   if (!disabled) onArm(tool)
                 }}
