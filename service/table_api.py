@@ -77,7 +77,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -96,6 +96,7 @@ from . import ratelimit
 from .auth_store import AuthStore
 from .campaign_store import MissingParent, ScreenLimit
 from .session import SessionData
+from .stream_response import leased_body
 from .table_admission import TableFull
 from .table_reads import TableReads
 from .table_session_store import LiveScreen
@@ -478,14 +479,13 @@ def build_router(
 
     if table_streams is not None:
 
-        @router.get("/table/stream")
-        async def stream(
+        async def open_stream(
             request: Request,
             campaign_id: str | None = None,
             principal: Principal = Depends(table_principal),
             streams: TableStreams | None = Depends(table_streams),
             now: datetime = Depends(get_clock),
-        ) -> StreamingResponse:
+        ) -> AsyncGenerator[AsyncGenerator[bytes]]:
             if campaign_id is None or not ident.is_id(ident.CAMPAIGN, campaign_id):
                 inactive()
             _spend_read(principal)
@@ -511,10 +511,17 @@ def build_router(
                 if lease is None:
                     _throttle(request)
                     inactive()
-                return StreamingResponse(
-                    streams.bytes(lease), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"},
-                )
+                async with leased_body(
+                    streams.bytes(lease), lambda: streams.admission.release(lease),
+                    release_warning="table_stream_release_failed",
+                ) as events:
+                    yield events
+                return
             raise failure
+
+        @router.get("/table/stream")
+        async def stream(body: AsyncGenerator[bytes] = Depends(open_stream)) -> StreamingResponse:
+            return StreamingResponse(body, media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
 
     return router
 
