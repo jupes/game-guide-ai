@@ -1,7 +1,7 @@
 """The GM tools whose result is a new document (agent-forge-harness-1kg.4.4).
 
-`npc` and `encounter` today; `recap` follows in the bead's second PR. Each is a
-`tool_invocations.ToolExecutor`, so everything around it — admission, the
+`npc`, `encounter`, and `recap` each implement `tool_invocations.ToolExecutor`,
+so everything around them — admission, the
 guards, the ledger's operation, the fence, retries, cancel and expiry — is
 1kg.4.1's, and the generation itself is 1kg.5.4's `document_generation`.
 **No SQL, no client construction, no route** lives here.
@@ -65,12 +65,14 @@ from .document_generation import (
     InvalidGeneration,
     InvalidOutput,
     Provenance,
+    ThreadTurn,
     attempts_that_fit,
     disclosure_prose,
     generate_document,
     persist_generated,
 )
 from .document_store import DocumentStore, PostgresDocumentStore
+from .recap_window import RecapBoundary, RecapWindow, fit_request, has_recap_turns, read_recap_window
 from .timeline_store import PostgresTimelineStore, TimelineStore
 from .tool_invocations import (
     ExecutionContext,
@@ -103,6 +105,12 @@ LEAD_SENTENCES: Mapping[ToolId, str] = MappingProxyType({
     ToolId.NPC: "Here's your NPC, saved to the campaign.",
     ToolId.ENCOUNTER: "Here's your encounter, saved to the campaign.",
 })
+RECAP_SENTENCES: Mapping[RecapBoundary, str] = MappingProxyType({
+    RecapBoundary.SESSION_SO_FAR: "Recap of this session so far.",
+    RecapBoundary.LAST_SESSION: "Recap of the last session.",
+    RecapBoundary.WHOLE_THREAD: "Recap of this thread from its start.",
+})
+DOCUMENT_TOOLS: Final = (*LEAD_SENTENCES, ToolId.RECAP)
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,7 @@ class _Carried:
     """What `run` hands `finish`: the validated document, never logged."""
 
     generated: GeneratedDocument = field(repr=False)
+    recap: RecapWindow | None = field(default=None, repr=False)
 
 
 class _ContextGone(RuntimeError):
@@ -133,10 +142,18 @@ class _ContextGone(RuntimeError):
     `run`: stored as `backend_unavailable`, and nothing is spent."""
 
 
-def result_prose(tool_id: ToolId, provenance: Provenance) -> str:
+def result_prose(tool_id: ToolId, provenance: Provenance, recap: RecapWindow | None = None) -> str:
     """The result's prose: the tool's lead sentence, then the closed disclosure
     of what the document rests on. Never model text (I-10)."""
-    return f"{LEAD_SENTENCES[tool_id]}\n\n{disclosure_prose(provenance)}"
+    if recap is None:
+        lead = LEAD_SENTENCES[tool_id]
+    elif recap.boundary is RecapBoundary.RECENT_TURNS:
+        count = len(recap.turns)
+        unit = "turn" if count == 1 else "turns"
+        lead = f"Recap of the latest {count} {unit} of this thread. Anything earlier was left out."
+    else:
+        lead = RECAP_SENTENCES[recap.boundary]
+    return f"{lead}\n\n{disclosure_prose(provenance)}"
 
 
 class DocumentToolExecutor:
@@ -148,7 +165,7 @@ class DocumentToolExecutor:
         this module composes its result sentence."""
         doc_type = TOOL_CREATES_DOC_TYPE.get(tool_id)
         spec = None if doc_type is None else GENERATION_SPECS.get(doc_type)
-        if spec is None or spec.tool is not tool_id or tool_id not in LEAD_SENTENCES:
+        if spec is None or spec.tool is not tool_id or tool_id not in DOCUMENT_TOOLS:
             raise ValueError("that tool does not create a document here")
         self._tool_id = tool_id
         self._spec: GenerationSpec = spec
@@ -169,24 +186,34 @@ class DocumentToolExecutor:
         `persist_generated` write carries no quota of its own (its locks are
         not ours to reorder), so the account is soft-checked here instead.
         The overshoot this admits is bounded by `IN_FLIGHT_CAP` (2) times one
-        generated document, about 12 KB or less. Otherwise nothing: the brief
-        is required, and T1 has already checked the campaign and the thread
-        with their owner."""
+        generated document, about 12 KB or less. Recap also needs at least one
+        turn in the admitted conversation's bounded window."""
         stored = self._stores.documents.stored_bytes(unit, target.owner_id)
         if stored >= config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX:
             return ErrorCode.ACCOUNT_LIMIT_REACHED
+        if self._tool_id is ToolId.RECAP and not has_recap_turns(
+            self._stores.timeline, unit, target.conversation_id, owner_id=target.owner_id,
+        ):
+            return ErrorCode.NOTHING_TO_RECAP
         return None
 
     def run(self, ctx: ExecutionContext) -> DocumentResult:
         """Read, check for a cancel, generate, carry. Writes nothing."""
-        campaign = ctx.read(lambda unit: self._campaign_facts(unit, ctx.target))
-        request = GenerationRequest(
-            doc_type=self._spec.doc_type, brief=ctx.target.brief, campaign=campaign, thread=(), preset={},
-        )
+        campaign, recap = ctx.read(lambda unit: self._context(unit, ctx.target))
+
+        def request_for(turns: tuple[ThreadTurn, ...]) -> GenerationRequest:
+            return GenerationRequest(
+                doc_type=self._spec.doc_type, brief=ctx.target.brief, campaign=campaign, thread=turns,
+            )
+
+        if recap is None:
+            request = request_for(())
+        else:
+            recap, request = fit_request(recap, request_for)
         ctx.check_cancelled()
         generated = self._generated(ctx, request)
         with self._lock:
-            self._carried[ctx] = _Carried(generated)
+            self._carried[ctx] = _Carried(generated, recap)
         return DocumentResult(
             tool_id=self._tool_id, result_kind="document", prose="", suggestions=[],
             document=DocumentLink(
@@ -212,7 +239,7 @@ class DocumentToolExecutor:
         record = persist_generated(unit, self._stores.documents, ctx.target.campaign_id, generated, now=ctx.now())
         finished = DocumentResult(
             tool_id=self._tool_id, result_kind="document",
-            prose=result_prose(self._tool_id, generated.provenance), suggestions=[],
+            prose=result_prose(self._tool_id, generated.provenance, carried.recap), suggestions=[],
             document=DocumentLink(
                 document_id=record.id, type=self._spec.doc_type, title=generated.data["name"],
                 library_category=DOC_TYPE_LIBRARY_CATEGORY[self._spec.doc_type],
@@ -227,11 +254,17 @@ class DocumentToolExecutor:
 
     # ── Steps ────────────────────────────────────────────────────────────────
 
-    def _campaign_facts(self, unit: UnitOfWork, target: InvocationTarget) -> CampaignFacts:
+    def _context(self, unit: UnitOfWork, target: InvocationTarget) -> tuple[CampaignFacts, RecapWindow | None]:
         campaign = self._stores.campaigns.get(unit, target.campaign_id, owner_id=target.owner_id)
         if campaign is None:
             raise _ContextGone()
-        return CampaignFacts(name=campaign.name, tone=campaign.tone)
+        facts = CampaignFacts(name=campaign.name, tone=campaign.tone)
+        if self._tool_id is not ToolId.RECAP:
+            return facts, None
+        linked = self._stores.conversations.campaign_for_owner(unit, target.conversation_id, owner_id=target.owner_id)
+        if linked != target.campaign_id:
+            raise _ContextGone()
+        return facts, read_recap_window(self._stores.timeline, unit, target.conversation_id, owner_id=target.owner_id)
 
     def _generated(self, ctx: ExecutionContext, request: GenerationRequest) -> GeneratedDocument:
         """`generate_document`, its two expected refusals translated for the
@@ -259,4 +292,4 @@ class DocumentToolExecutor:
 
 def document_executors(stores: DocumentToolStores) -> dict[ToolId, ToolExecutor]:
     """Every document tool this module runs, keyed by tool."""
-    return {tool: DocumentToolExecutor(tool, stores) for tool in LEAD_SENTENCES}
+    return {tool: DocumentToolExecutor(tool, stores) for tool in DOCUMENT_TOOLS}

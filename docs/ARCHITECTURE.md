@@ -1562,10 +1562,9 @@ for. No answer, entry or log line of these routes names a model or a provider
 ### Document tools (1kg.4.4)
 
 `service/document_tools.py` is the executor of every tool whose result is a new
-document: `npc` and `encounter` today (`recap` follows with its session
-window). It holds no SQL, builds no client and adds no route; the generation is
-`document_generation`'s (1kg.5.4) and everything around the attempt is the
-invocation service's.
+document: `npc`, `encounter`, and `recap`. It uses the existing stores and
+provider client. `document_generation` generates the document and the invocation
+service manages the attempt.
 
 - **`run` reads once, then spends.** The campaign's name and tone are read
   through `ExecutionContext.read` — one short transaction of its own, closed
@@ -1576,6 +1575,14 @@ invocation service's.
   data block. `run` writes nothing: it returns a placeholder result
   (`doc_pending`) and carries the validated document to `finish`, keyed by the
   context object itself (weakly, under a lock).
+- **`recap` reads the admitted thread.** The executor re-checks its owner and
+  campaign before reading up to four timeline pages. It starts after the latest
+  Start, or uses the last finished session and excludes prep after End. A thread
+  with no known divider uses its own history. The window retains up to 200 turns,
+  trims each to 4,000 characters plus an ellipsis, and drops oldest turns to fit
+  the generation context. The result names the boundary and the number of turns
+  kept when a window limit cuts the history. An empty window refuses admission
+  before generation. A successful recap is saved as a `session-notes` document.
 - **`finish` creates the document inside the fenced T2.** Sealed version 1 by
   `assistant`, with the admission's campaign and the route's clock, in the same
   transaction that settles the invocation and rewrites its timeline entry. So
