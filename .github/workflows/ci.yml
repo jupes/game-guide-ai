@@ -25,10 +25,8 @@ on:
   push:
     branches: [master]
   pull_request:
-    # INTEGRATION BRANCH ONLY - this line never reaches master. The stacked
-    # Workbench branches are merged into integration/1kg-workbench so that work
-    # built on them gets this pipeline, PostgreSQL job included, from a pull
-    # request into that branch. A pull request never deploys (see `deploy`).
+    # Test PRs targeting master and integration branches, including the
+    # PostgreSQL job. See the deploy job for the master-only release trigger.
     branches: [master, "integration/**"]
   workflow_dispatch:
     inputs:

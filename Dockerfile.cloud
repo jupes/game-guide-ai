@@ -9,7 +9,7 @@
 #   docker run --rm -p 8080:8000 -e DATABASE_URL=... -e OPENAI_API_KEY=... gga-cloud
 
 # ---- stage 1: build the React UI (bun) ----
-FROM oven/bun:1 AS ui-builder
+FROM oven/bun:1@sha256:3aa040e5445efa09d75bb428a64ba50db13e2b3ac9b6b0c7f145615f62b2ee18 AS ui-builder
 WORKDIR /ui
 # Deps first for layer caching (pattern from ui/Dockerfile).
 COPY ui/package.json ui/bun.lock ./
@@ -18,7 +18,7 @@ COPY ui/ ./
 RUN bun run build          # → /ui/dist
 
 # ---- stage 2: FastAPI service with the UI baked in (slim python) ----
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 WORKDIR /app
 
 # Install the game-guide-ai package (service + ingestion). Dependencies come from

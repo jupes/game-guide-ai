@@ -99,6 +99,12 @@ def test_cloud_image_builds_ui_and_copies_dist_without_rerank() -> None:
 # ── Reproducible dependency resolution ───────────────────────────────────────
 
 
+def test_cloud_image_pins_every_base_image_digest() -> None:
+    bases = re.findall(r"(?im)^FROM\s+(\S+)", _read(DOCKERFILE_CLOUD))
+    assert bases, "Dockerfile.cloud must declare base images"
+    assert all(re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image) for image in bases)
+
+
 def test_the_lockfile_is_committed_and_reachable_by_the_build() -> None:
     """Without a committed lock, CI and the production image re-resolve every
     transitive dependency on each build — so the artifact that passed review is
