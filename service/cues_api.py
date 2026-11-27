@@ -26,7 +26,6 @@ from .timeline_store import new_entry_id, validated_entry
 from .workbench_api import (
     SessionDependency,
     body_reader,
-    narrowing_throttle,
     not_found,
     reads_by_post,
     workbench_router,
@@ -365,7 +364,8 @@ def build_router(
 ) -> APIRouter:
     router = workbench_router(gm)
     router.route_class = media_route(enabled)
-    narrowing = workbench_router(gm, throttle=narrowing_throttle)
+    # SEC-35: audio Stop must always be available, including when other write budgets are exhausted.
+    narrowing = workbench_router(gm, throttle=None)
     narrowing.route_class = media_route(enabled)
     User = Annotated[SessionData, Depends(gm)]
     DB = Annotated[TransactionalDatabase | None, Depends(database)]

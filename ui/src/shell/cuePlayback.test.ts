@@ -4,38 +4,149 @@ import { CueStopCourier } from './cueStopCourier'
 import { SESSION_REFRESH_EVENT } from './tableSession'
 
 const session = 'tss_Test'
-function state(epoch: number, seq = 0, title?: string) {
+function audioFrames(epoch: number, seq = 0, title?: string) {
   const playing = title ? { cue_id: 'cue_Rain', title, started_at: '2026-11-27T19:00:00Z', start_offset_ms: 0, duration_ms: 20000, loop: true } : null
-  return Response.json(['ambience', 'one_shot'].map((slot) => ({
+  return ['ambience', 'one_shot'].map((slot) => ({
     schema_version: 1, event: 'audio', session_id: session, gen: 1, audio_epoch: epoch,
     slot, seq: slot === 'ambience' ? seq : 0, playing: slot === 'ambience' ? playing : null,
-  })))
+  }))
 }
 
-function fixture(courier = new CueStopCourier(), account = 'gm') {
+const state = (epoch: number, seq = 0, title?: string) => Response.json(audioFrames(epoch, seq, title))
+function sessionFrame(epoch: number) {
+  return { schema_version: 1, event: 'session', session: {
+    schema_version: 1, session_id: session, campaign_id: 'cmp_A', state: 'live', gen: 1,
+    reveal_epoch: 0, audio_epoch: epoch, audio: true, screens: [],
+    started_at: '2026-11-27T19:00:00Z', ends_at: '2026-11-27T23:00:00Z', ended_at: null,
+  } }
+}
+const reveal = { schema_version: 1, event: 'snapshot', state: {
+  session_id: session, gen: 1, reveal_epoch: 0, slots: [{ slot: { kind: 'table' }, seq: 0, live: null }],
+} }
+const ready = { schema_version: 1, event: 'ready' }
+
+function streamed() {
+  let writer!: ReadableStreamDefaultController<Uint8Array>
+  const paths: string[] = []
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { writer = controller } })
+  const fetchImpl: typeof fetch = async (input) => {
+    const path = String(input)
+    paths.push(path)
+    if (!path.endsWith('/stream')) return state(4, 3)
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
+  }
+  const store = new CuePlayback('cmp_A', session, fetchImpl)
+  const dispose = store.start()
+  const send = (...frames: { event: string }[]) => {
+    for (const frame of frames) writer.enqueue(new TextEncoder().encode(`event: ${frame.event}\ndata: ${JSON.stringify(frame)}\n\n`))
+  }
+  return { store, dispose, paths, send }
+}
+async function fixture(courier = new CueStopCourier(), account = 'gm') {
   const requests: { path: string; body?: string; finish: (response: Response) => void }[] = []
-  const fetchImpl: typeof fetch = (input, init) => new Promise((finish) => {
-    requests.push({ path: String(input), body: init?.body as string | undefined, finish })
-  })
+  const fetchImpl: typeof fetch = (input, init) => {
+    if (String(input).endsWith('/stream')) return Promise.resolve(new Response(null, { status: 503 }))
+    return new Promise((finish) => requests.push({ path: String(input), body: init?.body as string | undefined, finish }))
+  }
   const store = new CuePlayback('cmp_A', session, fetchImpl, account, courier)
   const dispose = store.start()
+  await vi.waitFor(() => expect(requests).toHaveLength(1))
   return { store, requests, dispose }
 }
 
 afterEach(() => vi.useRealTimers())
 
 describe('GM table cue commands', () => {
+  it('applies only complete ready snapshots and ordered live pairs, then recovers a sequence gap', async () => {
+    vi.useFakeTimers()
+    const { store, dispose, paths, send } = streamed()
+    try {
+      send(sessionFrame(1), reveal, ...audioFrames(1))
+      await vi.advanceTimersByTimeAsync(1)
+      expect(store.snapshot()).toMatchObject({ connected: false, frames: [] })
+      send(ready)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(store.snapshot().frames[0].audio_epoch).toBe(1)
+      const pair = audioFrames(2, 1, 'Rain')
+      send(sessionFrame(2), pair[0])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(store.snapshot().frames[0].playing).toBeNull()
+      send(pair[1])
+      await vi.advanceTimersByTimeAsync(1)
+      expect(store.snapshot().frames[0].playing?.title).toBe('Rain')
+      expect(paths).toEqual(['/campaigns/cmp_A/stream'])
+      send(sessionFrame(3), ...audioFrames(3, 3, 'Skipped state'))
+      await vi.advanceTimersByTimeAsync(1)
+      expect(paths.at(-1)).toBe('/campaigns/cmp_A/sessions/tss_Test/audio')
+      expect(store.snapshot().frames[0]).toMatchObject({ audio_epoch: 4, playing: null })
+    } finally { dispose() }
+  })
+
+  it('recovers a silent stream through the snapshot and retries the stream', async () => {
+    vi.useFakeTimers()
+    const { store, dispose, paths, send } = streamed()
+    try {
+      send(sessionFrame(1), reveal, ...audioFrames(1), ready)
+      await vi.advanceTimersByTimeAsync(10_001)
+      expect(store.snapshot().frames[0].audio_epoch).toBe(4)
+      expect(paths.filter((p) => p.endsWith('/stream'))).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1250)
+      expect(paths.filter((p) => p.endsWith('/stream')).length).toBeGreaterThan(1)
+    } finally { dispose() }
+  })
+
+  it.each(['generation', 'epoch', 'slot'] as const)('refuses an opening snapshot with a mixed %s', async (problem) => {
+    vi.useFakeTimers()
+    const { store, dispose, paths, send } = streamed()
+    try {
+      const frames = audioFrames(1, 1, 'Wrong scope')
+      if (problem === 'generation') frames[1].gen = 2
+      if (problem === 'epoch') frames[1].audio_epoch = 2
+      if (problem === 'slot') frames[1].slot = 'ambience'
+      const seen: string[] = []
+      store.subscribe(() => { for (const frame of store.snapshot().frames) if (frame.playing) seen.push(frame.playing.title) })
+      send(sessionFrame(1), reveal, ...frames, ready)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(seen).not.toContain('Wrong scope')
+      expect(paths.at(-1)).toMatch(/\/audio$/)
+      expect(store.snapshot().frames[0].audio_epoch).toBe(4)
+    } finally { dispose() }
+  })
+
+  it('honours the server retry delay and immediately resends the same Stop on an explicit press', async () => {
+    vi.useFakeTimers()
+    const { store, requests, dispose } = await fixture()
+    try {
+      const stopping = store.stop(null)
+      requests[1].finish(new Response(null, { status: 429, headers: { 'Retry-After': '12' } }))
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(requests.filter((r) => r.path.endsWith('/stop'))).toHaveLength(1)
+      const again = store.stop(null)
+      const stops = requests.filter((r) => r.path.endsWith('/stop'))
+      expect(stops).toHaveLength(2)
+      expect(stops[1].body).toBe(stops[0].body)
+      stops[1].finish(new Response(null, { status: 503, headers: { 'Retry-After': '12' } }))
+      await vi.advanceTimersByTimeAsync(11_999)
+      expect(requests.filter((r) => r.path.endsWith('/stop'))).toHaveLength(2)
+      await vi.advanceTimersByTimeAsync(2)
+      const last = requests.filter((r) => r.path.endsWith('/stop')).at(-1)!
+      expect(last).not.toBe(stops[1])
+      expect(last.body).toBe(stops[0].body)
+      last.finish(state(4))
+      await Promise.all([stopping, again])
+    } finally { dispose() }
+  })
   it('finishes the original Stop after navigation and blocks widening when the GM returns', async () => {
     vi.useFakeTimers()
     const courier = new CueStopCourier()
-    const first = fixture(courier)
+    const first = await fixture(courier)
     first.requests[0].finish(state(1, 1, 'Rain'))
     await vi.advanceTimersByTimeAsync(1)
     const stopped = first.store.stop(null)
     first.requests[1].finish(new Response(null, { status: 503 }))
     await vi.advanceTimersByTimeAsync(1)
     first.dispose()
-    const reopened = fixture(courier)
+    const reopened = await fixture(courier)
     try {
       reopened.requests[0].finish(state(1, 1, 'Rain'))
       await vi.advanceTimersByTimeAsync(1)
@@ -48,6 +159,7 @@ describe('GM table cue commands', () => {
       await stopped
       expect(reopened.store.snapshot().pendingStops).toBe(0)
       expect(reopened.store.snapshot().connected).toBe(false)
+      await vi.waitFor(() => expect(reopened.requests).toHaveLength(2))
       reopened.requests[1].finish(state(2, 2))
       await vi.advanceTimersByTimeAsync(1)
       expect(reopened.store.snapshot().frames[0]).toMatchObject({ audio_epoch: 2, playing: null })
@@ -58,7 +170,7 @@ describe('GM table cue commands', () => {
   it('cancels detached retries when the signed-in account changes', async () => {
     vi.useFakeTimers()
     const courier = new CueStopCourier()
-    const first = fixture(courier)
+    const first = await fixture(courier)
     const stopping = first.store.stop(null)
     first.requests[1].finish(new Response(null, { status: 503 }))
     await vi.advanceTimersByTimeAsync(1)
@@ -71,7 +183,7 @@ describe('GM table cue commands', () => {
 
   it('refreshes on return to a hidden tab and asks for the current session after a definitive refusal', async () => {
     vi.useFakeTimers()
-    const { store, requests, dispose } = fixture()
+    const { store, requests, dispose } = await fixture()
     const refresh = vi.fn()
     window.addEventListener(SESSION_REFRESH_EVENT, refresh)
     const hidden = vi.spyOn(document, 'hidden', 'get')
@@ -85,6 +197,7 @@ describe('GM table cue commands', () => {
       expect(requests).toHaveLength(1)
       hidden.mockReturnValue(false)
       document.dispatchEvent(new Event('visibilitychange'))
+      await vi.waitFor(() => expect(requests).toHaveLength(2))
       requests[1].finish(new Response(null, { status: 404 }))
       await vi.advanceTimersByTimeAsync(1)
       expect(refresh).toHaveBeenCalledTimes(1)
@@ -96,7 +209,7 @@ describe('GM table cue commands', () => {
     }
   })
   it('keeps a Stop above a late Play response and clears state when the scope closes', async () => {
-    const { store, requests, dispose } = fixture()
+    const { store, requests, dispose } = await fixture()
     try {
       requests[0].finish(state(1))
       await vi.waitFor(() => expect(store.snapshot().connected).toBe(true))
@@ -115,7 +228,7 @@ describe('GM table cue commands', () => {
 
   it('retries an uncertain Stop with the same id and bars Play until it is acknowledged', async () => {
     vi.useFakeTimers()
-    const { store, requests, dispose } = fixture()
+    const { store, requests, dispose } = await fixture()
     try {
       requests[0].finish(state(2, 1, 'Rain'))
       await vi.advanceTimersByTimeAsync(1)
@@ -132,7 +245,7 @@ describe('GM table cue commands', () => {
   })
 
   it('reuses an uncertain Play on manual retry and refreshes a stale epoch without replaying', async () => {
-    const { store, requests, dispose } = fixture()
+    const { store, requests, dispose } = await fixture()
     try {
       requests[0].finish(state(1))
       await vi.waitFor(() => expect(store.snapshot().connected).toBe(true))

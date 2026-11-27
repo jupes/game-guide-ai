@@ -1290,10 +1290,19 @@ against the cue's kind (AUDIO-3). `CueStopRequest` names a cue, or `null` for
 Stop all (AUDIO-9), and carries no epoch, because a Stop is never stale (X-3).
 
 The GM reads both slots with `GET /campaigns/{campaign_id}/sessions/{session_id}/audio`.
-Under the same path, `POST /play` accepts a `CuePlayRequest` and `POST /stop` accepts
+When `WORKBENCH_TABLE_STREAMS_ENABLED` is on, the GM subscribes to
+`GET /campaigns/{campaign_id}/stream`. Its opening `GmSnapshot` is also available
+from `GET /campaigns/{campaign_id}/snapshot`. A live opening includes the
+session, the reveal picture, both audio slots, and `ready`. A GM client waits
+for `ready` before displaying the opening picture. It applies subsequent audio
+pairs together and requests fresh state after a gap or prolonged silence.
+If streaming is unavailable, the GM controls reconcile against the session's
+audio read while retrying the stream. Only the campaign owner can read GM
+frames. Player and screen clients use `/table/stream`.
+Under the GM session's `/audio` path, `POST /play` accepts a `CuePlayRequest` and `POST /stop` accepts
 a `CueStopRequest`. All three return two `GmAudioEvent` records in order, ambience
-first and one-shot second. A stale play returns `409`. A stop uses the separate
-narrowing-write budget, so a GM who has reached the regular write limit can still silence the table.
+first and one-shot second. A stale play returns `409`. Audio Stop bypasses both the
+ordinary write and reveal Stop budgets, so a GM can always silence the table (SEC-35).
 On a phone, the workspace's single **Stop all** sends both the reveal Stop and the
 audio Stop immediately. Each command keeps its own ID until acknowledged. The
 expanded list also offers a Stop for an individual cue or revealed document.

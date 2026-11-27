@@ -358,10 +358,14 @@ def test_live_cue_controls_and_archive_confirmation(
         assert all(frame["playing"] is None for frame in silent)
         assert silent[1]["seq"] == heard.json()[1]["seq"] + 1
 
-        # Spend the ordinary budget completely. A previously unused Stop still succeeds.
+        # SEC-35: exhaust both the ordinary write and the separate reveal Stop budgets.
         monkeypatch.setattr(ratelimit, "workbench_write_limiter", ratelimit.SlidingWindowLimiter(1, 3600))
         client.post(f"{audio}/play", json=play)
         assert client.post(f"{audio}/play", json=play).status_code == 429
+        monkeypatch.setattr(ratelimit, "reveal_stop_limiter", ratelimit.SlidingWindowLimiter(1, 3600))
+        ratelimit.check_reveal_stop(owner)
+        with pytest.raises(ratelimit.RateLimited):
+            ratelimit.check_reveal_stop(owner)
         stopped = client.post(f"{audio}/stop", json=stop)
         assert stopped.status_code == 200, stopped.text
         assert client.post(f"{audio}/stop", json=stop).json() == stopped.json()

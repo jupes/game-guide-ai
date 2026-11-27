@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -153,6 +153,34 @@ def test_planned_reconnect_and_shutdown_do_not_leave_workers_running() -> None:
         await fanout.close()
         received = [frame async for frame in fanout.stream(WATCH)]
         assert len(received) == 1 and received[0].startswith(b"event: reconnect")
+
+    asyncio.run(scenario())
+
+
+def test_replacement_subscription_keeps_the_shared_listener_after_the_first_closes() -> None:
+    async def scenario():
+        pending = asyncio.Queue()
+        received = asyncio.Queue()
+
+        @asynccontextmanager
+        async def listen():
+            async def notices():
+                while True:
+                    yield await pending.get()
+            yield notices()
+
+        def notified(channel, value):
+            received.put_nowait((channel, value))
+
+        fanout = TableFanout(None, listen)
+        async with AsyncExitStack() as initial, AsyncExitStack() as replacement:
+            await initial.enter_async_context(fanout.subscribe(notified))
+            await replacement.enter_async_context(fanout.subscribe(notified))
+            await initial.aclose()
+            pending.put_nowait(("table_session", "ses_current"))
+            assert await asyncio.wait_for(received.get(), 1) == ("table_session", "ses_current")
+            assert fanout.listening and received.empty()
+        assert not fanout.listening
 
     asyncio.run(scenario())
 

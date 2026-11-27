@@ -129,6 +129,8 @@ class AdvisoryLock(IntEnum):
     #: happens, because no path that holds this lock ever admits a tool
     #: attempt.
     ACCOUNT_STORAGE = 5
+    #: Serializes selection of one of the four reserved GM stream permits (RT-8).
+    GM_STREAM = 6
 
 
 def advisory_key(key: str) -> int:

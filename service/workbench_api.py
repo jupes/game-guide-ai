@@ -432,7 +432,7 @@ def workbench_router(
     prefix: str = "",
     dependencies: Sequence[params.Depends] = (),
     content_types: Sequence[str] = ("application/json",),
-    throttle: Callable[[SessionDependency], Callable[..., None]] = write_throttle,
+    throttle: Callable[[SessionDependency], Callable[..., None]] | None = write_throttle,
 ) -> APIRouter:
     """The router every Workbench GM route is declared on. `throttle` builds the
     router's last dependency; a narrowing (a reveal Stop) passes
@@ -449,7 +449,10 @@ def workbench_router(
     return APIRouter(
         prefix=prefix,
         route_class=WorkbenchRoute,
-        dependencies=[*dependencies, Depends(origin_check(content_types)), Depends(gm), Depends(throttle(gm))],
+        dependencies=[
+            *dependencies, Depends(origin_check(content_types)), Depends(gm),
+            *([Depends(throttle(gm))] if throttle is not None else []),
+        ],
     )
 
 

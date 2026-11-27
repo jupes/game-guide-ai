@@ -1,7 +1,7 @@
 import { CONTRACT_VERSION, type CueStopRequest } from '../gm/contracts'
-import { Emitter, mintCommandId } from './tableSessionApi'
+import { Emitter, MAX_TIMER_MS, mintCommandId } from './tableSessionApi'
 
-type Send = (body: CueStopRequest, signal: AbortSignal) => Promise<number>
+type Send = (body: CueStopRequest, signal: AbortSignal) => Promise<Response>
 type Outcome = 'acknowledged' | 'gone' | 'failed'
 interface Job {
   account: string
@@ -11,6 +11,16 @@ interface Job {
   settle: (value: Outcome) => void
   timer?: ReturnType<typeof setTimeout>
   attempt: () => void
+}
+
+async function retryAfter(response: Response): Promise<number> {
+  const header = response.headers.get('Retry-After')?.trim()
+  if (header && /^\d+$/.test(header)) return Number(header) * 1000
+  if (header && Number.isFinite(Date.parse(header))) return Math.max(0, Date.parse(header) - Date.now())
+  if (response.status !== 429) return 0
+  const details = await response.json().catch(() => null)
+  const seconds = details?.detail?.retry_after_s
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0
 }
 
 /** A Stop belongs to the account and session where it was pressed, even after navigation. */
@@ -50,13 +60,16 @@ export class CueStopCourier extends Emitter {
     const attempt = async () => {
       clearTimeout(job.timer)
       job.timer = undefined
-      const status = await send(body, controller.signal).catch(() => 0)
+      const response = await send(body, controller.signal).catch(() => null)
+      const status = response?.status ?? 0
       if (controller.signal.aborted) return
       if ((status >= 200 && status < 300) || (status >= 400 && status < 500 && status !== 408 && status !== 429)) {
         this.jobs.delete(key)
         settle(status < 300 ? 'acknowledged' : status === 404 || status === 401 ? 'gone' : 'failed')
       } else {
-        job.timer = setTimeout(job.attempt, delay)
+        const asked = response ? await retryAfter(response) : 0
+        if (controller.signal.aborted) return
+        job.timer = setTimeout(job.attempt, Math.min(MAX_TIMER_MS, Math.max(delay, asked)))
         delay = Math.min(delay * 2, 5000)
       }
       this.emit()

@@ -1,17 +1,17 @@
 import { createContext, useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 import { notifyUnauthorized } from '../api'
-import { CONTRACT_VERSION, GmEventSchema, type CuePlayRequest, type CueStopRequest, type GmEvent } from '../gm/contracts'
+import { CONTRACT_VERSION, type CuePlayRequest, type CueStopRequest } from '../gm/contracts'
 import { AudioLiveStrip } from '../gm/AudioLiveStrip'
 import { useCampaign } from './campaignContext'
 import { CueStopCourier, cueStops } from './cueStopCourier'
+import { audioPair, streamCueState, type AudioFrame } from './cueStream'
 import { CurrentUserContext } from './currentUser'
 import { useLibraryPanel } from './libraryPanel'
 import { SESSION_REFRESH_EVENT, useTableSession } from './tableSession'
 import { mintCommandId } from './tableSessionApi'
 
-type Frame = Extract<GmEvent, { event: 'audio' }>
 interface State {
-  frames: readonly Frame[]
+  frames: readonly AudioFrame[]
   connected: boolean
   pendingPlay: boolean
   pendingStops: number
@@ -19,7 +19,7 @@ interface State {
   stopError: string | null
 }
 const EMPTY: State = { frames: [], connected: false, pendingPlay: false, pendingStops: 0, failedPlay: null, stopError: null }
-const POLL_MS = 2000
+const POLL_MS = 5000
 
 // eslint-disable-next-line react-refresh/only-export-components -- separately exercised command and ordering state
 export class CuePlayback {
@@ -31,6 +31,7 @@ export class CuePlayback {
   private stopRevision = 0
   private timer?: ReturnType<typeof setTimeout>
   private readonly path: string
+  private readonly campaign: string
   private readonly session: string
   private readonly fetchImpl: typeof fetch
   private readonly account: string
@@ -39,6 +40,7 @@ export class CuePlayback {
   constructor(campaign: string, session: string, fetchImpl: typeof fetch = fetch,
     account = '', courier = new CueStopCourier()) {
     this.session = session
+    this.campaign = campaign
     this.fetchImpl = fetchImpl
     this.account = account
     this.courier = courier
@@ -69,18 +71,44 @@ export class CuePlayback {
       }
     }
     let reading: AbortController | null = null
-    const poll = async () => {
+    let failures = 0
+    let retryAt = 0
+    const read = async () => {
       const request = new AbortController()
       reading = request
+      if (Date.now() >= retryAt) {
+        const initialRead = ++this.nextRead
+        const result = await streamCueState(this.campaign, this.session, this.fetchImpl, request.signal, (pair, initial) => {
+          failures = 0
+          this.accept(pair, initial ? initialRead : ++this.nextRead)
+        })
+        if (request.signal.aborted) return
+        this.patch({ connected: false })
+        if (result === 'signed-out' || result === 'gone') {
+          this.latestRead = ++this.nextRead
+          this.patch({ frames: [] })
+          if (result === 'signed-out') notifyUnauthorized()
+          else window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
+          return
+        }
+        if (result === 'reconnect') {
+          this.timer = setTimeout(() => void read(), 0)
+          return
+        }
+        const wait = Math.min(30_000, 1000 * 2 ** Math.min(failures++, 5))
+        const backoff = Math.min(30_000, wait * (0.75 + Math.random() * 0.5))
+        retryAt = Date.now() + Math.max(backoff, typeof result === 'object' ? result.retryAfterMs : 0)
+      }
       try { await this.send('', undefined, request.signal) }
       catch { if (!request.signal.aborted) this.patch({ connected: false }) }
-      if (!request.signal.aborted) this.timer = setTimeout(() => void poll(), POLL_MS)
+      if (!request.signal.aborted) this.timer = setTimeout(() => void read(), Math.min(POLL_MS, Math.max(0, retryAt - Date.now())))
     }
     const refresh = () => {
       reading?.abort()
       clearTimeout(this.timer)
       this.patch({ connected: false })
-      if (!document.hidden && navigator.onLine) void poll()
+      retryAt = failures = 0
+      if (!document.hidden && navigator.onLine) void read()
     }
     const unsubscribe = this.courier.subscribe(syncStops)
     syncStops()
@@ -101,7 +129,7 @@ export class CuePlayback {
     }
   }
 
-  private async send(action: string, body: CuePlayRequest | CueStopRequest | undefined, signal: AbortSignal): Promise<number> {
+  private async send(action: string, body: CuePlayRequest | CueStopRequest | undefined, signal: AbortSignal): Promise<Response> {
     const read = ++this.nextRead
     const fetchImpl = this.fetchImpl
     const reply = await fetchImpl(this.path + action, {
@@ -111,7 +139,7 @@ export class CuePlayback {
     })
     signal.throwIfAborted()
     if (reply.status === 401) notifyUnauthorized()
-    if (!this.controller) return reply.status
+    if (!this.controller) return reply
     if (!reply.ok) {
       if (read >= this.latestRead) {
         if (reply.status === 401 || reply.status === 403 || reply.status === 404) {
@@ -120,29 +148,30 @@ export class CuePlayback {
           if (!action && reply.status === 404) window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
         } else if (!action) this.patch({ connected: false })
       }
-      return reply.status
+      return reply
     }
     const raw: unknown = await reply.json()
     signal.throwIfAborted()
-    if (!this.controller) return reply.status
-    if (!Array.isArray(raw) || raw.length !== 2) throw new Error('Invalid audio state')
-    const frames = raw.map((item): Frame => {
-      const frame = GmEventSchema.parse(item)
-      if (frame.event !== 'audio' || frame.session_id !== this.session) throw new Error('Invalid audio frame')
-      return frame
-    })
-    if (frames[0].slot !== 'ambience' || frames[1].slot !== 'one_shot' ||
-      frames[0].gen !== frames[1].gen || frames[0].audio_epoch !== frames[1].audio_epoch) throw new Error('Mixed audio state')
+    if (this.controller) this.accept(audioPair(raw, this.session), read)
+    return reply
+  }
+
+  private accept(frames: AudioFrame[], read: number): void {
     const old = this.state.frames[0]
-    const newer = !old ? read >= this.latestRead : frames[0].gen > old.gen ||
-      (frames[0].gen === old.gen && (frames[0].audio_epoch > old.audio_epoch ||
-       (frames[0].audio_epoch === old.audio_epoch && frames.every((f, i) => f.seq >= this.state.frames[i].seq) &&
-        (read >= this.latestRead || frames.some((f, i) => f.seq > this.state.frames[i].seq)))))
-    if (newer) {
-      this.latestRead = Math.max(read, this.latestRead)
-      this.patch({ frames, connected: true })
+    const next = frames[0]
+    if (!old && read < this.latestRead) return
+    if (old && next.gen < old.gen) return
+    if (old && next.gen === old.gen) {
+      if (next.audio_epoch < old.audio_epoch) return
+      for (const [index, frame] of frames.entries()) {
+        const previous = this.state.frames[index]
+        if (frame.seq < previous.seq || (frame.seq === previous.seq && !previous.playing && frame.playing)) return
+      }
+      if (next.audio_epoch === old.audio_epoch && read < this.latestRead &&
+          frames.every((f, i) => f.seq === this.state.frames[i].seq)) return
     }
-    return reply.status
+    this.latestRead = Math.max(read, this.latestRead)
+    this.patch({ frames, connected: true })
   }
 
   async play(cueId: string, loop: boolean, retry = false): Promise<void> {
@@ -155,7 +184,7 @@ export class CuePlayback {
     const stops = this.stopRevision
     this.patch({ pendingPlay: true, failedPlay: null, stopError: null })
     try {
-      const status = await this.send('/play', body, signal)
+      const { status } = await this.send('/play', body, signal)
       if (status >= 400 && stops === this.stopRevision) {
         this.patch({ failedPlay: status === 409 ? null : body, stopError: status === 409 ? 'Table audio changed. Check the live cues before playing again.' : null })
         if (status === 409) await this.send('', undefined, signal)

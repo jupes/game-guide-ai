@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Sequence
 from datetime import datetime
+from typing import Any
 
 from .db import PgTransaction
 from .table_stream_events import SESSION_WAKEUP_CHANNEL
@@ -45,28 +47,37 @@ _LIVE_OWNER = """
 """
 _NOT_FINISHED = "(sl.loop OR sl.started_at + sl.duration_ms * interval '1 millisecond' > %s)"
 
+# Correlates against the authorized session and the snapshot clock. Used by
+# both the GM's control response and the batched, async GM stream projection.
+GM_AUDIO_ROWS = """
+    (SELECT jsonb_agg(jsonb_build_array(kinds.slot, COALESCE(sl.seq, 0), q.id, q.title,
+                                        sl.started_at, sl.loop, sl.duration_ms) ORDER BY kinds.slot)
+     FROM (VALUES ('ambience'), ('one_shot')) kinds(slot)
+     LEFT JOIN campaign.audio_slots sl ON sl.session_id = s.id AND sl.slot = kinds.slot
+     LEFT JOIN campaign.audio_cues q ON q.id = sl.cue_id AND q.campaign_id = s.campaign_id AND NOT q.archived
+        AND s.table_audio AND (sl.loop OR sl.started_at + sl.duration_ms * interval '1 millisecond' > clock.moment)
+        AND EXISTS (SELECT 1 FROM campaign.assets a WHERE a.id = q.asset_id AND a.campaign_id = q.campaign_id
+                    AND a.kind = 'audio' AND a.state = 'ready'))
+"""
+
 
 def read_state(
     transaction: PgTransaction, campaign_id: str, session_id: str, owner_id: int, now: datetime,
 ) -> tuple[GmAudioEvent, GmAudioEvent]:
     """A single MVCC snapshot, including sequence zero for never-used slots."""
-    rows = transaction.conn.execute(
-        f"""
-        SELECT s.link_generation, s.audio_epoch, kinds.slot, COALESCE(sl.seq, 0),
-               q.id, q.title, sl.started_at, sl.loop, sl.duration_ms
-        FROM campaign.table_sessions s
-        CROSS JOIN (VALUES ('ambience'), ('one_shot')) kinds(slot)
-        LEFT JOIN campaign.audio_slots sl ON sl.session_id = s.id AND sl.slot = kinds.slot
-        LEFT JOIN campaign.audio_cues q ON q.id = sl.cue_id AND q.campaign_id = s.campaign_id
-            AND NOT q.archived AND s.table_audio AND {_NOT_FINISHED}
-            AND EXISTS (SELECT 1 FROM campaign.assets a WHERE a.id = q.asset_id
-                        AND a.campaign_id = q.campaign_id AND a.kind = 'audio' AND a.state = 'ready')
-        {_LIVE_OWNER} AND s.id = %s ORDER BY kinds.slot
-        """,
+    row = transaction.conn.execute(
+        f"SELECT s.link_generation, s.audio_epoch, {GM_AUDIO_ROWS} FROM campaign.table_sessions s "
+        f"CROSS JOIN (VALUES (%s::timestamptz)) clock(moment) {_LIVE_OWNER} AND s.id = %s",
         (now, campaign_id, owner_id, now, session_id),
-    ).fetchall()
-    if not rows:
+    ).fetchone()
+    if row is None:
         raise NoSuchSession
+    return gm_audio_frames(session_id, row[0], row[1], row[2])
+
+
+def gm_audio_frames(
+    session_id: str, gen: int, epoch: int, rows: Sequence[Sequence[Any]],
+) -> tuple[GmAudioEvent, GmAudioEvent]:
     events = [
         GmAudioEvent(
             schema_version=1, event="audio", session_id=session_id, gen=gen, audio_epoch=epoch, slot=slot, seq=seq,
@@ -74,7 +85,7 @@ def read_state(
                 cue_id=cue, title=title, started_at=started, start_offset_ms=0, loop=loop, duration_ms=duration,
             ) if cue is not None else None,
         )
-        for gen, epoch, slot, seq, cue, title, started, loop, duration in rows
+        for slot, seq, cue, title, started, loop, duration in rows
     ]
     return events[0], events[1]
 

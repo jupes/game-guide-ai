@@ -107,7 +107,7 @@ from .campaign_store import (
 )
 from .db import AdvisoryLock, InMemoryDatabase, InMemoryTransaction, UnitOfWork
 from .reveal_scope import NARROWED, EndReason, EverySlot, SlotScope
-from .table_stream_events import CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
+from .table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 
 #: The three states of `campaign.table_sessions.state`, as 0004's CHECK has them.
 LIVE = "live"
@@ -538,6 +538,7 @@ class PostgresTableSessionStore:
             self._refuse_start(unit, campaign_id, owner_id, command_id)
         session = _session(row)
         unit.notify(SESSION_WAKEUP_CHANNEL, session.id)
+        unit.notify(CAMPAIGN_WAKEUP_CHANNEL, campaign_id)
         return session
 
     def _refuse_start(
@@ -1005,6 +1006,7 @@ class InMemoryTableSessionStore:
         )
         self._sessions.add(twin, session.id, session)
         unit.notify(SESSION_WAKEUP_CHANNEL, session.id)
+        unit.notify(CAMPAIGN_WAKEUP_CHANNEL, campaign_id)
         return session
 
     def get(self, unit: UnitOfWork, session_id: str) -> TableSession | None:

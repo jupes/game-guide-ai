@@ -162,6 +162,7 @@ class TableFanout:
         self._heartbeat_s = heartbeat_s
         self._lifetime_s = lifetime_s
         self._viewers: set[_Viewer] = set()
+        self._wake_subscribers: dict[object, Callable[[str, str], None]] = {}
         self._dirty: set[_Viewer] = set()
         self._wakeup = asyncio.Event()
         self._listener_ready = asyncio.Event()
@@ -172,6 +173,32 @@ class TableFanout:
     @property
     def stream_count(self) -> int:
         return sum(not viewer.closed for viewer in self._viewers)
+
+    def _start_workers(self) -> None:
+        if not self._workers:
+            self._listener_ready.clear()
+            self._workers = (asyncio.create_task(self._refresh()), asyncio.create_task(self._receive()))
+
+    @asynccontextmanager
+    async def subscribe(self, callback: Callable[[str, str], None]) -> AsyncIterator[None]:
+        """Share this instance's single content-free PG listener with the GM reader."""
+        if self._closed:
+            raise RuntimeError("the realtime listener is closed")
+        subscription = object()
+        self._wake_subscribers[subscription] = callback
+        self._start_workers()
+        try:
+            # Subscribe before the first private read. If LISTEN stalls the
+            # regular state poll still opens the stream within a bounded time.
+            try:
+                await asyncio.wait_for(self._listener_ready.wait(), min(self._poll_s, _POLL_S))
+            except TimeoutError:
+                pass
+            yield
+        finally:
+            del self._wake_subscribers[subscription]
+            if not self._viewers and not self._wake_subscribers:
+                await self._stop_workers()
 
     async def stream(self, watch: TableStreamWatch) -> AsyncGenerator[bytes]:
         """Yield one fresh snapshot and subsequent frames for the exact watch."""
@@ -184,9 +211,7 @@ class TableFanout:
         self._viewers.add(viewer)
         self._dirty.add(viewer)
         self._wakeup.set()
-        if not self._workers:
-            self._listener_ready.clear()
-            self._workers = (asyncio.create_task(self._refresh()), asyncio.create_task(self._receive()))
+        self._start_workers()
         try:
             while (remaining := expires - loop.time()) > 0:
                 try:
@@ -207,7 +232,7 @@ class TableFanout:
         finally:
             self._viewers.discard(viewer)
             self._dirty.discard(viewer)
-            if not self._viewers:
+            if not self._viewers and not self._wake_subscribers:
                 await self._stop_workers()
 
     async def close(self) -> None:
@@ -262,6 +287,8 @@ class TableFanout:
                     self.listening = True
                     self._listener_ready.set()
                     async for channel, payload in notices:
+                        for callback in self._wake_subscribers.values():
+                            callback(channel, payload)
                         for viewer in self._viewers:
                             watch = viewer.watch
                             expected = {

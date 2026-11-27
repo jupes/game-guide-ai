@@ -23,6 +23,8 @@ test('private preview stays local and the GM can stop live audio from another ch
   } }))
   await page.route('**/metrics/ui', (route) => route.fulfill({ status: 204 }))
   await installWorkbenchRoutes(page)
+  // A deployment with streaming disabled still serves the authenticated cue state and controls.
+  await page.route(`**${prefix}/stream`, (route) => route.fulfill({ status: 404, json: {} }))
   const revealWrites: Array<{ path: string; body: unknown }> = []
   const reveals = await installRevealRoutes(page, { bodies: revealWrites })
   reveals.confirm({ document_id: DOCUMENT_ID, version: 2, mask: ['name'] })
@@ -125,7 +127,11 @@ test('private preview stays local and the GM can stop live audio from another ch
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   await page.screenshot({ path: info.outputPath('phone-sage-live.png'), animations: 'disabled', scale: 'css' })
   await page.getByRole('button', { name: 'Open navigation' }).click()
-  await expect(page.getByRole('dialog', { name: 'Navigation' })).toBeVisible()
+  const drawer = page.getByRole('dialog', { name: 'Navigation' })
+  await expect(drawer).toBeVisible()
+  await drawer.getByRole('button', { name: 'Close navigation' }).focus()
+  await page.keyboard.press('Tab')
+  await expect(drawer.getByRole('button', { name: 'Stop all table sharing' })).toBeFocused()
   await stop.click()
   await expect(pill).toBeHidden()
   expect(commands).toEqual(['play', 'stop all', 'play', 'stop all'])

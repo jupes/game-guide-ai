@@ -60,7 +60,7 @@ import { CanvasHost } from '../gm/CanvasHost'
 import { RevealSheetHost } from '../gm/RevealSheetHost'
 import { AppHeader } from './AppHeader'
 import { DialogTableStop } from './DialogTableStop'
-import { CuePlaybackProvider, LiveCueControls } from './cuePlayback'
+import { CuePlaybackProvider } from './cuePlayback'
 import { useShellLayout, type ShellLayout } from './breakpoints'
 import { canvasShown, CanvasProvider, useCanvasActions, useCanvasState, useWorkbenchActive } from './canvasContext'
 import { CampaignLibraryPanel } from './CampaignLibraryPanel'
@@ -327,7 +327,6 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
           <TopBar navToggle={navToggle} />
         </div>
         <AppHeader showSettings={!settingsInDrawer} inert={drawerOpen || modal} compactLive={layout === 'narrow'} />
-        {layout !== 'narrow' && <LiveCueControls />}
         {workbench && (
           <div className="workspace-shell__chrome-part workspace-shell__session" inert={drawerOpen || modal}>
             <SessionControl />

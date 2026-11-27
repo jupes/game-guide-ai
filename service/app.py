@@ -48,6 +48,7 @@ from . import (
     document_lifecycle_api,
     documents_api,
     gcp_logging,
+    gm_stream_api,
     google_signin_api,
     groups_api,
     job_driver,
@@ -65,6 +66,7 @@ from .attachments import UnsupportedAttachmentError, cap_text, extract_text
 from .auth_store import AuthStore, EmailTaken, PostgresAuthStore, User
 from .db import Database, PoolSettings
 from .evidence import RetrievalStageError
+from .gm_streams import GmStreams, build_gm_streams
 from .hashing import (
     DUMMY_PASSWORD_HASH,
     HashingCapacityError,
@@ -411,7 +413,9 @@ def _build_stores(db: Database) -> None:
     # route reaches stored text (T-23), over the same rows.
     _state["table_reads"] = TableReads(db, reveal_rows, PostgresDocumentStore())
     if config.TABLE_STREAMS_ENABLED:
-        _state["table_streams"] = build_table_streams(db)
+        table_streams = build_table_streams(db)
+        _state["table_streams"] = table_streams
+        _state["gm_streams"] = build_gm_streams(db, table_streams)
     runner.register(EXPIRE_KIND, table_sessions.expire_handler())
     runner.register(
         DIVIDER_KIND, SessionDividers(db, sessions=sessions, store=PostgresSessionDividerStore()).handler()
@@ -509,6 +513,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        gm_streams = _state.get("gm_streams")
+        if gm_streams is not None:
+            await gm_streams.close()
         streams = _state.get("table_streams")
         if streams is not None:
             await streams.close()
@@ -716,7 +723,7 @@ def require_session(
     # it instead of repeating the identical query — a second round trip that was
     # also a second chance to fail, and did so as an unguarded 500.
     request.state.auth_user = user
-    return SessionData(user_id=user.id, role=user.role)
+    return SessionData(user_id=user.id, role=user.role, expires_at=session.expires_at)
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -1121,7 +1128,8 @@ def healthz() -> dict[str, object]:
     }
     streams = _state.get("table_streams")
     if streams is not None:
-        status["realtime"] = streams.health()
+        gm = _state.get("gm_streams")
+        status["realtime"] = streams.health(gm_count=gm.stream_count if gm is not None else None)
     return status
 
 
@@ -1907,6 +1915,12 @@ def get_table_streams() -> TableStreams | None:
     return _state.get("table_streams")
 
 
+def get_gm_streams() -> GmStreams | None:
+    if "gm_streams" not in _state:
+        recover_database()
+    return _state.get("gm_streams")
+
+
 def start_gate(caller: SessionData) -> None:
     """The one check point for starting a live table (1kg.2.3, L-19; owner
     decision D-3: running a live table is Paid, joining one is Free).
@@ -2020,6 +2034,8 @@ app.include_router(
 )
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
+if config.TABLE_STREAMS_ENABLED:
+    app.include_router(gm_stream_api.build_router(WORKBENCH_GM, get_gm_streams))
 app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
 app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
 app.include_router(

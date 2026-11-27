@@ -26,6 +26,7 @@ import { useCurrentUser } from './currentUser'
 import { ModelPicker } from './ModelPicker'
 import { modesForRole, accentClass } from './modes'
 import { RevealIndicator } from './RevealIndicator'
+import { LiveCueControls } from './cuePlayback'
 import './AppHeader.css'
 import './modeAccents.css'
 
@@ -67,7 +68,10 @@ export function AppHeader({ showSettings = true, inert = false, compactLive = fa
         </div>
       </div>
 
-      <RevealIndicator fallbackFocus={focusSelectedChannel} compactLive={compactLive} />
+      <div className="app-header__live">
+        <RevealIndicator fallbackFocus={focusSelectedChannel} compactLive={compactLive} />
+        {!compactLive && <LiveCueControls />}
+      </div>
 
       {showSettings && (
         <div className="app-header__controls" inert={inert}>

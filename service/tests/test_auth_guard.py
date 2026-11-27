@@ -240,6 +240,13 @@ PROTECTED_ROUTES: list[Route] = [
      None),
 ]
 
+if config.TABLE_STREAMS_ENABLED:
+    for resource in ("snapshot", "stream"):
+        PROTECTED_ROUTES.append((
+            "GET", f"/campaigns/{{campaign_id}}/{resource}", f"/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/{resource}", None,
+        ))
+
+
 #: Deliberately unguarded, and asserted so that a blanket "guard everything"
 #: change has to be a conscious decision: /healthz is what the platform probes
 #: (a 401 there takes the service down), /metrics/ui is the pre-auth beacon.

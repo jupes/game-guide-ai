@@ -77,6 +77,7 @@ T0 = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 EXEMPT: dict[tuple[str, str], str] = {
     ("POST", "/campaigns/{campaign_id}/library"): "reads only (X-7): a search sent by POST",
     ("POST", "/campaigns/{campaign_id}/cues/list"): "reads only (X-7): private cue search sent by POST",
+    ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/stop"): "immediate audio Stop (SEC-35)",
     ("POST", "/table/leave"): "screen principal, revoke only, never a new row (SEC-49)",
 }
 _STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -539,7 +540,6 @@ def test_reset_all_refills_the_real_workbench_write_limiter(monkeypatch: pytest.
 # ── The reveal Stop's own budget (agent-forge-harness-1kg.7.2, ID-8) ─────────
 
 REVEAL_STOP_ROUTE = ("POST", "/campaigns/{campaign_id}/reveals/stop")
-AUDIO_STOP_ROUTE = ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/stop")
 _A_CAMPAIGN = "cmp_" + "a" * 22
 
 
@@ -618,7 +618,7 @@ def test_w1_a_cross_origin_stop_spends_nothing(
     assert _a_stop(client).status_code == 200, "the 403 came before the budget"
 
 
-def test_w1_only_reveal_and_audio_stop_carry_the_narrowing_marker() -> None:
+def test_w1_only_reveal_stop_carries_the_narrowing_marker() -> None:
     """The second pin (Critic C-5): no later write can move onto the narrowing
     budget unnoticed. Confirm and every other route stay off it."""
     # kills: dropping the marker; putting Confirm on the narrowing router
@@ -628,7 +628,7 @@ def test_w1_only_reveal_and_audio_stop_carry_the_narrowing_marker() -> None:
         if isinstance(route, WorkbenchRoute) and _depends_on_narrowing(dependant)
         for method in (route.methods or set())
     }
-    assert on_it == {REVEAL_STOP_ROUTE, AUDIO_STOP_ROUTE}
+    assert on_it == {REVEAL_STOP_ROUTE}
     every = {path for path, route, _ in api_route_dependants(app) if isinstance(route, WorkbenchRoute)}
     assert "/campaigns/{campaign_id}/reveals" in every and "/campaigns/{campaign_id}/reveals/stop" in every
 
@@ -636,7 +636,7 @@ def test_w1_only_reveal_and_audio_stop_carry_the_narrowing_marker() -> None:
 def test_w1_the_narrowing_throttle_still_counts_as_a_write_throttle() -> None:
     # kills: dropping _WRITE_THROTTLE from narrowing_throttle (the pin would call the Stop unthrottled)
     rows = api_route_dependants(app)
-    assert {REVEAL_STOP_ROUTE, AUDIO_STOP_ROUTE}.isdisjoint(_unthrottled_mutations(rows))
+    assert REVEAL_STOP_ROUTE not in _unthrottled_mutations(rows)
 
 
 _REPO = Path(__file__).resolve().parents[2]

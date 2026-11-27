@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -22,11 +22,15 @@ from service import cue_playback
 from service.campaign_store import pg
 from service.campaigns_api import archive_step_one, archive_step_two, restore
 from service.db import Database, PoolSettings
+from service.gm_stream_admission import GmAdmission
+from service.gm_stream_reads import GmReads
+from service.gm_streams import GmStreams
 from service.reveal_scope import DocumentCopies, EndReason, TableTarget
 from service.table_admission import LEASE_EXPIRY, TABLE_STREAM_LIMIT, StreamLease, TableAdmission, TableFull
 from service.table_fanout import TableFanout, listen_table_wakeups
 from service.table_reads import TableReads, TableStreamReads, TableStreamWatch
 from service.table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
+from service.table_streams import TableStreams
 from service.workbench_contracts import CuePlayRequest, CueStopRequest, TableAudioEvent, TableRevealSnapshotEvent
 
 
@@ -254,7 +258,7 @@ def test_every_listener_receives_only_opaque_wakeups_after_commit(dsn: str) -> N
                 command_id=_command(), now=now,
             )
             quiet()
-        received([(SESSION_WAKEUP_CHANNEL, session.id)])
+        received([(SESSION_WAKEUP_CHANNEL, session.id), (CAMPAIGN_WAKEUP_CHANNEL, campaign)])
 
         params = {
             "campaign_id": campaign,
@@ -439,6 +443,107 @@ def test_two_instances_deliver_reveals_audio_stops_and_end_without_leaking_a_pri
             await b.close()
             await db_a.aclose()
             await db_b.aclose()
+
+    asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
+
+
+@needs_db
+def test_two_gm_instances_share_audio_updates_and_release_revoked_or_expired_streams(dsn: str) -> None:
+    world = _pg_world(dsn, fill=True)
+    campaign = _campaign(world)
+    session = _session(world, campaign)
+    _, cue = _ready_ambience(dsn, campaign, world.owner)
+    with connect(dsn) as conn:
+        conn.execute("UPDATE auth.users SET role = 'dm' WHERE id IN (%s, %s)", (world.owner, world.other_owner))
+
+    async def scenario() -> None:
+        async with AsyncExitStack() as cleanup:
+            hubs = []
+            fans = []
+            tabs = []
+            now = datetime.now(UTC)
+            for _ in range(2):
+                db = Database(dsn, PoolSettings(sync_max=0, async_max=2))
+                cleanup.push_async_callback(db.aclose)
+                fan = TableFanout(TableStreamReads(db), partial(listen_table_wakeups, dsn), poll_s=20, heartbeat_s=.2)
+                fans.append(fan)
+                table = TableStreams(TableAdmission(db), fan)
+                cleanup.push_async_callback(table.close)
+                gm = GmStreams(GmAdmission(db), GmReads(db), table, poll_s=20, heartbeat_s=.2)
+                cleanup.push_async_callback(gm.close)
+                hubs.append(gm)
+                assert await gm.admission.open(campaign, account_id=world.other_owner, now=now) is None
+                assert await gm.snapshot(campaign, account_id=world.players[0], now=now) is None
+                lease = await gm.admission.open(campaign, account_id=world.owner, now=now)
+                assert lease is not None
+                tabs.append(await cleanup.enter_async_context(aclosing(
+                    gm.bytes(lease, auth_expires_at=now + timedelta(hours=1)),
+                )))
+
+            async def read(tab):
+                async with asyncio.timeout(4):
+                    while (frame := await anext(tab)).startswith(b":"):
+                        pass
+                return json.loads(frame.splitlines()[1][6:])
+
+            async def until(tab, matches):
+                async with asyncio.timeout(4):
+                    while True:
+                        frame = await read(tab)
+                        if matches(frame):
+                            return frame
+
+            opening = await hubs[0].snapshot(campaign, account_id=world.owner, now=now)
+            assert opening is not None
+            with connect(dsn) as conn:
+                assert conn.execute("SELECT count(*) FROM campaign.gm_stream_connections").fetchone() == (2,)
+            for tab in tabs:
+                frames = [await read(tab) for _ in opening.frames]
+                assert frames == [frame.model_dump(mode="json") for frame in opening.frames]
+                assert [f["slot"] for f in frames if f["event"] == "audio"] == ["ambience", "one_shot"]
+                assert frames[-1]["event"] == "ready"
+            async with asyncio.timeout(4):
+                while not all(fan.listening for fan in fans):
+                    await asyncio.sleep(.02)
+
+            def heard(frame):
+                return frame["event"] == "audio" and frame["slot"] == "ambience"
+
+            with world.db.transaction() as unit:
+                cue_playback.play(pg(unit), campaign, session.id, world.owner, CuePlayRequest(
+                    schema_version=1, command_id=_command(), cue_id=cue, audio_epoch=0, loop=True,
+                ), datetime.now(UTC))
+            first, second = await asyncio.gather(*(until(tab, heard) for tab in tabs))
+            assert first == second and first["playing"]["cue_id"] == cue
+            assert first["playing"]["title"] == "Secret encounter" and first["audio_epoch"] == 1
+            idle = await gm.snapshot(campaign, account_id=world.owner, now=session.expires_at)
+            assert idle is not None and [frame.event for frame in idle.frames] == ["ready"]
+            with world.db.transaction() as unit:
+                cue_playback.stop(pg(unit), campaign, session.id, world.owner, CueStopRequest(
+                    schema_version=1, command_id=_command(), cue_id=None,
+                ), datetime.now(UTC))
+            first, second = await asyncio.gather(*(until(tab, heard) for tab in tabs))
+            assert first == second and first["playing"] is None and first["audio_epoch"] == 2
+
+            with connect(dsn) as conn:
+                conn.execute("UPDATE auth.users SET role = 'player' WHERE id = %s", (world.owner,))
+                conn.execute("SELECT pg_notify(%s, %s)", (SESSION_WAKEUP_CHANNEL, session.id))
+            await asyncio.gather(*(until(tab, lambda f: f["event"] == "reconnect") for tab in tabs))
+            for tab in tabs:
+                with pytest.raises(StopAsyncIteration):
+                    await anext(tab)
+            assert await gm.snapshot(campaign, account_id=world.owner, now=now) is None
+            with connect(dsn) as conn:
+                assert conn.execute("SELECT count(*) FROM campaign.gm_stream_connections").fetchone() == (0,)
+                conn.execute("UPDATE auth.users SET role = 'dm' WHERE id = %s", (world.owner,))
+            lease = await gm.admission.open(campaign, account_id=world.owner, now=now)
+            assert lease is not None
+            async with aclosing(gm.bytes(lease, auth_expires_at=now - timedelta(seconds=1))) as expired:
+                assert (await read(expired))["event"] == "reconnect"
+                with pytest.raises(StopAsyncIteration):
+                    await anext(expired)
+            with connect(dsn) as conn:
+                assert conn.execute("SELECT count(*) FROM campaign.gm_stream_connections").fetchone() == (0,)
 
     asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
 
