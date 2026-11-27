@@ -15,6 +15,7 @@ const AUDIO_TYPE: Readonly<Record<string, string>> = {
 }
 
 export class CueApiError extends Error {}
+export class LiveCueArchiveError extends CueApiError {}
 
 function path(campaign: string, suffix = ''): string {
   return `/campaigns/${encodeURIComponent(campaign)}/cues${suffix}`
@@ -71,15 +72,19 @@ async function checkedCue(reply: Response, campaign: string, failure: string): P
 }
 
 export async function updateCue(
-  cue: Cue, action: { title: string } | 'archive' | 'restore', fetchImpl: typeof fetch,
+  cue: Cue, action: { title: string } | 'archive' | 'restore', fetchImpl: typeof fetch, confirmStop = false,
 ): Promise<Cue> {
   const suffix = `/${encodeURIComponent(cue.cue_id)}`
   const failure = "Couldn't save the change. Try again."
   const reply = typeof action === 'string'
-    ? await request(fetchImpl, path(cue.campaign_id, `${suffix}/${action}`), { method: 'POST' }, failure)
+    ? await request(fetchImpl, path(cue.campaign_id, `${suffix}/${action}${action === 'archive' && confirmStop ? '?confirm_stop=true' : ''}`), { method: 'POST' }, failure)
     : await request(fetchImpl, path(cue.campaign_id, suffix), json('PATCH', {
         schema_version: CONTRACT_VERSION, title: action.title,
       }), failure)
+  if (action === 'archive' && !confirmStop && reply.status === 409 &&
+      ErrorBodySchema.safeParse(await body(reply)).data?.detail.code === 'conflict') {
+    throw new LiveCueArchiveError('This cue is playing at the table.')
+  }
   const saved = await checkedCue(reply, cue.campaign_id, failure)
   if (saved.cue_id !== cue.cue_id) throw new CueApiError(failure)
   return saved

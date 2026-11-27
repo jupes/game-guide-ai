@@ -689,7 +689,7 @@ describe('TableSessionProvider in the app: the campaign context scopes it', () =
   it('reads the table only after the server confirms the campaign, and goes idle when it is cleared', async () => {
     const { calls, live } = await inApp('dm')
     expect(calls).toEqual(['GET /campaigns/cmp_A', 'GET /campaigns/cmp_A/table-session'])
-    expect(live.table.liveSession).toEqual({ sessionId: 'tss_1', campaignId: 'cmp_A', revealEpoch: 3, audioEpoch: 2 })
+    expect(live.table.liveSession).toEqual({ sessionId: 'tss_1', campaignId: 'cmp_A', revealEpoch: 3, audioEpoch: 2, audioEnabled: false })
     await act(async () => {
       await expect(live.campaign.clearCampaign()).resolves.toBe('switched')
     })

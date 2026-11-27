@@ -15,9 +15,11 @@ import psycopg
 from psycopg import sql
 
 from .db import CONNECT_TIMEOUT_S
+from .table_audio_projection import ended, opening_audio
 from .table_reads import TABLE_STREAM_BATCH_MAX, WIRE_VERSION, TableStreamReads, TableStreamWatch
 from .table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 from .workbench_contracts import (
+    TableAudioEvent,
     TableEvent,
     TableInactiveEvent,
     TableReconnectEvent,
@@ -62,7 +64,7 @@ RECONNECT_FRAME: Final = _encode(_reconnect())
 
 
 def _picture(snapshot: TableSnapshot) -> tuple[TableSessionEvent, TableRevealSnapshotEvent]:
-    session, picture, _ = snapshot.frames
+    session, picture = snapshot.frames[:2]
     assert isinstance(session, TableSessionEvent) and isinstance(picture, TableRevealSnapshotEvent)
     return session, picture
 
@@ -93,8 +95,9 @@ class _Viewer:
         self.checked_at = checked_at
         if self.current is None:
             self.current = snapshot
+            now = datetime.now(UTC)
             for frame in snapshot.frames:
-                self.queue.put_nowait(frame)
+                self.queue.put_nowait(opening_audio(frame, now) if isinstance(frame, TableAudioEvent) else frame)
             return
 
         old_session, old_picture = _picture(self.current)
@@ -103,7 +106,7 @@ class _Viewer:
         if session != old_session or set(previous) != {slot.slot for slot in picture.slots}:
             self.terminal(_reconnect())
             return
-        frames = []
+        frames: list[TableEvent] = []
         for slot in picture.slots:
             old = previous[slot.slot]
             if slot == old:
@@ -114,6 +117,25 @@ class _Viewer:
             frames.append(TableSlotEvent(
                 schema_version=WIRE_VERSION, event="slot", slot=slot.slot, seq=slot.seq, content=slot.content,
             ))
+        previous_audio = {f.slot: f for f in self.current.frames if isinstance(f, TableAudioEvent)}
+        for frame in snapshot.frames:
+            if not isinstance(frame, TableAudioEvent):
+                continue
+            old_audio = previous_audio.pop(frame.slot, None)
+            if frame == old_audio:
+                continue
+            if (old_audio is not None and old_audio.seq == frame.seq and old_audio.playing is not None
+                    and frame.playing is None and ended(old_audio.playing, datetime.now(UTC)) and self.queue.empty()):
+                # Natural completion uses the clock already delivered to the client.
+                continue
+            if frame.seq != (old_audio.seq if old_audio else 0) + 1 or not self.queue.empty():
+                # Replace any buffered play, and recover coalesced commands from a fresh snapshot.
+                self.terminal(_reconnect())
+                return
+            frames.append(frame)
+        if previous_audio:
+            self.terminal(_reconnect())
+            return
         if self.queue.qsize() + len(frames) > _QUEUE_MAX:
             self.terminal(_reconnect())
             return

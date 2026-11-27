@@ -58,6 +58,7 @@ export interface LiveSession {
   readonly campaignId: string
   readonly revealEpoch: number
   readonly audioEpoch: number
+  readonly audioEnabled?: boolean
 }
 
 /** `skipped`: nothing sent. `stale`: the scope moved in flight; the answer was dropped. */
@@ -296,7 +297,7 @@ function TableSessionProviderRoot({
       endRetrying: ending === 'waiting',
       problem: shown.problem,
       liveSession: live
-        ? { sessionId: known.session_id, campaignId: known.campaign_id, revealEpoch: known.reveal_epoch, audioEpoch: known.audio_epoch }
+        ? { sessionId: known.session_id, campaignId: known.campaign_id, revealEpoch: known.reveal_epoch, audioEpoch: known.audio_epoch, audioEnabled: known.audio }
         : null,
       start: () => store.start(token, campaignId, fetchImpl, onStartRefused),
       end: () => {

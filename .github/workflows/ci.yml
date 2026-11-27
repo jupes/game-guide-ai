@@ -224,7 +224,7 @@ jobs:
             tests/test_retired_model_binding_db.py \
             tests/test_corpus_schema.py ingestion/tests/test_scrape_wikidot.py \
             tests/test_asset_db.py tests/test_session_dividers_db.py \
-            tests/test_reveal_db.py tests/test_table_stream_reads_db.py tests/test_eligibility_db.py \
+            tests/test_reveal_db.py tests/test_table_stream_reads_db.py tests/test_cue_playback_db.py tests/test_eligibility_db.py \
             tests/test_policy_facts_db.py tests/test_principals_db.py tests/test_entity_index_db.py \
             tests/test_assets_api_db.py \
             tests/test_asset_serving_db.py tests/test_document_generation_db.py \

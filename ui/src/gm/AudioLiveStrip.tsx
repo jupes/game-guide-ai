@@ -34,7 +34,7 @@ export interface AudioLiveSlot {
 export interface AudioLiveStripProps {
   /** Nothing, one slot, or both (AUDIO-1). */
   slots: readonly AudioLiveSlot[]
-  presence: PresenceSummary
+  presence?: PresenceSummary
   connection?: AudioConnection
   /** AUDIO-9: clears both slots. Never queued, never confirmed, never disabled. */
   onStopAll: () => void
@@ -102,7 +102,7 @@ export function AudioLiveStrip({
         )}
 
         {/* AUDIO-21. Deliberately not inside the live region below (AUDIO-22). */}
-        <p className="gm-audio-strip__presence">{presenceSentence(presence)}</p>
+        {presence && <p className="gm-audio-strip__presence">{presenceSentence(presence)}</p>}
       </div>
 
       {/* AUDIO-9, AUDIO-17, X-3: never disabled, in any state. */}

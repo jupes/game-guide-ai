@@ -212,7 +212,7 @@ names it starts fresh rather than reading another caller's status or result
 | Link, unlink a character sheet (`q156`) | none needed | a sheet already linked to that seat answers `204` and changes nothing; unlinking an unlinked sheet answers `204` with no narrowing, no revision advance and no audit row (it still takes the lock briefly, so a busy lock answers the retryable `503`) |
 | Seal a document's open version | none needed | a document with no open version is answered as it is: nothing is sealed and nothing advances |
 | Create an asset, create a cue | `command_id`, minted by the client | opens the asset or cue already made; a retried upload sends its bytes to the same asset |
-| Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | replays the first outcome; a stale epoch is `409 conflict` and is never retried automatically |
+| Play a cue | `command_id`, and the audio epoch it was issued under (AUDIO-28) | a duplicate answers with the current two slots and writes nothing. A fresh play with a stale epoch returns `409 conflict` and requires a fresh GM action |
 | Stop a cue, Stop all | `command_id`, no epoch (X-3) | is idempotent by nature: a slot the cue no longer holds is left alone (AUDIO-9) |
 | Confirm a reveal | `command_id`, and the **session** and reveal epoch it was composed under (REVEAL-5, ED-9) | replays the first outcome; a stale epoch, or an epoch from another session, is `409 conflict` and is never retried automatically — the sheet reloads live state, keeps the GM's draft and asks for a fresh Confirm (REVEAL-15) |
 | Stop a reveal, Stop all reveals | `command_id`, no epoch (X-3) | is idempotent by nature: a document that is no longer live is left alone, and a Stop succeeds on an empty slot (REVEAL-22) |
@@ -1289,6 +1289,14 @@ stays for forward compatibility (AUDIO-8); `loop` on a one-shot is refused
 against the cue's kind (AUDIO-3). `CueStopRequest` names a cue, or `null` for
 Stop all (AUDIO-9), and carries no epoch, because a Stop is never stale (X-3).
 
+The GM reads both slots with `GET /campaigns/{campaign_id}/sessions/{session_id}/audio`.
+Under the same path, `POST /play` accepts a `CuePlayRequest` and `POST /stop` accepts
+a `CueStopRequest`. All three return two `GmAudioEvent` records in order, ambience
+first and one-shot second. A stale play returns `409`. A stop uses the separate
+narrowing-write budget, so a GM who has reached the regular write limit can still silence the table.
+Archiving a cue currently playing at the table returns `409`. After the GM confirms,
+retrying the archive with `?confirm_stop=true` stops and archives the cue in one transaction.
+
 ## The table-session family
 
 There is **no table link, no join and no enrolment** (threat model §15, owner
@@ -1428,7 +1436,7 @@ field-key shaped are refused by the body, before ownership, and carry no `keys`.
 
 | Route | Query | Answer |
 | --- | --- | --- |
-| `GET /table/snapshot` | `TableSnapshotQuery` — `campaign_id`, in the URL because a campaign is not a secret (SEC-43) | `TableSnapshot`: `session` (whether table audio is on, and the `role`), one `snapshot` frame, `ready`. `404 inactive` for **every** caller who is not entitled; `403 cross_site` for a cross-site fetch; `429 throttled_user` with `Retry-After` past the principal's read budget (120 a minute, keyed by account or grant id) or, for a refusal, the source's; `503 backend_unavailable`, retryable |
+| `GET /table/snapshot` | `TableSnapshotQuery` — `campaign_id`, in the URL because a campaign is not a secret (SEC-43) | `TableSnapshot` opens with `session` and the reveal `snapshot`, carries both `audio` slots when table audio is on, and closes with `ready`. `404 inactive` for **every** caller who is not entitled; `403 cross_site` for a cross-site fetch; `429 throttled_user` with `Retry-After` past the principal's read budget (120 a minute, keyed by account or grant id) or, for a refusal, the source's; `503 backend_unavailable`, retryable |
 
 The principal is the cookie (a live screen grant alone, else the account
 session), never a field of the query. `role` is `participant` exactly when the
@@ -1440,7 +1448,8 @@ each read by one builder from the mask alone, or `null` for an empty slot. A
 projection that cannot be expressed, a version that is not sealed or whose type
 is not the recorded one, or frames that do not validate all give an empty slot,
 never a partial one. A seat confirmed after an *Everyone seated* Confirm reads
-nothing of it (ED-13). There are no audio frames until cue slots exist. Every
+nothing of it (ED-13). An empty audio slot carries its sequence and `playing: null`.
+On reconnect a one-shot with less than a second remaining also reads as empty. Every
 answer is `Cache-Control: no-store` and `Cross-Origin-Resource-Policy:
 same-origin`, and carries no id.
 

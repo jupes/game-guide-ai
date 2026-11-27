@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -12,17 +13,21 @@ import psycopg
 import pytest
 from _pg import connect, needs_db
 from psycopg import sql
-from test_reveal_db import _campaign, _clear, _command, _document, _parts, _pg_world, _seat, _session, _write
+from test_migrations_db import _asset_row, _insert_asset
+from test_reveal_db import _campaign, _clear, _command, _document, _parts, _pg_world, _seat, _serve, _session, _write
 from test_reveal_db import dsn as dsn
 
 from service import campaign_identity as ident
+from service import cue_playback
+from service.campaign_store import pg
+from service.campaigns_api import archive_step_one, archive_step_two, restore
 from service.db import Database, PoolSettings
 from service.reveal_scope import DocumentCopies, EndReason, TableTarget
 from service.table_admission import LEASE_EXPIRY, TABLE_STREAM_LIMIT, StreamLease, TableAdmission, TableFull
 from service.table_fanout import TableFanout, listen_table_wakeups
 from service.table_reads import TableReads, TableStreamReads, TableStreamWatch
 from service.table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
-from service.workbench_contracts import TableRevealSnapshotEvent
+from service.workbench_contracts import CuePlayRequest, CueStopRequest, TableAudioEvent, TableRevealSnapshotEvent
 
 
 def _slots(snapshot):
@@ -299,8 +304,49 @@ def test_every_listener_receives_only_opaque_wakeups_after_commit(dsn: str) -> N
         received([(SESSION_WAKEUP_CHANNEL, session.id)])
 
 
+def _ready_ambience(dsn, campaign, owner):
+    asset = _asset_row("audio", "ready", campaign_id=campaign)
+    cue = ident.new_id(ident.CUE)
+    with connect(dsn) as conn:
+        _insert_asset(conn, asset)
+        conn.execute(
+            "INSERT INTO campaign.audio_cues (id, campaign_id, asset_id, created_by, command_id, title, kind, "
+            "created_at, updated_at) VALUES (%s,%s,%s,%s,%s,'Secret encounter','ambience',now(),now())",
+            (cue, campaign, asset["id"], owner, _command()),
+        )
+    return asset, cue
+
+
 @needs_db
-def test_two_instances_deliver_reveal_stop_and_end_without_leaking_a_private_frame(dsn: str) -> None:
+def test_campaign_archive_clears_player_audio_and_restore_cannot_revive_it(dsn: str) -> None:
+    world = _pg_world(dsn, fill=True)
+    served = _serve(world)
+    campaign = _campaign(world)
+    session = _session(world, campaign)
+    _, cue = _ready_ambience(dsn, campaign, world.owner)
+    reader = TableReads(world.db, world.reveals, world.documents)
+    now = datetime.now(UTC)
+    with world.db.transaction() as unit:
+        screen, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+        cue_playback.play(pg(unit), campaign, session.id, world.owner, CuePlayRequest(
+            schema_version=1, command_id=_command(), cue_id=cue, audio_epoch=0, loop=True,
+        ), now)
+
+    def ambience():
+        picture = reader.snapshot(campaign, grant_id=screen.id, now=now)
+        assert picture is not None
+        return next(f for f in picture.frames if isinstance(f, TableAudioEvent) and f.slot == "ambience")
+
+    active = ambience()
+    assert active.playing is not None
+    for operation in (archive_step_one, archive_step_two, restore):
+        operation(served.db, served.stores, campaign_id=campaign, owner_id=world.owner, now=now)
+        cleared = ambience()
+        assert cleared.seq > active.seq and cleared.playing is None
+
+
+@needs_db
+def test_two_instances_deliver_reveals_audio_stops_and_end_without_leaking_a_private_frame(dsn: str) -> None:
     world = _pg_world(dsn, fill=True)
     campaign = _campaign(world)
     session = _session(world, campaign)
@@ -309,6 +355,7 @@ def test_two_instances_deliver_reveal_stop_and_end_without_leaking_a_private_fra
     _write(world, campaign, session.id, shared, TableTarget())
     with world.db.transaction() as unit:
         screen, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+    asset, cue = _ready_ambience(dsn, campaign, world.owner)
 
     async def scenario() -> None:
         db_a, db_b = (Database(dsn, PoolSettings(sync_max=0, async_max=1)) for _ in range(2))
@@ -335,6 +382,12 @@ def test_two_instances_deliver_reveal_stop_and_end_without_leaking_a_private_fra
             assert a.listening and b.listening
             first_player, first_guest = await next_for_both(b"event: snapshot")
             assert b'"mine"' in first_player and b'"mine"' not in first_guest
+            for slot in ("ambience", "one_shot"):
+                player_frame, guest_frame = await next_for_both(b"event: audio")
+                assert player_frame == guest_frame
+                assert json.loads(player_frame.splitlines()[1][6:]) == {
+                    "schema_version": 1, "event": "audio", "slot": slot, "seq": 0, "playing": None,
+                }
             await next_for_both(b"event: ready")
             assert await asyncio.wait_for(anext(guest), 1) == b": heartbeat\n\n"
             _write(world, campaign, session.id, private, _parts(seat), mask=("qualifier",))
@@ -344,6 +397,32 @@ def test_two_instances_deliver_reveal_stop_and_end_without_leaking_a_private_fra
             assert _clear(world, session.id, DocumentCopies(shared, EndReason.GM_STOP))
             stopped = await next_for_both(b"event: slot")
             assert stopped[0] == stopped[1] and b'"content":null' in stopped[0]
+            started = datetime.now(UTC)
+            with world.db.transaction() as unit:
+                cue_playback.play(pg(unit), campaign, session.id, world.owner, CuePlayRequest(
+                    schema_version=1, command_id=_command(), cue_id=cue, audio_epoch=session.audio_epoch, loop=True,
+                ), started)
+            player_frame, guest_frame = await next_for_both(b"event: audio")
+            assert player_frame == guest_frame
+            event = json.loads(player_frame.splitlines()[1][6:])
+            assert event["slot"] == "ambience" and event["seq"] == 1
+            assert event["playing"]["loop"] and len(event["playing"]["asset"]["handle"]) == 32
+            for secret in (cue, asset["id"], campaign, session.id, "Secret encounter", asset["object_key"]):
+                assert secret.encode() not in guest_frame
+            refresh = TableReads(world.db, world.reveals, world.documents).snapshot(
+                campaign, grant_id=screen.id, now=started + timedelta(seconds=23),
+            )
+            assert refresh is not None
+            assert event in [frame.model_dump(mode="json") for frame in refresh.frames]
+            with world.db.transaction() as unit:
+                cue_playback.stop(pg(unit), campaign, session.id, world.owner, CueStopRequest(
+                    schema_version=1, command_id=_command(), cue_id=cue,
+                ), datetime.now(UTC))
+            player_frame, guest_frame = await next_for_both(b"event: audio")
+            assert player_frame == guest_frame
+            assert json.loads(player_frame.splitlines()[1][6:]) == {
+                "schema_version": 1, "event": "audio", "slot": "ambience", "seq": 2, "playing": None,
+            }
             with world.db.transaction() as unit:
                 assert world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
             stopped = await next_for_both(b"event: inactive")

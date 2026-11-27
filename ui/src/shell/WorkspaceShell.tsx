@@ -59,6 +59,7 @@ import * as React from 'react'
 import { CanvasHost } from '../gm/CanvasHost'
 import { RevealSheetHost } from '../gm/RevealSheetHost'
 import { AppHeader } from './AppHeader'
+import { CuePlaybackProvider, LiveCueControls } from './cuePlayback'
 import { useShellLayout, type ShellLayout } from './breakpoints'
 import { canvasShown, CanvasProvider, useCanvasActions, useCanvasState, useWorkbenchActive } from './canvasContext'
 import { CampaignLibraryPanel } from './CampaignLibraryPanel'
@@ -116,7 +117,9 @@ export function WorkspaceShell(): React.JSX.Element {
           <CanvasProvider>
             {/* Focus falls back to the rail's Campaign Library button, then <main>, when the control that opened the panel is gone. */}
             <LibraryPanelProvider fallback={{ rail: railLibraryRef, participantsRail: railParticipantsRef, main: mainRef }}>
-              <WorkspaceShellBody mainRef={mainRef} railLibraryRef={railLibraryRef} railParticipantsRef={railParticipantsRef} />
+              <CuePlaybackProvider>
+                <WorkspaceShellBody mainRef={mainRef} railLibraryRef={railLibraryRef} railParticipantsRef={railParticipantsRef} />
+              </CuePlaybackProvider>
             </LibraryPanelProvider>
           </CanvasProvider>
         </RevealProvider>
@@ -323,6 +326,7 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
           <TopBar navToggle={navToggle} />
         </div>
         <AppHeader showSettings={!settingsInDrawer} inert={drawerOpen || modal} />
+        <LiveCueControls />
         {workbench && (
           <div className="workspace-shell__chrome-part workspace-shell__session" inert={drawerOpen || modal}>
             <SessionControl />

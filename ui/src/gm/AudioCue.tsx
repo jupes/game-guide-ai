@@ -74,6 +74,7 @@ export interface AudioCueProps {
   connection?: AudioConnection
   /** §12.2: a failed push is inline, with Retry. */
   pushFailed?: boolean
+  pushDisabled?: boolean
   /** AUDIO-30: injected, so every gain change goes through Web Audio. */
   previewGain?: PreviewGainStage | null
   /** Normalised 0–1 peaks; a deterministic placeholder when omitted. */
@@ -102,6 +103,7 @@ export function AudioCue({
   playability = 'ready',
   connection = 'connected',
   pushFailed = false,
+  pushDisabled = false,
   previewGain = null,
   peaks,
   onPreviewToggle,
@@ -287,7 +289,7 @@ export function AudioCue({
           size="small"
           icon="campaign"
           onClick={onPlayToTable}
-          disabled={!canPlayToTable(playability, connection)}
+          disabled={pushDisabled || !canPlayToTable(playability, connection)}
         >
           Play to table
         </Button>
@@ -312,7 +314,7 @@ export function AudioCue({
         {/* STATE-2: a failed push names its next action, and resends the same
             command rather than starting a second one (STATE-3). */}
         {pushFailed && onRetryPush && (
-          <Button variant="text" size="small" onClick={onRetryPush}>
+          <Button variant="text" size="small" onClick={onRetryPush} disabled={pushDisabled || connection !== 'connected'}>
             Retry
           </Button>
         )}

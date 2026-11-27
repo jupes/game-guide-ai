@@ -36,6 +36,28 @@ afterEach(() => {
 })
 
 describe('Cue library', () => {
+  it('requires confirmation before stopping a live cue to archive it', async () => {
+    const user = userEvent.setup()
+    const archive = `${prefix}/cues/${cueId}/archive`
+    const confirmed = vi.fn(() => Response.json({ ...cue, archived: true }))
+    const fetchImpl = fakeFetch((url) => {
+      if (url === `${prefix}/cues/list`) return page(confirmed.mock.calls.length ? [] : [cue])
+      if (url === archive) return Response.json({ detail: { code: 'conflict', message: 'Stop first.', retryable: false } }, { status: 409 })
+      if (url === archive + '?confirm_stop=true') return confirmed()
+      return new Response(null, { status: 404 })
+    })
+    render(<CueLibrary campaign={campaign} fetchImpl={fetchImpl} announce={vi.fn()} />)
+    await user.click(await screen.findByRole('button', { name: 'Rain' }))
+    await user.click(screen.getByRole('button', { name: 'Archive' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Archive Rain?' })
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(confirmed).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Archive' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Stop and archive' }))
+    expect(confirmed).toHaveBeenCalledTimes(1)
+    expect(await screen.findByText('Rain archived')).toBeVisible()
+  })
   it('retries processing without resending audio, then opens a private preview', async () => {
     let stored: Cue | undefined
     const fetchImpl = fakeFetch((path, init) => {

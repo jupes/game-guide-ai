@@ -290,6 +290,85 @@ def test_cues_are_private_idempotent_paginated_and_follow_the_asset(
         db.close()
 
 
+def test_live_cue_controls_and_archive_confirmation(
+    dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from service import campaign_identity as ident
+    from service import ratelimit
+
+    asset, session = ident.new_id(ident.ASSET), ident.new_id(ident.TABLE_SESSION)
+    with connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO campaign.assets (id, campaign_id, kind, state, declared_media_type, declared_size_bytes, "
+            "media_type, size_bytes, duration_ms, object_key, tmp_key) "
+            "VALUES (%s,%s,'audio','ready','audio/mpeg',100,'audio/mpeg',100,30000,%s,%s)",
+            (asset, CAMPAIGN, new_object_key(), new_tmp_key()),
+        )
+        conn.execute(
+            "INSERT INTO campaign.table_sessions (id, campaign_id, gm_user_id, state, expires_at) "
+            "VALUES (%s,%s,%s,'live',now() + interval '1 hour')", (session, CAMPAIGN, owner),
+        )
+
+    with closing(Database(dsn, PoolSettings(async_max=0))) as db, closing(TestClient(app)) as client:
+        runtime = assets_api.MediaRuntime(InMemoryObjectStore(), PostgresAssetStore(PostgresJobQueue(db)))
+        principal = SessionData(user_id=owner, role="dm")
+        monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+        monkeypatch.setitem(app.dependency_overrides, appmod._media, lambda: runtime)
+        monkeypatch.setitem(app.dependency_overrides, require_session, lambda: principal)
+        monkeypatch.setitem(app.dependency_overrides, get_timeline_database, lambda: db)
+        monkeypatch.setattr(ratelimit, "workbench_write_limiter", ratelimit.SlidingWindowLimiter(60, 3600))
+        monkeypatch.setattr(ratelimit, "reveal_stop_limiter", ratelimit.SlidingWindowLimiter(60, 3600))
+        prefix = f"/campaigns/{CAMPAIGN}"
+        audio = f"{prefix}/sessions/{session}/audio"
+        made = client.post(f"{prefix}/cues", json={
+            "schema_version": 1, "campaign_id": CAMPAIGN, "command_id": "cmd-cue-playback-001",
+            "asset_id": asset, "kind": "one_shot", "title": "Bell",
+        })
+        assert made.status_code == 201, made.text
+        cue = made.json()["cue_id"]
+        archive = f"{prefix}/cues/{cue}/archive"
+        play = {"schema_version": 1, "cue_id": cue, "command_id": "cmd-cue-playback-002", "loop": False,
+                "audio_epoch": 0}
+        stop = {"schema_version": 1, "cue_id": None, "command_id": "cmd-cue-playback-003"}
+        state = client.get(audio)
+        assert state.status_code == 200 and state.headers["cache-control"] == "no-store"
+        assert [(frame["slot"], frame["playing"]) for frame in state.json()] == [
+            ("ambience", None), ("one_shot", None),
+        ]
+
+        principal = SessionData(user_id=owner + 1, role="dm")
+        refusals = [
+            client.get(audio), client.post(f"{audio}/play", json=play), client.post(f"{audio}/stop", json=stop),
+        ]
+        assert all(r.status_code == 404 and r.content == refusals[0].content for r in refusals)
+        principal = SessionData(user_id=owner, role="player")
+        assert client.post(f"{audio}/play", json=play).status_code == 403
+        principal = SessionData(user_id=owner, role="dm")
+        assert client.post(f"{audio}/play", headers={"origin": "https://other.example"}, json=play).status_code == 403
+        assert client.post(f"{audio}/play", json={**play, "audio_epoch": 11}).status_code == 409
+        assert client.post(f"{audio}/play", json={**play, "loop": True}).status_code == 422
+        heard = client.post(f"{audio}/play", json=play)
+        assert heard.status_code == 200, heard.text
+        assert heard.json()[1]["playing"]["cue_id"] == cue
+        assert client.post(f"{audio}/play", json=play).json() == heard.json()
+        assert client.post(archive).status_code == 409
+        assert client.get(audio).json() == heard.json()
+        assert client.post(archive, params={"confirm_stop": "true"}).json()["archived"] is True
+        silent = client.get(audio).json()
+        assert all(frame["playing"] is None for frame in silent)
+        assert silent[1]["seq"] == heard.json()[1]["seq"] + 1
+
+        # Spend the ordinary budget completely. A previously unused Stop still succeeds.
+        monkeypatch.setattr(ratelimit, "workbench_write_limiter", ratelimit.SlidingWindowLimiter(1, 3600))
+        client.post(f"{audio}/play", json=play)
+        assert client.post(f"{audio}/play", json=play).status_code == 429
+        stopped = client.post(f"{audio}/stop", json=stop)
+        assert stopped.status_code == 200, stopped.text
+        assert client.post(f"{audio}/stop", json=stop).json() == stopped.json()
+        monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=False, store="memory"))
+        assert client.get(audio).status_code == 404
+
+
 def test_archived_cue_delete_reauthenticates_and_cleans_up_audio_and_waveform(
     dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -716,9 +716,9 @@ route exists to show it.
 account (`REVEAL_STOP_RATE_LIMIT_*`), so autosaves that spent the shared 600
 writes an hour never refuse it. Its hourly ceiling is 600, the shared budget's
 own, so the storage-abuse ceiling does not rise: an account can make at most 600
-shared plus 600 narrowing writes an hour per instance. Only the Stop route carries
-`narrowing_throttle`, and a second pin in `test_workbench_write_throttle.py` holds
-that set exact. End and Rotate keep the shared budget.
+shared plus 600 narrowing writes an hour per instance. Reveal Stop and audio Stop
+share `narrowing_throttle`. A second pin in `test_workbench_write_throttle.py`
+holds that set exact. End and Rotate keep the shared budget.
 
 **A failure after a commit never double-acts.** Confirm and Stop answer from a
 read taken after they commit; if it fails the answer is a retryable 503, a retried
