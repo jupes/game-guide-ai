@@ -898,8 +898,9 @@ class _Reading:
 
 @pytest.mark.parametrize("principal", ["player", "screen"])
 @pytest.mark.parametrize("disconnect_at", ["headers", "body", None])
+@pytest.mark.parametrize("asgi_version", ["2.3", "2.4"])
 def test_table_stream_releases_the_admitted_lease_before_asgi_request_returns(
-    reading: _Reading, principal: str, disconnect_at: str | None,
+    reading: _Reading, principal: str, disconnect_at: str | None, asgi_version: str,
 ) -> None:
     """A failed send may occur before the stream generator is ever entered."""
     account = PLAYER if principal == "player" else None
@@ -918,6 +919,7 @@ def test_table_stream_releases_the_admitted_lease_before_asgi_request_returns(
 
         async def release(self, removed):
             assert removed is lease
+            await asyncio.sleep(0)  # Real admission cleanup awaits a database connection.
             events.append("released")
 
     class Fanout:
@@ -938,38 +940,58 @@ def test_table_stream_releases_the_admitted_lease_before_asgi_request_returns(
     ))
     local.dependency_overrides[table_api.get_clock] = lambda: T0
     scope: Scope = {
-        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1",
+        "type": "http", "asgi": {"version": "3.0", "spec_version": asgi_version}, "http_version": "1.1",
         "method": "GET", "scheme": "https", "path": "/table/stream", "raw_path": b"/table/stream",
         "query_string": f"campaign_id={reading.campaign}".encode(),
         "headers": [(b"host", b"testserver"), (b"cookie", cookie.encode())],
         "client": ("127.0.0.1", 1000), "server": ("testserver", 443),
     }
 
+    send_blocked = asyncio.Event()
+    request_received = False
+
     async def receive() -> Message:
-        return {"type": "http.request", "body": b"", "more_body": False}
+        nonlocal request_received
+        if not request_received:
+            request_received = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await send_blocked.wait()
+        return {"type": "http.disconnect"}
 
     async def send(message: Message) -> None:
         if message["type"] == "http.response.start":
             assert message["status"] == 200
-            events.append("headers")
-            if disconnect_at == "headers":
-                raise OSError("client disconnected while sending headers")
+            phase = "headers"
         elif message.get("body"):
             assert message["body"] == b": heartbeat\n\n"
-            events.append("body")
-            if disconnect_at == "body":
-                raise OSError("client disconnected while sending the body")
+            phase = "body"
+        else:
+            return
+        events.append(phase)
+        if phase == disconnect_at:
+            if asgi_version == "2.4":
+                raise OSError("disconnected during send")
+            # Uvicorn's ASGI 2.3 path cancels the blocked writer when the
+            # simultaneous receive returns http.disconnect.
+            send_blocked.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                events.append("send cancelled")
+                raise
 
     async def run() -> None:
-        if disconnect_at is None:
-            await local(scope, receive, send)
-        else:
-            with pytest.raises(ClientDisconnect):
+        async with asyncio.timeout(3):
+            if asgi_version == "2.4" and disconnect_at is not None:
+                with pytest.raises(ClientDisconnect):
+                    await local(scope, receive, send)
+            else:
                 await local(scope, receive, send)
         # Check inside the running loop so Python's shutdown cleanup of an
         # orphaned async generator cannot make a leaking request appear to pass.
         assert events[:2] == ["admitted", "headers"]
         assert events.count("released") == 1
+        assert events.count("send cancelled") == int(asgi_version == "2.3" and disconnect_at is not None)
         for event in ("subscribed", "body", "unsubscribed"):
             assert events.count(event) == (0 if disconnect_at == "headers" else 1)
 
