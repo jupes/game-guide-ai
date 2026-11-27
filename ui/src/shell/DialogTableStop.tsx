@@ -5,12 +5,12 @@ import { STOP_ALL } from './revealStop'
 import './DialogTableStop.css'
 
 /** A modal owns its keyboard and accessibility tree. Keep Stop reachable inside it. */
-export function DialogTableStop() {
+export function DialogTableStop({ hasRevealStop = false }: { hasRevealStop?: boolean }) {
   const audio = useCuePlayback()
   const reveals = useReveals()
   const sound = audio.playback && (!audio.connected || audio.frames.some((frame) => frame.playing !== null))
   const shown = reveals.status === 'unknown' || reveals.state?.slots.some((slot) => slot.live !== null)
-  if (!sound && !shown) return null
+  if (!sound && (hasRevealStop || !shown)) return null
   return <button type="button" className="dialog-table-stop" onClick={(event) => {
     const dialog = event.currentTarget.closest<HTMLElement>('[role="dialog"]')
     const heading = dialog?.querySelector<HTMLElement>('h2[tabindex]')

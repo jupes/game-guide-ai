@@ -179,7 +179,7 @@ export function RevealSheet(props: RevealSheetProps): React.JSX.Element {
         <h2 id={headingId} ref={headingRef} className="gm-reveal__heading" tabIndex={-1}>
           {heading}
         </h2>
-        <DialogTableStop />
+        <DialogTableStop hasRevealStop={props.live || confirming || phase === 'unknown'} />
         {/* Mounted empty with the dialog, filled later: a live region that appears with its text is not reliably announced. */}
         <p role="status" className="gm-reveal__sr">
           {props.liveMessage}
