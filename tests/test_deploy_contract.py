@@ -27,6 +27,7 @@ from _bash import bash_or_skip
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE_CLOUD = REPO_ROOT / "Dockerfile.cloud"
+DOCKERFILE_SERVICE = REPO_ROOT / "Dockerfile.service"
 DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
 UV_LOCK = REPO_ROOT / "uv.lock"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
@@ -127,14 +128,12 @@ def test_the_lockfile_is_committed_and_reachable_by_the_build() -> None:
         )
 
 
-def test_the_cloud_image_installs_from_the_lock_not_a_fresh_resolve() -> None:
-    text = _read(DOCKERFILE_CLOUD)
+@pytest.mark.parametrize("dockerfile", [DOCKERFILE_CLOUD, DOCKERFILE_SERVICE], ids=lambda path: path.name)
+def test_the_image_installs_from_the_lock_not_a_fresh_resolve(dockerfile: Path) -> None:
+    text = _read(dockerfile)
 
-    assert "uv.lock" in text, "Dockerfile.cloud must COPY uv.lock into the build"
-    assert "--frozen" in text, (
-        "the export must be --frozen so a lock that has drifted from "
-        "pyproject.toml fails the build instead of being silently re-resolved"
-    )
+    assert re.search(r"(?m)^COPY .*\buv\.lock\b", text), "the build must COPY the committed lock"
+    assert "uv export --frozen" in text, "export the committed resolution without resolving during the build"
     assert "--require-hashes" in text, (
         "install with --require-hashes: the lock pins versions, the hashes pin "
         "the actual artifacts"
