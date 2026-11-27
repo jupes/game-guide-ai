@@ -19,10 +19,11 @@
  * No Rotate, no screen UI, no timeline re-read, no web storage.
  */
 
-import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { TableSession } from '../gm/contracts'
 import { useCampaign, type CampaignScope } from './campaignContext'
 import { CurrentUserContext } from './currentUser'
+import { defaultChannelFactory, type IdentityChannelLike } from './identityBroadcast'
 import {
   Emitter,
   EndCourier,
@@ -34,6 +35,7 @@ import {
 } from './tableSessionApi'
 
 export type TableSessionState = 'idle' | 'loading' | 'none' | 'live' | 'ended' | 'failed'
+export const SESSION_REFRESH_EVENT = 'aetheril:table-session-changed'
 
 /** `load_failed`, `start_failed` and `throttled` offer Retry (`retry()`); the rest do not. */
 export type SessionProblem =
@@ -114,6 +116,7 @@ class SessionStore extends Emitter {
   private snap: Snap = EMPTY
   /** Start and End answers applied so far: a read sent before the last one is older than it. */
   private answers = 0
+  private lastRead = 0
 
   getSnapshot = (): Snap => this.snap
 
@@ -132,13 +135,16 @@ class SessionStore extends Emitter {
     if (token !== null && campaignId !== null) void this.read(token, campaignId, fetchImpl)
   }
 
-  private async read(token: string, campaignId: string, fetchImpl: typeof fetch): Promise<void> {
+  async read(token: string, campaignId: string, fetchImpl: typeof fetch, background = false): Promise<void> {
+    const read = ++this.lastRead
     const since = this.answers
     const result = await readTableSession(campaignId, fetchImpl)
-    if (this.answers !== since) return
+    if (this.answers !== since || read !== this.lastRead) return
     if (result.kind === 'ok') this.patch(token, { read: 'ready', session: result.session, problem: null, ...pastDue(result.session) })
     else if (result.kind === 'unavailable' || result.kind === 'refused') this.patch(token, { read: 'failed', problem: { kind: 'unavailable' } })
-    else if (result.kind !== 'unauthorized') this.patch(token, { read: 'failed', problem: { kind: 'load_failed' } })
+    else if (result.kind !== 'unauthorized' && !(background && this.snap.read === 'ready')) {
+      this.patch(token, { read: 'failed', problem: { kind: 'load_failed' } })
+    }
   }
 
   expire(token: string, fetchImpl: typeof fetch): void {
@@ -262,6 +268,7 @@ function TableSessionProviderRoot({
   const campaignId = scope?.campaignId ?? null
   const token = scope === null ? null : JSON.stringify([userId, scope.campaignId, scope.key])
   const [store] = useState(() => new SessionStore())
+  const sessionChannel = useRef<IdentityChannelLike | null>(null)
   const snap = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const current = token !== null && snap.token === token ? snap : null
   const known = current?.session ?? null
@@ -269,6 +276,25 @@ function TableSessionProviderRoot({
 
   useEffect(() => store.enter(token, campaignId, fetchImpl), [store, token, campaignId, fetchImpl])
   useEffect(() => courier.retain(userId), [courier, userId])
+  useEffect(() => {
+    if (token === null || campaignId === null) return
+    const refresh = () => { if (!document.hidden) void store.read(token, campaignId, fetchImpl, true) }
+    const channel = defaultChannelFactory(SESSION_REFRESH_EVENT)
+    sessionChannel.current = channel
+    if (channel) channel.onmessage = (event) => { if (event.data === 'changed') refresh() }
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('focus', refresh)
+    window.addEventListener('online', refresh)
+    window.addEventListener(SESSION_REFRESH_EVENT, refresh)
+    return () => {
+      channel?.close()
+      sessionChannel.current = null
+      document.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('focus', refresh)
+      window.removeEventListener('online', refresh)
+      window.removeEventListener(SESSION_REFRESH_EVENT, refresh)
+    }
+  }, [store, token, campaignId, fetchImpl])
 
   const liveEndsAt = known?.state === 'live' ? known.ends_at : null
   useEffect(() => {
@@ -283,6 +309,10 @@ function TableSessionProviderRoot({
     const shown = current ?? { ...EMPTY, token }
     const state = shown.read === 'failed' ? 'failed' : (known?.state ?? (shown.read === 'loading' ? 'loading' : 'none'))
     const live = state === 'live' && known !== null && shown.expiredFor !== expiryMark(known)
+    const announceStart = (outcome: StartOutcome): StartOutcome => {
+      if (outcome === 'started') sessionChannel.current?.postMessage('changed')
+      return outcome
+    }
     return {
       state,
       session: known && {
@@ -299,15 +329,16 @@ function TableSessionProviderRoot({
       liveSession: live
         ? { sessionId: known.session_id, campaignId: known.campaign_id, revealEpoch: known.reveal_epoch, audioEpoch: known.audio_epoch, audioEnabled: known.audio }
         : null,
-      start: () => store.start(token, campaignId, fetchImpl, onStartRefused),
+      start: () => store.start(token, campaignId, fetchImpl, onStartRefused).then(announceStart),
       end: () => {
         if (known?.state !== 'live') return skipped()
         return courier.send(known.campaign_id, known.session_id, fetchImpl, userId).then((outcome) => {
           store.ended(known.session_id, outcome)
+          if (outcome.kind === 'ended') sessionChannel.current?.postMessage('changed')
           return outcome.kind
         })
       },
-      retry: () => store.retry(token, campaignId, fetchImpl, onStartRefused),
+      retry: () => store.retry(token, campaignId, fetchImpl, onStartRefused).then(announceStart),
     }
   }, [token, campaignId, current, known, ending, store, courier, fetchImpl, onStartRefused, userId])
 

@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
+import psycopg
 import pytest
 from _pg import connect, needs_db, throwaway_database
 
@@ -17,7 +18,7 @@ pytestmark = needs_db
 CMP = "cmp_" + "c" * 22
 SESSION = "ses_" + "s" * 22
 RAIN, WIND, BELL = ("cue_" + ch * 22 for ch in "rwb")
-T0 = datetime(2026, 1, 1, tzinfo=UTC)
+T0 = datetime.now(UTC)
 LATER = T0 + timedelta(seconds=2)
 
 
@@ -88,6 +89,20 @@ def test_repeat_within_each_slot_and_one_shot_natural_end(table):
         elapsed = audio.read_state(*scope, LATER + timedelta(seconds=10))
         assert elapsed[0].playing == rain.playing
         assert (elapsed[1].seq, elapsed[1].playing) == (2, None)
+
+
+def test_finished_nonlooping_ambience_can_restart_and_archive_without_confirmation(table):
+    dsn, owner = table
+    end = T0 + timedelta(seconds=10)
+    with connect(dsn, autocommit=False) as conn:
+        tx = PgTransaction(conn)
+        scope = (tx, CMP, SESSION, owner)
+        first, _ = audio.play(*scope, push(1, RAIN, 0), T0)
+        assert audio.read_state(*scope, end)[0].playing is None
+        repeated, _ = audio.play(*scope, push(2, RAIN, 1), end)
+        assert (first.seq, repeated.seq, repeated.playing.started_at) == (1, 2, end)
+        audio.prepare_archive(tx, CMP, RAIN, owner, end + timedelta(seconds=10))
+        assert conn.execute("SELECT seq, handle FROM campaign.audio_slots").fetchone() == (3, None)
 
 
 def test_stop_orders_against_push_and_retries_cannot_clear_replacements(table):
@@ -182,3 +197,57 @@ def test_simultaneous_pushes_from_one_epoch_have_one_winner(table):
         assert (final.seq, final.audio_epoch) == (1, 1)
         assert final.playing.cue_id in results
         assert conn.execute("SELECT count(*) FROM campaign.audio_commands").fetchone() == (1,)
+
+
+def test_legacy_archive_racing_play_requires_stop_and_never_revives_sound(table):
+    dsn, owner = table
+    with connect(dsn, autocommit=False) as controller, connect(dsn, autocommit=False) as legacy:
+        scope = (PgTransaction(controller), CMP, SESSION, owner)
+        audio.play(*scope, push(1, RAIN, 0, loop=True), T0)
+        archive = "UPDATE campaign.audio_cues SET archived = true WHERE id = %s"
+        restore = "UPDATE campaign.audio_cues SET archived = false WHERE id = %s"
+        legacy.execute("SET LOCAL lock_timeout = '200ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            legacy.execute(archive, (RAIN,))
+        legacy.rollback()
+        controller.commit()
+        with pytest.raises(psycopg.errors.CheckViolation):
+            legacy.execute(archive, (RAIN,))
+        legacy.rollback()
+        playing = audio.read_state(*scope, T0)[0]
+        assert (playing.seq, playing.audio_epoch, playing.playing.cue_id) == (1, 1, RAIN)
+        audio.stop(*scope, halt(2, RAIN), T0)
+        controller.commit()
+
+        # An ordinary legacy archive succeeds once silent. A concurrent Play
+        # must wait for this archive and recheck its archived predicate.
+        legacy.execute(archive, (RAIN,))
+        controller.execute("SET LOCAL lock_timeout = '200ms'")
+        with pytest.raises(psycopg.errors.LockNotAvailable):
+            audio.play(*scope, push(3, RAIN, 2), T0)
+        controller.rollback()
+        legacy.commit()
+        with pytest.raises(audio.NoSuchCue):
+            audio.play(*scope, push(3, RAIN, 2), T0)
+        controller.commit()
+        legacy.execute(restore, (RAIN,))
+        legacy.commit()
+        restored = audio.read_state(*scope, T0)[0]
+        assert (restored.seq, restored.playing) == (2, None)
+
+
+@pytest.mark.parametrize("playing", [True, False])
+def test_legacy_campaign_archive_fences_even_an_empty_session(table, playing):
+    dsn, owner = table
+    with connect(dsn, autocommit=False) as conn:
+        scope = (PgTransaction(conn), CMP, SESSION, owner)
+        if playing:
+            audio.play(*scope, push(1, RAIN, 0, loop=True), T0)
+        epoch = audio.read_state(*scope, T0)[0].audio_epoch
+        conn.execute("UPDATE campaign.campaigns SET archived_at = now() WHERE id = %s", (CMP,))
+        conn.execute("UPDATE campaign.campaigns SET archived_at = NULL WHERE id = %s", (CMP,))
+        cleared = audio.read_state(*scope, T0)[0]
+        assert cleared.audio_epoch > epoch and cleared.playing is None
+        assert conn.execute("SELECT count(handle) FROM campaign.audio_slots").fetchone() == (0,)
+        with pytest.raises(audio.StaleAudioEpoch):
+            audio.play(*scope, push(2, RAIN, epoch), T0)

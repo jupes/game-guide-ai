@@ -1294,6 +1294,9 @@ Under the same path, `POST /play` accepts a `CuePlayRequest` and `POST /stop` ac
 a `CueStopRequest`. All three return two `GmAudioEvent` records in order, ambience
 first and one-shot second. A stale play returns `409`. A stop uses the separate
 narrowing-write budget, so a GM who has reached the regular write limit can still silence the table.
+On a phone, the workspace's single **Stop all** sends both the reveal Stop and the
+audio Stop immediately. Each command keeps its own ID until acknowledged. The
+expanded list also offers a Stop for an individual cue or revealed document.
 Archiving a cue currently playing at the table returns `409`. After the GM confirms,
 retrying the archive with `?confirm_stop=true` stops and archives the cue in one transaction.
 

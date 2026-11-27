@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CuePlayback } from './cuePlayback'
+import { CueStopCourier } from './cueStopCourier'
+import { SESSION_REFRESH_EVENT } from './tableSession'
 
 const session = 'tss_Test'
 function state(epoch: number, seq = 0, title?: string) {
@@ -10,12 +12,12 @@ function state(epoch: number, seq = 0, title?: string) {
   })))
 }
 
-function fixture() {
+function fixture(courier = new CueStopCourier(), account = 'gm') {
   const requests: { path: string; body?: string; finish: (response: Response) => void }[] = []
   const fetchImpl: typeof fetch = (input, init) => new Promise((finish) => {
     requests.push({ path: String(input), body: init?.body as string | undefined, finish })
   })
-  const store = new CuePlayback('cmp_A', session, fetchImpl)
+  const store = new CuePlayback('cmp_A', session, fetchImpl, account, courier)
   const dispose = store.start()
   return { store, requests, dispose }
 }
@@ -23,6 +25,76 @@ function fixture() {
 afterEach(() => vi.useRealTimers())
 
 describe('GM table cue commands', () => {
+  it('finishes the original Stop after navigation and blocks widening when the GM returns', async () => {
+    vi.useFakeTimers()
+    const courier = new CueStopCourier()
+    const first = fixture(courier)
+    first.requests[0].finish(state(1, 1, 'Rain'))
+    await vi.advanceTimersByTimeAsync(1)
+    const stopped = first.store.stop(null)
+    first.requests[1].finish(new Response(null, { status: 503 }))
+    await vi.advanceTimersByTimeAsync(1)
+    first.dispose()
+    const reopened = fixture(courier)
+    try {
+      reopened.requests[0].finish(state(1, 1, 'Rain'))
+      await vi.advanceTimersByTimeAsync(1)
+      expect(reopened.store.snapshot().pendingStops).toBe(1)
+      await reopened.store.play('cue_Bell', false)
+      expect(reopened.requests).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(first.requests[2].body).toBe(first.requests[1].body)
+      first.requests[2].finish(state(2, 2))
+      await stopped
+      expect(reopened.store.snapshot().pendingStops).toBe(0)
+      expect(reopened.store.snapshot().connected).toBe(false)
+      reopened.requests[1].finish(state(2, 2))
+      await vi.advanceTimersByTimeAsync(1)
+      expect(reopened.store.snapshot().frames[0]).toMatchObject({ audio_epoch: 2, playing: null })
+      expect(first.store.snapshot().frames).toEqual([])
+    } finally { reopened.dispose() }
+  })
+
+  it('cancels detached retries when the signed-in account changes', async () => {
+    vi.useFakeTimers()
+    const courier = new CueStopCourier()
+    const first = fixture(courier)
+    const stopping = first.store.stop(null)
+    first.requests[1].finish(new Response(null, { status: 503 }))
+    await vi.advanceTimersByTimeAsync(1)
+    first.dispose()
+    courier.retain('another-gm')
+    await stopping
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(first.requests).toHaveLength(2)
+  })
+
+  it('refreshes on return to a hidden tab and asks for the current session after a definitive refusal', async () => {
+    vi.useFakeTimers()
+    const { store, requests, dispose } = fixture()
+    const refresh = vi.fn()
+    window.addEventListener(SESSION_REFRESH_EVENT, refresh)
+    const hidden = vi.spyOn(document, 'hidden', 'get')
+    try {
+      requests[0].finish(state(1))
+      await vi.advanceTimersByTimeAsync(1)
+      hidden.mockReturnValue(true)
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(store.snapshot().connected).toBe(false)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(requests).toHaveLength(1)
+      hidden.mockReturnValue(false)
+      document.dispatchEvent(new Event('visibilitychange'))
+      requests[1].finish(new Response(null, { status: 404 }))
+      await vi.advanceTimersByTimeAsync(1)
+      expect(refresh).toHaveBeenCalledTimes(1)
+      expect(store.snapshot().frames).toEqual([])
+    } finally {
+      dispose()
+      hidden.mockRestore()
+      window.removeEventListener(SESSION_REFRESH_EVENT, refresh)
+    }
+  })
   it('keeps a Stop above a late Play response and clears state when the scope closes', async () => {
     const { store, requests, dispose } = fixture()
     try {

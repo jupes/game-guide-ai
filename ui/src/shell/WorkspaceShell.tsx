@@ -325,8 +325,8 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
         <div className="workspace-shell__chrome-part" inert={drawerOpen || modal}>
           <TopBar navToggle={navToggle} />
         </div>
-        <AppHeader showSettings={!settingsInDrawer} inert={drawerOpen || modal} />
-        <LiveCueControls />
+        <AppHeader showSettings={!settingsInDrawer} inert={drawerOpen || modal} compactLive={layout === 'narrow'} />
+        {layout !== 'narrow' && <LiveCueControls />}
         {workbench && (
           <div className="workspace-shell__chrome-part workspace-shell__session" inert={drawerOpen || modal}>
             <SessionControl />

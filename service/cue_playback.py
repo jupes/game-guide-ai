@@ -144,7 +144,8 @@ def play(
     cue = transaction.conn.execute(
         "SELECT q.kind, a.duration_ms FROM campaign.audio_cues q "
         "JOIN campaign.assets a ON a.id = q.asset_id AND a.campaign_id = q.campaign_id "
-        "WHERE q.campaign_id = %s AND q.id = %s AND NOT q.archived AND a.state = 'ready' AND a.kind = 'audio'",
+        "WHERE q.campaign_id = %s AND q.id = %s AND NOT q.archived AND a.state = 'ready' AND a.kind = 'audio' "
+        "FOR SHARE OF q",
         (campaign_id, body.cue_id),
     ).fetchone()
     if cue is None:
@@ -172,12 +173,7 @@ def play(
 
 def clear_slots(transaction: PgTransaction, session_id: str, cue_id: str | None = None) -> None:
     """Clear matching slots under the caller's session row lock. The caller advances its epoch."""
-    transaction.conn.execute(
-        "UPDATE campaign.audio_slots SET seq = seq + 1, cue_id = NULL, handle = NULL, "
-        "started_at = NULL, loop = NULL, duration_ms = NULL "
-        "WHERE session_id = %s AND cue_id IS NOT NULL AND (%s::text IS NULL OR cue_id = %s)",
-        (session_id, cue_id, cue_id),
-    )
+    transaction.conn.execute("SELECT campaign.clear_audio_slots(%s, %s)", (session_id, cue_id))
 
 
 def stop(

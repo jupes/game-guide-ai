@@ -102,11 +102,37 @@ export function LibraryPanelProvider({ children, fallback }: LibraryPanelProvide
   const tabs: readonly LibraryCategoryId[] = active && cueMediaEnabled ? TABS_WITH_CUES : LIBRARY_TABS
   React.useEffect(() => {
     if (!checkCues || campaign === null || scopeKey === null) return
+    const campaignId = campaign
     const abort = new AbortController()
-    void cueCapability(campaign, abort.signal, fetch).then((enabled) => {
-      if (!abort.signal.aborted) setCueScope(enabled ? scopeKey : null)
-    })
-    return () => abort.abort()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let backoff = 1000
+    let checking = false
+    let settled = false
+    async function check() {
+      if (checking || settled || abort.signal.aborted) return
+      clearTimeout(timer)
+      checking = true
+      const result = await cueCapability(campaignId, AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]), fetch)
+      checking = false
+      if (abort.signal.aborted) return
+      if (result === 'unavailable') {
+        timer = setTimeout(() => void check(), backoff)
+        backoff = Math.min(30000, backoff * 2)
+      } else {
+        settled = true
+        setCueScope(result === 'enabled' ? scopeKey : null)
+      }
+    }
+    const onResume = () => { if (!document.hidden) void check() }
+    void check()
+    window.addEventListener('online', onResume)
+    document.addEventListener('visibilitychange', onResume)
+    return () => {
+      abort.abort()
+      clearTimeout(timer)
+      window.removeEventListener('online', onResume)
+      document.removeEventListener('visibilitychange', onResume)
+    }
   }, [checkCues, campaign, scopeKey])
   const [stored, setStored] = React.useState<Stored | null>(null)
   /** The tab the next open starts on: the last one shown (the first time, NPCs). */

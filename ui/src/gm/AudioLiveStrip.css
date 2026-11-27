@@ -4,6 +4,8 @@
    Tokens only, both themes. */
 
 .gm-audio-strip {
+  position: relative;
+  z-index: calc(var(--aether-z-overlay) + 1);
   container-type: inline-size;
   display: flex;
   align-items: center;

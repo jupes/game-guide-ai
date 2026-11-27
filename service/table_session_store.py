@@ -89,6 +89,7 @@ from datetime import datetime
 from typing import NoReturn, Protocol
 
 from . import campaign_identity as ident
+from . import cue_playback
 from .campaign_store import (
     Campaign,
     LiveSessionExists,
@@ -635,6 +636,9 @@ class PostgresTableSessionStore:
     def _advance(
         self, unit: UnitOfWork, session: TableSession, *, audio: bool, clears: SlotScope, now: datetime | None
     ) -> TableSession:
+        if audio:
+            cue_playback.clear_slots(pg(unit), session.id)
+            unit.notify(SESSION_WAKEUP_CHANNEL, session.id)
         row = pg(unit).conn.execute(
             f"UPDATE campaign.table_sessions "
             f"SET reveal_epoch = reveal_epoch + 1, audio_epoch = audio_epoch + %s "

@@ -46,11 +46,13 @@ function json(method: string, data: unknown, signal?: AbortSignal): RequestInit 
   return { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), signal }
 }
 
-export async function cueCapability(campaign: string, signal: AbortSignal, fetchImpl: typeof fetch): Promise<boolean> {
+export async function cueCapability(campaign: string, signal: AbortSignal, fetchImpl: typeof fetch): Promise<'enabled' | 'disabled' | 'unavailable'> {
   try {
-    return (await request(fetchImpl, path(campaign, '/capability'), { signal }, '')).status === 204
+    const { status } = await request(fetchImpl, path(campaign, '/capability'), { signal }, '')
+    if (status === 204) return 'enabled'
+    return [401, 403, 404].includes(status) ? 'disabled' : 'unavailable'
   } catch {
-    return false
+    return 'unavailable'
   }
 }
 
