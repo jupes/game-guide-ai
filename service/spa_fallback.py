@@ -101,4 +101,16 @@ def install_spa(app: FastAPI, dist: Path) -> None:
     app.add_api_route(
         "/table.html", _hide_table_file, methods=["GET", "HEAD"], include_in_schema=False, name="spa:/table.html"
     )
+
+    manifest = dist / "manifest.webmanifest"
+
+    async def _serve_manifest() -> FileResponse:
+        if not manifest.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(manifest, media_type="application/manifest+json")
+
+    app.add_api_route(
+        "/manifest.webmanifest", _serve_manifest, methods=["GET", "HEAD"],
+        include_in_schema=False, name="spa:/manifest.webmanifest",
+    )
     app.mount("/", StaticFiles(directory=dist, html=True), name=SPA_MOUNT_NAME)

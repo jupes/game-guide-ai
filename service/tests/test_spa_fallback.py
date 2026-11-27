@@ -94,6 +94,7 @@ def tmp_dist(tmp_path: Path) -> Path:
         "<html><body>test-fixture-index</body></html>", encoding="utf-8",
     )
     (dist / "table.html").write_text("<html><body>test-fixture-table</body></html>", encoding="utf-8")
+    (dist / "manifest.webmanifest").write_text('{"start_url":"/"}', encoding="utf-8")
     assets = dist / "assets"
     assets.mkdir()
     (assets / "app-abc123.js").write_text(
@@ -137,6 +138,16 @@ def test_table_deep_link_serves_a_shell_with_its_own_policy(
         assert response.headers[name] == value
     if method == "GET":
         assert response.content == (tmp_dist / "table.html").read_bytes()
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_public_manifest_serves_the_built_file(routed_client: TestClient, method: str) -> None:
+    response = routed_client.request(method, "/manifest.webmanifest")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/manifest+json"
+    assert "set-cookie" not in response.headers
+    if method == "GET":
+        assert response.json() == {"start_url": "/"}
 
 
 # ── A2 -- the fallback is an allowlist, not a catch-all ──────────────────────
