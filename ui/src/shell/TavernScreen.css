@@ -99,6 +99,22 @@
   gap: var(--aether-space-3);
 }
 
+.tavern-screen__install {
+  align-self: flex-start;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.tavern-screen__install summary {
+  align-content: center;
+  min-block-size: var(--aether-touch-min);
+  color: var(--md-sys-color-primary);
+  cursor: pointer;
+}
+
+.tavern-screen__install p {
+  margin: var(--aether-space-2) 0 0;
+}
+
 .tavern-screen__concluded > .tavern-screen__grid {
   width: 100%;
 }

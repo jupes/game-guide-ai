@@ -27,6 +27,27 @@ import { BASE_URL } from './stack'
 
 const PHONE = { width: 390, height: 844 }
 
+test('both entry points advertise the same public install assets', async ({ page, request }) => {
+  const path = '/manifest.webmanifest'
+  for (const entry of ['/', '/table']) {
+    await page.goto(entry)
+    await expect(page.locator('link[rel="manifest"]')).toHaveAttribute('href', path)
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/app-icon-180.png')
+  }
+  const manifest = await request.get(path)
+  expect(manifest.ok()).toBe(true)
+  expect(manifest.headers()['content-type']).toBe('application/manifest+json')
+  expect(manifest.headers()['set-cookie']).toBeUndefined()
+  expect(await manifest.json()).toMatchObject({ id: '/', start_url: '/', scope: '/', display: 'standalone' })
+  for (const size of [180, 192, 512]) {
+    const icon = await request.get(`/app-icon-${size}.png`)
+    expect(icon.ok()).toBe(true)
+    expect(icon.headers()['content-type']).toBe('image/png')
+    const bytes = await icon.body()
+    expect([bytes.readUInt32BE(16), bytes.readUInt32BE(20)]).toEqual([size, size])
+  }
+})
+
 /** Copied from `phone.spec.ts` (which stays unedited). */
 async function expectNoPageOverflow(page: Page): Promise<void> {
   const overflow = await page.evaluate(() => {
@@ -61,6 +82,11 @@ test('a signed-out /tavern shows Login, and signing in returns to /tavern, path 
   expect(await page.evaluate(() => window.history.length)).toBe(entries)
   // An arrival by sign-in is a cold one: the heading is not focused.
   await expect(heading).not.toBeFocused()
+
+  const installHelp = page.locator('summary').filter({ hasText: 'Add Aetheril to your home screen' })
+  await installHelp.click()
+  await expect(page.getByText('iPhone:', { exact: true })).toBeVisible()
+  await expect(page.getByText('Android:', { exact: true })).toBeVisible()
 
   // The one real-server state here (no database): both reads fail, with ONE Retry.
   await expect(page.locator('p:not([role])', { hasText: "Couldn't load campaigns" })).toBeVisible()

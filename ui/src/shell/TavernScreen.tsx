@@ -173,6 +173,12 @@ export function TavernScreen(): React.JSX.Element | null {
           openThread={openThread}
           askTheSage={askTheSage}
         />
+        <details className="tavern-screen__install">
+          <summary>Add Aetheril to your home screen</summary>
+          <p><strong>iPhone:</strong> In Safari, choose Share, then Add to Home Screen. Turn on Open as Web App if offered.</p>
+          <p><strong>Android:</strong> In Chrome, open the browser menu and choose Add to home screen or Install app if offered.</p>
+          <p>You can also open the same link in your browser.</p>
+        </details>
       </div>
     </main>
   )
