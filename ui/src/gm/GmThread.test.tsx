@@ -222,6 +222,7 @@ describe('GmThread — a spell’s usage suggestions (agent-forge-harness-0ru)',
     const lane = laneOf(container)
     for (const label of SUGGESTION_LABELS) expect(within(lane).getByText(label)).toBeInTheDocument()
     for (const { text } of SPELL_SUGGESTIONS) expect(within(lane).getByText(text)).toBeInTheDocument()
+    expect(lane.querySelector('[role="status"], [role="alert"], [role="log"], [aria-live]')).toBeNull()
 
     const card = lane.querySelector('.game-content-card') as HTMLElement
     const suggestions = within(lane).getByText('Practical')

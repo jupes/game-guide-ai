@@ -1169,6 +1169,10 @@ describe('ChatPane (#21)', () => {
     expect(screen.getByText('Wacky')).toBeInTheDocument()
     expect(screen.getByText('Clear a room of enemies.')).toBeInTheDocument()
     expect(screen.getByText('Instantly roast a feast.')).toBeInTheDocument()
+    const cards = screen.getByText('Practical').closest('.suggestion-cards')!
+    const liveRegion = '[role="status"], [role="alert"], [role="log"], [aria-live]'
+    expect(cards.matches(liveRegion)).toBe(false)
+    expect(cards.querySelector(liveRegion)).toBeNull()
   })
 
   it('renders no suggestion cards when the response has none', async () => {
