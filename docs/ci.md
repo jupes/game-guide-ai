@@ -157,8 +157,9 @@ Your two options from there:
   default branch unless you pass `--ref`, and the `deploy` job requires
   `github.ref == 'refs/heads/master'`. A run on any other ref tests without
   deploying — the job is skipped, with or without *force_deploy*.
-- **Back out** — `git revert <merge-sha> && git push`. The revert lands on
-  `master`, the pipeline runs again and redeploys the previous behavior.
+- **Back out** — create a revert branch from current `master` and run
+  `git revert -m 1 <merge-sha>` for a PR merge commit. Open a revert PR
+  against `master`. After it merges, verify the pipeline and serving revision.
 
 When retrieval genuinely changed for the better (or a corpus re-ingest moved the
 numbers), refresh the baseline by committing the new `ingestion/eval_results.json`
