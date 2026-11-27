@@ -4,3 +4,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: python
+        # Release CI qualifies Python 3.12. Plan interpreter upgrades separately.
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
