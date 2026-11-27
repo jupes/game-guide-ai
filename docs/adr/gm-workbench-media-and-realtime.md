@@ -173,6 +173,10 @@ able to say.
   end of a snapshot, the boundary TABLE-7 needs; `slot` arrives with the reveal
   family. The heartbeat is a comment, not a frame. A table frame carries only
   what the projection of its slot allows.
+- The player table uses a one-second idle heartbeat. Older WebKit releases can
+  hold a snapshot or reveal update until the next network write. The idle
+  comment releases those bytes without changing the stream's projection checks
+  or adding an event. [WebKit bug 322545](https://bugs.webkit.org/show_bug.cgi?id=322545)
 - **Snapshot resources** `GmSnapshot` and `TableSnapshot`: the frames a stream
   sends first, ending with `ready`, readable on their own for the polling mode
   (RT-9). `TableSession` carries the audio epoch, so two GM tabs converge
