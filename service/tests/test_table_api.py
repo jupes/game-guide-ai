@@ -19,6 +19,7 @@ the secret's one way out (T-4); and the import boundary (T-23).
 from __future__ import annotations
 
 import ast
+import asyncio
 import logging
 import re
 import secrets
@@ -29,12 +30,15 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 import psycopg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
+from starlette.requests import ClientDisconnect
+from starlette.types import Message, Scope
 
 import config
 from service import app as appmod
@@ -55,8 +59,9 @@ from service.reveal_scope import Audience, ParticipantsAudience, TableAudience
 from service.reveal_store import InMemoryRevealStore
 from service.reveals import DisplayCommand, Reveals, slot_clear_for
 from service.session import SessionData, encode_session
-from service.table_admission import TableFull
-from service.table_reads import TableReads
+from service.table_admission import StreamLease, TableAdmission, TableFull
+from service.table_fanout import TableFanout
+from service.table_reads import TableReads, TableStreamWatch
 from service.table_session_store import SCREENS_PER_SESSION, InMemoryTableSessionStore, no_slots
 from service.table_sessions import TableSessions
 from service.table_streams import TableStreams
@@ -889,6 +894,86 @@ class _Reading:
     grant: str
     grant_id: str
     document: str
+
+
+@pytest.mark.parametrize("principal", ["player", "screen"])
+@pytest.mark.parametrize("disconnect_at", ["headers", "body", None])
+def test_table_stream_releases_the_admitted_lease_before_asgi_request_returns(
+    reading: _Reading, principal: str, disconnect_at: str | None,
+) -> None:
+    """A failed send may occur before the stream generator is ever entered."""
+    account = PLAYER if principal == "player" else None
+    grant = reading.grant_id if principal == "screen" else None
+    cookie = (f"{config.SESSION_COOKIE_NAME}={_account(PLAYER)}" if account is not None
+              else f"{table_api.SCREEN_COOKIE}={reading.grant}")
+    watch = TableStreamWatch(reading.campaign, reading.session, 1, account_id=account, grant_id=grant)
+    lease = StreamLease(uuid4(), watch)
+    events: list[str] = []
+
+    class Admission:
+        async def open(self, campaign_id, *, account_id, grant_id, now):
+            assert (campaign_id, account_id, grant_id, now) == (reading.campaign, account, grant, T0)
+            events.append("admitted")
+            return lease
+
+        async def release(self, removed):
+            assert removed is lease
+            events.append("released")
+
+    class Fanout:
+        async def stream(self, subscribed):
+            assert subscribed == watch
+            events.append("subscribed")
+            try:
+                yield b": heartbeat\n\n"
+            finally:
+                events.append("unsubscribed")
+
+    streams = TableStreams(cast(TableAdmission, Admission()), cast(TableFanout, Fanout()))
+    local = FastAPI()
+    install_workbench(local)
+    local.include_router(table_api.build_router(
+        appmod.require_session, lambda: reading.world.auth, appmod._clear_session_cookie,
+        lambda: reading.world.lifecycle, lambda: None, table_streams=lambda: streams,
+    ))
+    local.dependency_overrides[table_api.get_clock] = lambda: T0
+    scope: Scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.4"}, "http_version": "1.1",
+        "method": "GET", "scheme": "https", "path": "/table/stream", "raw_path": b"/table/stream",
+        "query_string": f"campaign_id={reading.campaign}".encode(),
+        "headers": [(b"host", b"testserver"), (b"cookie", cookie.encode())],
+        "client": ("127.0.0.1", 1000), "server": ("testserver", 443),
+    }
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            assert message["status"] == 200
+            events.append("headers")
+            if disconnect_at == "headers":
+                raise OSError("client disconnected while sending headers")
+        elif message.get("body"):
+            assert message["body"] == b": heartbeat\n\n"
+            events.append("body")
+            if disconnect_at == "body":
+                raise OSError("client disconnected while sending the body")
+
+    async def run() -> None:
+        if disconnect_at is None:
+            await local(scope, receive, send)
+        else:
+            with pytest.raises(ClientDisconnect):
+                await local(scope, receive, send)
+        # Check inside the running loop so Python's shutdown cleanup of an
+        # orphaned async generator cannot make a leaking request appear to pass.
+        assert events[:2] == ["admitted", "headers"]
+        assert events.count("released") == 1
+        for event in ("subscribed", "body", "unsubscribed"):
+            assert events.count(event) == (0 if disconnect_at == "headers" else 1)
+
+    asyncio.run(run())
 
 
 def _get(

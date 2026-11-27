@@ -1,55 +1,23 @@
 """Owner-only GM snapshot and event stream. The table's screen grant cannot authorize either read."""
 
-import logging
 from collections.abc import AsyncGenerator, Callable
-from contextlib import aclosing, asynccontextmanager
 from datetime import datetime
 from typing import Annotated
 
-import anyio
 import psycopg
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import StreamingResponse
 
 from . import campaign_identity as ident
 from .campaigns_api import refusal, unavailable
-from .gm_stream_admission import GmLease
 from .gm_stream_reads import GmProjectionUnavailable
 from .gm_streams import GmStreams
 from .session import SessionData
+from .stream_response import leased_body
 from .table_admission import TableFull
 from .table_api import fetch_metadata, get_clock, spend_stream_read
 from .workbench_api import SessionDependency, check_same_origin, not_found, workbench_router
 from .workbench_contracts import ErrorCode, GmSnapshot
-
-log = logging.getLogger(__name__)
-
-
-@asynccontextmanager
-async def _leased_body(streams: GmStreams, lease: GmLease, deadline: datetime) -> AsyncGenerator[AsyncGenerator[bytes]]:
-    frames = streams.bytes(lease, auth_expires_at=deadline)
-    started = False
-
-    async def body() -> AsyncGenerator[bytes]:
-        nonlocal started
-        started = True
-        async for frame in frames:
-            yield frame
-
-    async with aclosing(body()) as events:
-        try:
-            yield events
-        finally:
-            # A disconnect can precede response headers. Until iteration starts
-            # the stream generator cannot run its own lease-release finalizer.
-            with anyio.CancelScope(shield=True):
-                await frames.aclose()
-                if not started:
-                    with anyio.move_on_after(2):
-                        try:
-                            await streams.admission.release(lease)
-                        except psycopg.Error:
-                            log.warning("gm_stream_release_failed")
 
 
 def build_router(gm: SessionDependency, get_streams: Callable[[], GmStreams | None]) -> APIRouter:
@@ -98,7 +66,10 @@ def build_router(gm: SessionDependency, get_streams: Callable[[], GmStreams | No
         else:
             if lease is None:
                 not_found()
-            async with _leased_body(streams, lease, user.expires_at) as events:
+            async with leased_body(
+                streams.bytes(lease, auth_expires_at=user.expires_at), lambda: streams.admission.release(lease),
+                release_warning="gm_stream_release_failed",
+            ) as events:
                 yield events
             return
         raise failure
