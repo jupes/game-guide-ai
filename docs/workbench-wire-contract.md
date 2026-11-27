@@ -1293,12 +1293,14 @@ The GM reads both slots with `GET /campaigns/{campaign_id}/sessions/{session_id}
 When `WORKBENCH_TABLE_STREAMS_ENABLED` is on, the GM subscribes to
 `GET /campaigns/{campaign_id}/stream`. Its opening `GmSnapshot` is also available
 from `GET /campaigns/{campaign_id}/snapshot`. A live opening includes the
-session, the reveal picture, both audio slots, and `ready`. A GM client waits
+session, the reveal picture, both audio slots, and `ready`. Outside a live
+session the owner's opening contains only `ready`. A GM client waits
 for `ready` before displaying the opening picture. It applies subsequent audio
 pairs together and requests fresh state after a gap or prolonged silence.
 If streaming is unavailable, the GM controls reconcile against the session's
 audio read while retrying the stream. Only the campaign owner can read GM
-frames. Player and screen clients use `/table/stream`.
+frames. The stream closes when the signed account cookie expires or the
+account loses GM access. Player and screen clients use `/table/stream`.
 Under the GM session's `/audio` path, `POST /play` accepts a `CuePlayRequest` and `POST /stop` accepts
 a `CueStopRequest`. All three return two `GmAudioEvent` records in order, ambience
 first and one-shot second. A stale play returns `409`. Audio Stop bypasses both the
