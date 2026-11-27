@@ -23,3 +23,5 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
       - run: python3 scripts/ci/pr_size.py
+      - name: Check new review tags
+        run: python3 scripts/ci/pr_review_tags.py
