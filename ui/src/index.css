@@ -33,7 +33,8 @@ body {
 /* Keep the cached workspace and all body portals out of view until the
    account is verified. Only the neutral status is available during the check. */
 html[data-session-restoring] body > :not(#session-restore-status),
-#session-restore-status[hidden] { display: none !important; }
+#session-restore-status[hidden],
+#session-restore-status [hidden] { display: none !important; }
 
 body {
   background:

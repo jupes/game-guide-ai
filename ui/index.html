@@ -23,7 +23,16 @@
     </script>
   </head>
   <body>
-    <div id="session-restore-status" class="auth-screen" role="status" hidden><p>Loading…</p></div>
+    <div id="session-restore-status" class="auth-screen" hidden>
+      <p role="status">Loading…</p>
+      <div class="auth-screen__card" hidden>
+        <div role="alert">
+          <h1>Can’t reach the service</h1>
+          <p>We couldn’t check your session. Your workspace is hidden until we can verify your account.</p>
+        </div>
+        <button type="button" class="auth-screen__retry">Try again</button>
+      </div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

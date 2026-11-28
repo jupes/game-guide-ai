@@ -129,7 +129,9 @@ Also navigate away from the signed-in app, sign out in the other tab, then
 use Back. If the browser restores the earlier page from memory, the workspace
 and any open dialog should stay hidden until the app verifies the session.
 Repeat with the original account still signed in and an unsent draft open.
-The draft should still be there after verification.
+Interrupt the connection during the check. The page should offer a retry
+while the draft stays hidden. Restore the connection and retry. The draft
+should still be there when the original account is confirmed.
 
 To finish sharing with the other people at the table, use **Stop** or **End**
 and wait for confirmation before signing out of the GM account.

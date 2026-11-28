@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { act, render, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { readFileSync } from 'node:fs'
+import { URL as NodeURL } from 'node:url'
 import appHtml from '../../index.html?raw'
-import appCss from '../index.css?raw'
 import {
   CurrentUserProvider,
   useCurrentUser,
@@ -245,13 +246,13 @@ describe('session check', () => {
     localStorage.removeItem(key)
   })
 
-  it.each(['same account', 'different account', 'signed out', 'unavailable'] as const)(
-    'covers browser history snapshots until current identity is verified: %s', async outcome => {
+  it.each(['same account', 'different account', 'signed out'] as const)(
+    'keeps cached drafts and portals covered across a failed restore and a verified retry: %s', async outcome => {
       const ada = { email: 'ada@example.com', role: 'dm' as const }
       const bea = { email: 'bea@example.com', role: 'player' as const }
       let settle!: (current: api.AuthResult) => void
       const me = vi.spyOn(api, 'getMe').mockResolvedValueOnce({ kind: 'ok', user: ada })
-        .mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
+        .mockImplementation(() => new Promise(resolve => { settle = resolve }))
       function AccountView() {
         const { user, authStatus } = useCurrentUser()
         return authStatus === 'authenticated' ? <>
@@ -263,7 +264,7 @@ describe('session check', () => {
       root.id = 'root'
       const status = new DOMParser().parseFromString(appHtml, 'text/html').getElementById('session-restore-status')!
       const styles = document.createElement('style')
-      styles.textContent = appCss
+      styles.textContent = readFileSync(new NodeURL('../index.css', import.meta.url), 'utf8')
       document.head.append(styles)
       document.body.append(status, root)
       const view = render(<CurrentUserProvider identityChannelFactory={() => null}><AccountView /></CurrentUserProvider>, { container: root })
@@ -281,17 +282,40 @@ describe('session check', () => {
         expect(getComputedStyle(root).display).toBe('none')
         expect(getComputedStyle(portal).display).toBe('none')
         expect(status).toBeVisible()
-        expect(status).toHaveRole('status')
-        expect(status).toHaveTextContent('Loading…')
+        expect(within(status).getByRole('status')).toHaveTextContent('Loading…')
+        expect(within(status).queryByRole('alert')).toBeNull()
         act(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
         expect(root).not.toBeVisible()
         expect(portal).not.toBeVisible()
         expect(status).toBeVisible()
         expect(me).toHaveBeenCalledTimes(2)
+        await act(async () => { settle({ kind: 'error', status: 503, message: 'Session check unavailable' }) })
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        expect(within(status).getByRole('alert')).toHaveTextContent('Can’t reach the service')
+        const retry = within(status).getByRole('button', { name: 'Try again' })
+        expect(retry).toBeVisible()
+        act(() => api.notifyUnauthorized()) // an old request can finish while the page remains covered
+        expect(draft).toBeInTheDocument()
+        expect(draft).toHaveValue('Unsaved private draft')
+        act(() => { retry.click(); retry.click() })
+        expect(me).toHaveBeenCalledTimes(3)
+        expect(me).toHaveBeenLastCalledWith(expect.any(Function), { verifyIdentity: true })
+        expect(within(status).getByRole('status')).toHaveTextContent('Loading…')
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        if (outcome === 'signed out') {
+          const old = settle
+          act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+          act(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+          expect(me).toHaveBeenCalledTimes(4)
+          await act(async () => { old({ kind: 'ok', user: ada }) })
+          expect(root).not.toBeVisible()
+        }
         await act(async () => {
           if (outcome === 'same account' || outcome === 'different account') {
             settle({ kind: 'ok', user: outcome === 'same account' ? ada : bea })
-          } else settle({ kind: 'error', status: outcome === 'signed out' ? 401 : 503, message: 'Session check failed' })
+          } else settle({ kind: 'error', status: 401, message: 'not signed in' })
         })
         expect(root).toBeVisible()
         expect(status).not.toBeVisible()
@@ -299,7 +323,7 @@ describe('session check', () => {
         else {
           expect(draft).not.toBeInTheDocument()
           expect(root).not.toHaveTextContent(ada.email)
-          expect(root).toHaveTextContent(outcome === 'different account' ? bea.email : outcome === 'signed out' ? 'unauthenticated' : 'unavailable')
+          expect(root).toHaveTextContent(outcome === 'different account' ? bea.email : 'unauthenticated')
         }
         act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
         expect(status).toBeVisible()

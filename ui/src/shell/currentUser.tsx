@@ -191,7 +191,7 @@ interface LiveAuth {
   /** Bumped by every auth transition: an answer requested before one is dropped. */
   generation: number
   peerRevision: number
-  cached: boolean
+  restoreCovered: boolean
   /** A signal during this read means its cookie may already be obsolete. */
   read: { dirty: boolean } | null
   broadcast: IdentityBroadcast | null
@@ -207,7 +207,7 @@ export function CurrentUserProvider(
   // identity rather than mirrored into state, so switching accounts can't leave
   // the previous user's name/avatar on screen (and needs no syncing effect).
   const [edits, setEdits] = useState<Record<string, StoredProfile>>({})
-  const live = useRef<LiveAuth>({ status: 'checking', user: null, generation: 0, peerRevision: 0, cached: false, read: null, broadcast: null })
+  const live = useRef<LiveAuth>({ status: 'checking', user: null, generation: 0, peerRevision: 0, restoreCovered: false, read: null, broadcast: null })
 
   const transition = useCallback((user: AuthUser | null, status: AuthStatus) => {
     const state = live.current
@@ -244,7 +244,8 @@ export function CurrentUserProvider(
     const state = live.current
     const generation = state.generation
     return readSession(restoring).then(result => {
-      if (!result || generation !== state.generation) return false
+      if (!result || generation !== state.generation) return 'stale'
+      if (restoring && result.kind === 'error' && result.status !== UNAUTHORIZED) return 'unavailable'
       const settle = () => {
         if (result.kind === 'ok') {
           const known = state.status === 'authenticated' ? state.user : null
@@ -255,7 +256,7 @@ export function CurrentUserProvider(
       }
       if (restoring) flushSync(settle)
       else settle()
-      return true
+      return 'settled'
     })
   }, [transition, readSession])
 
@@ -275,8 +276,17 @@ export function CurrentUserProvider(
     const state = live.current
     const html = document.documentElement
     const status = document.getElementById('session-restore-status')
+    const loading = status?.querySelector<HTMLElement>('[role="status"]')
+    const failure = status?.querySelector<HTMLElement>('.auth-screen__card')
+    const retry = status?.querySelector('button')
     let visit = 0
     let covered = false
+    let retryable = false
+    function showRetry(available: boolean): void {
+      retryable = available
+      if (loading) loading.hidden = available
+      if (failure) failure.hidden = !available
+    }
     function cover(): void {
       if (html.hasAttribute('data-session-restoring')) return
       html.setAttribute('data-session-restoring', '')
@@ -284,6 +294,8 @@ export function CurrentUserProvider(
       covered = true
     }
     function uncover(): void {
+      state.restoreCovered = false
+      showRetry(false)
       if (!covered) return
       if (status) status.hidden = true
       html.removeAttribute('data-session-restoring')
@@ -292,29 +304,39 @@ export function CurrentUserProvider(
     function hide(event: PageTransitionEvent): void {
       if (!event.persisted) return
       visit++
-      state.cached = true
+      state.restoreCovered = true
       state.read = null
+      showRetry(false)
       cover()
     }
-    async function show(event: PageTransitionEvent): Promise<void> {
-      if (!event.persisted) return
+    async function verify(): Promise<void> {
       const latest = ++visit
-      state.cached = false
+      state.restoreCovered = true
+      showRetry(false)
       cover()
       // A local identity change may overtake the restore's own read.
       while (latest === visit) {
-        if (await checkSession(true, true)) {
-          if (latest === visit) uncover()
-          return
-        }
+        const result = await checkSession(true, true)
+        if (latest !== visit) return
+        if (result === 'stale') continue
+        if (result === 'unavailable') showRetry(true)
+        else uncover()
+        return
       }
     }
+    function show(event: PageTransitionEvent): void {
+      if (event.persisted) void verify()
+    }
+    function tryAgain(): void {
+      if (retryable) void verify()
+    }
+    retry?.addEventListener('click', tryAgain)
     window.addEventListener('pagehide', hide)
     window.addEventListener('pageshow', show)
     return () => {
       visit++
-      state.cached = false
       uncover()
+      retry?.removeEventListener('click', tryAgain)
       window.removeEventListener('pagehide', hide)
       window.removeEventListener('pageshow', show)
     }
@@ -339,6 +361,12 @@ export function CurrentUserProvider(
   // tells the other tabs, so a burst of 401s is one signal.
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      // Old workspace requests can finish while a restored page is covered.
+      // Its bounded credential check decides which account may see it.
+      if (live.current.restoreCovered) {
+        if (live.current.read) live.current.read.dirty = true
+        return
+      }
       const wasSignedIn = live.current.status === 'authenticated'
       transition(null, 'unauthenticated')
       if (wasSignedIn) live.current.broadcast?.post()
@@ -355,9 +383,8 @@ export function CurrentUserProvider(
     const state = live.current
     const recheck = (): void => {
       state.peerRevision += 1
-      if (state.cached) return
       if (state.read) state.read.dirty = true
-      else void checkSession(state.status === 'checking')
+      else if (!state.restoreCovered) void checkSession(state.status === 'checking')
     }
     const broadcast = openIdentityBroadcast(recheck, identityChannelFactory)
     state.broadcast = broadcast

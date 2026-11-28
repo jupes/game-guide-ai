@@ -726,7 +726,7 @@ export async function getMe(fetchImpl: typeof fetch = fetch, { verifyIdentity = 
   let res: Response
   try {
     res = await fetchImpl('/auth/me', verifyIdentity ? { ...sessionRequest, signal: AbortSignal.timeout(8000) } : { credentials: 'include' })
-    if (verifyIdentity && (!authResponseFrom(res, '/auth/me') || (res.status === 401 && !(await isSignedOutResponse(res))))) {
+    if (verifyIdentity && (!authResponseFrom(res, '/auth/me') || (res.status === 401 && !(await isSignedOutResponse(res, 'account'))))) {
       return { kind: 'error', message: UNREADABLE }
     }
   } catch {

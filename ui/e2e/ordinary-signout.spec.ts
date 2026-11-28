@@ -160,9 +160,15 @@ test('a retained workspace conceals its portalled seat offer until restore verif
   await expect(dialog).toBeHidden()
   const logout = await page.request.post('/auth/logout', { headers: { Origin: new URL(BASE_URL).origin } })
   expect(logout.status()).toBe(200)
-  let release!: () => void
-  const hold = new Promise<void>(resolve => { release = resolve })
-  await page.route('**/auth/me', async route => { await hold; await route.continue() })
+  let releaseUnavailable!: () => void, releaseRetry!: () => void
+  const unavailable = new Promise<void>(resolve => { releaseUnavailable = resolve })
+  const retry = new Promise<void>(resolve => { releaseRetry = resolve })
+  let reads = 0
+  await page.route('**/auth/me', async route => {
+    if (++reads === 1) { await unavailable; await route.fulfill({ status: 503 }); return }
+    await retry
+    await route.continue()
+  })
   await Promise.all([
     page.waitForRequest('**/auth/me'),
     page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))),
@@ -172,9 +178,21 @@ test('a retained workspace conceals its portalled seat offer until restore verif
   await expect(dialog).toBeHidden()
   const gate = page.getByRole('status').filter({ hasText: 'Loading…' })
   await expect(gate).toBeVisible()
+  releaseUnavailable()
+  await expect(page.getByText('Can’t reach the service', { exact: true })).toBeVisible()
+  const again = page.getByRole('button', { name: 'Try again', exact: true })
+  await expect(again).toBeVisible()
+  await expect(dialog).toHaveCount(1)
+  await expect(dialog).toBeHidden()
+  await Promise.all([page.waitForRequest('**/auth/me'), again.click()])
+  await expect(gate).toBeVisible()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByText('Sign in to continue')).toBeHidden()
   const verified = page.waitForResponse('**/auth/me')
-  release()
-  expect((await verified).status()).toBe(401)
+  releaseRetry()
+  const denied = await verified
+  expect(denied.status()).toBe(401)
+  expect(await denied.json()).toEqual({ detail: 'authentication required' })
   await expect(page.getByText('Sign in to continue')).toBeVisible()
   await expect(gate).toBeHidden()
   await expect(dialog).toHaveCount(0)
