@@ -37,6 +37,7 @@ from service.app import app, get_timeline_database, require_session
 from service.audit_log import AuditAction, AuditEvent, InMemoryAuditLog, ObjectKind
 from service.campaign_store import InMemoryCampaignStore
 from service.db import InMemoryDatabase, InMemoryTransaction
+from service.document_edit_store import InMemoryDocumentEditStore
 from service.document_store import DocumentRecord, InMemoryDocumentStore
 from service.participant_store import InMemoryParticipantStore
 from service.session import SessionData
@@ -169,7 +170,7 @@ class World:
         inner = self.stores
         self.stores = document_lifecycle_api.LifecycleStores(*(
             cast(Any, _Traced(getattr(inner, kind), kind, self.calls, overrides.get(kind)))
-            for kind in ("campaigns", "documents", "sessions", "audit")
+            for kind in ("campaigns", "documents", "sessions", "audit", "edits")
         ))
 
 
@@ -181,7 +182,7 @@ def world() -> Iterator[World]:
         db,
         document_lifecycle_api.LifecycleStores(
             InMemoryCampaignStore(db), documents, InMemoryTableSessionStore(db, slot_clear=no_slots),
-            InMemoryAuditLog(),
+            InMemoryAuditLog(), InMemoryDocumentEditStore(db),
         ),
         InMemoryParticipantStore(db),
     )

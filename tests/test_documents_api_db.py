@@ -37,6 +37,7 @@ from service.asset_store import Measured, PostgresAssetStore
 from service.audit_log import PostgresAuditLog
 from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore
 from service.db import CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
+from service.document_edit_store import PostgresDocumentEditStore
 from service.document_lifecycle_api import (
     NOT_APPLIED_MESSAGE,
     LifecycleStores,
@@ -474,8 +475,10 @@ def test_restoring_a_damaged_version_is_document_unsupported_and_writes_nothing(
 
 
 def _lifecycle_stores() -> LifecycleStores:
-    return LifecycleStores(PostgresCampaignStore(), PostgresDocumentStore(),
-                           PostgresTableSessionStore(slot_clear=no_slots), PostgresAuditLog())
+    return LifecycleStores(
+        PostgresCampaignStore(), PostgresDocumentStore(), PostgresTableSessionStore(slot_clear=no_slots),
+        PostgresAuditLog(), PostgresDocumentEditStore(),
+    )
 
 
 def _live_session(db: Database, owner: int) -> TableSession:

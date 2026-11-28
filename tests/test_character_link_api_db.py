@@ -34,6 +34,7 @@ from service import migrations as mig
 from service.audit_log import InMemoryAuditLog, PostgresAuditLog
 from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore
 from service.db import CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
+from service.document_edit_store import InMemoryDocumentEditStore, PostgresDocumentEditStore
 from service.document_lifecycle_api import (
     NOT_APPLIED_MESSAGE,
     LifecycleStores,
@@ -86,7 +87,7 @@ def _pg_world(dsn: str, settings: CampaignLockSettings = QUICK) -> World:
         )
     stores = LifecycleStores(
         PostgresCampaignStore(), PostgresDocumentStore(), PostgresTableSessionStore(slot_clear=no_slots),
-        PostgresAuditLog(),
+        PostgresAuditLog(), PostgresDocumentEditStore(),
     )
     return World("postgres", _database(dsn, settings), stores, PostgresParticipantStore(), owner, stranger, player,
                 dsn)
@@ -107,6 +108,7 @@ def world(request: pytest.FixtureRequest) -> World:
     documents = InMemoryDocumentStore(db)
     stores = LifecycleStores(
         InMemoryCampaignStore(db), documents, InMemoryTableSessionStore(db, slot_clear=no_slots), InMemoryAuditLog(),
+        InMemoryDocumentEditStore(db),
     )
     return World("twin", db, stores, InMemoryParticipantStore(db), owner=1, stranger=2, player=3)
 

@@ -948,6 +948,11 @@ can still receive content edits from its owner. Cancel stops additional provider
 attempts. A valid result that was already produced may commit with the cancel
 flag set.
 
+Permanently deleting an archived document clears the stored text used to
+retry its selections. The edit's timeline entry remains available. Starting
+another attempt against the deleted document receives the usual missing-document
+response.
+
 ## The conversation family
 
 A conversation's identity and metadata: the index a sidebar is built from

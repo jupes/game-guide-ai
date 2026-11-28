@@ -1,23 +1,31 @@
-"""PostgreSQL checks for the AI edit admission lock and completion fence."""
+"""PostgreSQL checks for AI edit admission, completion and permanent document deletion."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from threading import Barrier, Event
 
 import pytest
 from _pg import connect, needs_db, throwaway_database
+from fastapi import HTTPException
 from test_tool_invocation_db import PATIENT, _someone_waits_on_a_lock
 
 import config
-from service import document_edits, migrations, ratelimit, tool_invocations, tool_invocations_api
+from service import (
+    document_edits,
+    document_lifecycle_api,
+    migrations,
+    ratelimit,
+    tool_invocations,
+    tool_invocations_api,
+)
 from service.campaign_store import PostgresCampaignStore
 from service.conversation_store import PostgresConversationStore
-from service.db import AdvisoryLock, Database, PoolSettings
+from service.db import AdvisoryLock, Database, PgTransaction, PoolSettings
 from service.document_edit_store import PostgresDocumentEditStore
 from service.document_editing import EditProposal
 from service.document_store import PostgresDocumentStore
@@ -26,9 +34,12 @@ from service.timeline_store import PostgresTimelineStore
 from service.workbench_contracts import (
     Author,
     DocumentTypeId,
+    EditEntry,
     EditInvocation,
     EditRequest,
     ErrorCode,
+    ErrorInfo,
+    SelectionScope,
     ToolId,
     ToolInvocationRequest,
 )
@@ -300,3 +311,191 @@ def test_status_and_cancel_judge_expiry_after_acquiring_the_invocation_row(world
         assert (attempt.outcome, attempt.ended_at) == ("expired", admitted.row.attempt_deadline)
         [entry] = world.stores.timeline.entry_window(unit, request.conversation_id, before=None, limit=10)
         assert EditInvocation.model_validate(entry.payload["invocation"]) == result
+
+
+@pytest.fixture
+def selection(world: World) -> World:
+    scope = SelectionScope(kind="selection", field="wants", start=3, end=9, text="honest")
+    return replace(world, request=world.request.model_copy(update={"scope": scope}))
+
+
+def _lifecycle(world: World, operation, *, stores=None, owner: int | None = None) -> None:
+    operation(
+        world.db, stores or document_lifecycle_api.get_lifecycle_stores(), campaign_id=world.request.campaign_id,
+        document_id=world.request.document_id, owner_id=world.user.user_id if owner is None else owner, now=NOW,
+    )
+
+
+def _admit_selection(world: World) -> document_edits.EditAdmission:
+    admitted = world.submit()
+    assert isinstance(admitted, document_edits.EditAdmission)
+    return admitted
+
+
+def _retained(world: World) -> dict[str, str | None]:
+    with connect(world.dsn) as conn:
+        return dict(conn.execute(
+            "SELECT invocation_id, selection_text FROM campaign.document_edits "
+            "WHERE owner_id = %s AND campaign_id = %s AND document_id = %s",
+            (world.user.user_id, world.request.campaign_id, world.request.document_id),
+        ).fetchall())
+
+
+def _neighbor(world: World, *, other_owner: bool) -> World:
+    owner, campaign, conversation = world.user.user_id, world.request.campaign_id, world.request.conversation_id
+    if other_owner:
+        with connect(world.dsn) as conn:
+            owner = conn.execute(
+                "INSERT INTO auth.users (email, password_hash) VALUES ('neighbor@example.com', 'x') RETURNING id",
+            ).fetchone()[0]
+    with world.db.transaction() as unit:
+        if other_owner:
+            campaign = world.stores.campaigns.create(unit, owner_id=owner, name="Other table", now=NOW).id
+            conversation = world.stores.conversations.create(
+                unit, owner_id=owner, campaign_id=campaign, title=None, started_mode=None,
+            ).id
+        document = world.stores.documents.create(
+            unit, campaign, doc_type=DocumentTypeId.NPC, type_version=1, author=Author.GM,
+            data={"name": "Neighbor", "wants": "An honest trade"}, now=NOW,
+        ).id
+    request = world.request.model_copy(update={
+        "campaign_id": campaign, "conversation_id": conversation, "document_id": document,
+        "invocation_id": "neighbor_selection_id",
+    })
+    return replace(world, user=SessionData(user_id=owner, role="dm"), request=request)
+
+
+def test_hard_delete_clears_running_and_retryable_selection_only_for_the_owned_document(selection: World) -> None:
+    failed = _admit_selection(selection)
+    failure = document_edits.complete(
+        selection.db, selection.stores, failed,
+        ErrorInfo(code=ErrorCode.PROVIDER_FAILED, message="Try again.", retryable=True), clock=lambda: NOW,
+    )
+    assert failure.error is not None and failure.error.retryable
+    running = replace(selection, request=selection.request.model_copy(update={"invocation_id": "another_running_edit"}))
+    _admit_selection(running)
+    adjacent = _neighbor(selection, other_owner=False)
+    foreign = _neighbor(selection, other_owner=True)
+    for neighbor in (adjacent, foreign):
+        _admit_selection(neighbor)
+    ids = {selection.request.invocation_id, running.request.invocation_id}
+    assert _retained(selection) == dict.fromkeys(ids, "honest")
+
+    with pytest.raises(HTTPException) as live:
+        _lifecycle(selection, document_lifecycle_api.delete_document)
+    assert live.value.status_code == 409
+    _lifecycle(selection, document_lifecycle_api.archive_document)
+    with pytest.raises(HTTPException) as unauthorized:
+        _lifecycle(selection, document_lifecycle_api.delete_document, owner=foreign.user.user_id)
+    assert unauthorized.value.status_code == 404
+    assert _retained(selection) == dict.fromkeys(ids, "honest")
+    _lifecycle(selection, document_lifecycle_api.delete_document)
+
+    assert _retained(selection) == dict.fromkeys(ids)
+    for neighbor in (adjacent, foreign):
+        assert _retained(neighbor) == {neighbor.request.invocation_id: "honest"}
+    with pytest.raises(HTTPException) as repeated:
+        _lifecycle(selection, document_lifecycle_api.delete_document)
+    assert repeated.value.status_code == 404
+    with pytest.raises(tool_invocations.NotFound):
+        selection.submit()
+    request = selection.request
+    with selection.db.transaction() as unit:
+        assert selection.stores.documents.get(unit, request.campaign_id, request.document_id) is None
+        [attempt] = selection.stores.edits.attempts(
+            unit, selection.user.user_id, request.campaign_id, request.invocation_id,
+        )
+        assert attempt.attempt == 1
+        rows = selection.stores.timeline.entry_window(unit, request.conversation_id, before=None, limit=10)
+    history = [EditEntry.model_validate(row.payload) for row in rows
+               if row.payload["document"]["document_id"] == selection.request.document_id]
+    assert {entry.invocation.invocation_id: entry.invocation.status.value for entry in history} == {
+        selection.request.invocation_id: "failed", running.request.invocation_id: "working",
+    }
+    for entry in history:
+        assert entry.scope.model_dump() == {"kind": "selection", "field": "wants"}
+        assert all(body not in entry.model_dump_json() for body in ("honest", "bargain", "Quiet"))
+
+
+def test_hard_delete_repeats_its_transaction_when_admission_inserts_after_the_first_clear(
+    selection: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _lifecycle(selection, document_lifecycle_api.archive_document)
+    stores = document_lifecycle_api.get_lifecycle_stores()
+    original_hold = stores.documents.hold
+    delete_transactions: list[str] = []
+    entered, resume = Event(), Event()
+
+    def observe_hold(unit: PgTransaction, campaign: str, document: str):
+        delete_transactions.append(unit.conn.execute("SELECT pg_current_xact_id()::text").fetchone()[0])
+        return original_hold(unit, campaign, document)
+
+    def before_insert(owner: int) -> None:
+        # T1 already holds the document row but its private edit row does not exist yet.
+        entered.set()
+        assert resume.wait(timeout=15)
+
+    monkeypatch.setattr(stores.documents, "hold", observe_hold)
+    monkeypatch.setattr(ratelimit, "check_chat_request", before_insert)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        admission = pool.submit(_admit_selection, selection)
+        try:
+            assert entered.wait(timeout=15)
+            deletion = pool.submit(_lifecycle, selection, document_lifecycle_api.delete_document, stores=stores)
+            assert _someone_waits_on_a_lock(selection.dsn)
+            assert len(delete_transactions) == 1 and _retained(selection) == {}
+        finally:
+            resume.set()
+        admission.result(timeout=15)
+        deletion.result(timeout=15)
+    assert len(set(delete_transactions)) == 2
+    assert _retained(selection) == {selection.request.invocation_id: None}
+    with pytest.raises(tool_invocations.NotFound):
+        selection.submit()
+
+
+@pytest.mark.parametrize("first", ["completion", "delete"])
+def test_hard_delete_and_completion_serialize_without_restoring_the_document_or_selection(
+    selection: World, monkeypatch: pytest.MonkeyPatch, first: str,
+) -> None:
+    admitted = _admit_selection(selection)
+    _lifecycle(selection, document_lifecycle_api.archive_document)
+    stores = document_lifecycle_api.get_lifecycle_stores()
+    documents = selection.stores.documents if first == "completion" else stores.documents
+    original_hold = documents.hold
+    entered, resume = Event(), Event()
+
+    def before_document_hold(unit, campaign: str, document: str):
+        # T2's fence or delete's clear already holds the private edit row.
+        entered.set()
+        assert resume.wait(timeout=15)
+        return original_hold(unit, campaign, document)
+
+    monkeypatch.setattr(documents, "hold", before_document_hold)
+    complete = partial(
+        document_edits.complete, selection.db, selection.stores, admitted,
+        EditProposal({"wants": "An even bargain"}, ("wants",)), clock=lambda: NOW,
+    )
+    delete = partial(_lifecycle, selection, document_lifecycle_api.delete_document, stores=stores)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leading = pool.submit(complete if first == "completion" else delete)
+        try:
+            assert entered.wait(timeout=15)
+            following = pool.submit(delete if first == "completion" else complete)
+            assert _someone_waits_on_a_lock(selection.dsn)
+        finally:
+            resume.set()
+        first_result, second_result = leading.result(timeout=15), following.result(timeout=15)
+    outcome = first_result if first == "completion" else second_result
+    assert isinstance(outcome, EditInvocation)
+    if first == "completion":
+        assert outcome.status.value == "done" and outcome.result is not None and outcome.result.outcome == "changed"
+    else:
+        assert outcome.status.value == "failed" and outcome.error is not None
+        assert (outcome.error.code, outcome.error.retryable) == (ErrorCode.NOT_FOUND, False)
+    assert _retained(selection) == {selection.request.invocation_id: None}
+    request = selection.request
+    with selection.db.transaction() as unit:
+        assert selection.stores.documents.get(unit, request.campaign_id, request.document_id) is None
+        [row] = selection.stores.timeline.entry_window(unit, request.conversation_id, before=None, limit=10)
+        assert EditEntry.model_validate(row.payload).invocation == outcome
