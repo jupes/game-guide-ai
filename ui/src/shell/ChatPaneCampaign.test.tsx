@@ -18,6 +18,8 @@ import userEvent from '@testing-library/user-event'
 import * as api from '../api'
 import type { ChatResult } from '../api'
 import { CampaignSchema, TOOL_IDS, parseTimelineEntry } from '../gm/contracts'
+import { documentFixture } from '../gm/documentFixtures'
+import * as canvas from './canvasContext'
 import { documentResult, errorInfo, toolInvocation } from '../gm/laneFixtures'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { AppNavProvider, useAppNav, type AppNavState } from './AppNav'
@@ -178,6 +180,128 @@ it('draws an acknowledged cue after the live turn in the current GM thread only'
   const answer = screen.getByText('An answer')
   expect(answer.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(await screen.findByRole('button', { name: 'Play preview of Rain on the roof' })).toBeVisible()
+})
+
+describe('private images in the GM thread', () => {
+  const when = '2026-01-01T00:00:00Z'
+  const asset = {
+    schema_version: 1, asset_id: 'ast_map', campaign_id: 'cmp_A', kind: 'image', state: 'ready',
+    media_type: 'image/png', size_bytes: 4, width: 80, height: 40, alt: 'The hidden ferry crossing',
+    duration_ms: null, failure: null, created_at: when, updated_at: when,
+  }
+  const collection = '/campaigns/cmp_A/assets'
+  const path = collection + '/ast_map'
+  const entry = { schema_version: 1, entry_id: 'ent_map', entry_kind: 'attached_image', created_at: when, asset_id: asset.asset_id }
+  function world(attach: (body: Record<string, unknown>) => Promise<Response>) {
+    const calls: { path: string; init?: RequestInit }[] = []
+    const request: typeof fetch = async (input, init) => {
+      const url = String(input)
+      calls.push({ path: url, init })
+      if (url.endsWith('/tool-availability')) return jsonReply(availableTools)
+      if (url === collection + '/upload-capability') return new Response(null, { status: 204 })
+      if (url === collection) return jsonReply({ ...asset, state: 'uploading', width: null, height: null }, 201)
+      if (url === path + '/bytes' || url === path + '/status') return jsonReply(asset)
+      if (url === path + '/attach') return attach(JSON.parse(String(init?.body)))
+      return jsonReply({}, 404)
+    }
+    return { calls, request }
+  }
+  async function openForm() {
+    await userEvent.click(await screen.findByRole('button', { name: 'Attach image' }))
+    const form = within(screen.getByRole('dialog', { name: 'Attach image to GM thread' }))
+    await form.findByRole('combobox', { name: 'Use as' })
+    return form
+  }
+  async function chooseFile(form: ReturnType<typeof within>) {
+    await userEvent.upload(form.getByLabelText('Image file'), new File(['data'], 'private.png', { type: 'image/png' }))
+    await userEvent.type(form.getByLabelText('Image description'), asset.alt)
+  }
+  it('retries just the attachment, opens its new thread at once, and carries the unsent GM draft with it', async () => {
+    let fail = true
+    const { request, calls } = world(async body => {
+      if (fail) return jsonReply({}, 503)
+      return jsonReply({ ...entry, use: body.use })
+    })
+    const { server } = await mount({ tools: request, loadTimeline: () => new Promise(() => {}) })
+    const draft = 'What if the ferry never arrives?'
+    await userEvent.type(await screen.findByRole('textbox', { name: 'Message' }), draft)
+    const form = await openForm()
+    await userEvent.selectOptions(form.getByRole('combobox', { name: 'Use as' }), 'map')
+    await chooseFile(form)
+    const add = form.getByRole('button', { name: 'Add to GM thread' })
+    await userEvent.click(add)
+    expect(await form.findByRole('alert')).toHaveTextContent('Try again with the same image')
+    fail = false
+    await userEvent.click(add)
+    expect(await screen.findByRole('img', { name: asset.alt })).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(draft)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(server.posts().filter(call => call.url === '/conversations')).toHaveLength(1)
+    expect(calls.filter(call => call.path === collection)).toHaveLength(1)
+    expect(calls.filter(call => call.path === path + '/bytes')).toHaveLength(1)
+    expect(calls.filter(call => call.path === path + '/attach').map(call => JSON.parse(String(call.init?.body))))
+      .toEqual(Array(2).fill({ schema_version: 1, conversation_id: live.nav.conversationId, use: 'map' }))
+    expect(calls.some(call => call.init?.method === 'DELETE' || call.path.startsWith('/table/'))).toBe(false)
+  })
+
+  it('can attach the saved image of the open document without creating or uploading media bytes', async () => {
+    const doc = documentFixture('npc')
+    const state = { doc: { kind: 'open', document: { ...doc, campaign_id: 'cmp_A',
+      data: { ...doc.data, portrait: { asset_id: asset.asset_id, media_type: 'image', alt: asset.alt } } } },
+      view: 'chat', documentsVersion: 0, guardDialog: null, announcement: '', announcementTick: 0,
+    } as const
+    vi.spyOn(canvas, 'useCanvasState').mockReturnValue(state)
+    const { calls, request } = world(async body => jsonReply({ ...entry, use: body.use }))
+    await mount({ tools: request })
+    const form = await openForm()
+    await chooseFile(form)
+    const source = form.getByRole('checkbox', { name: 'Use the open document’s image' })
+    await userEvent.click(source)
+    await userEvent.click(source)
+    expect(form.getByLabelText('Image file')).toHaveValue('')
+    expect(form.getByLabelText('Image description')).toHaveValue('')
+    await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    expect(form.getByRole('alert')).toHaveTextContent(/choose a png/i)
+    await userEvent.click(source)
+    expect(form.getByText(asset.alt)).toBeVisible()
+    await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    expect(await screen.findByRole('img', { name: asset.alt })).toBeVisible()
+    expect(calls.filter(call => call.init?.method === 'POST').map(call => call.path)).toEqual([path + '/attach'])
+    expect(calls.some(call => call.init?.method === 'PUT' || call.init?.method === 'DELETE')).toBe(false)
+  })
+
+  it('keeps the upload unavailable until a successful capability check', async () => {
+    let enabled = false
+    const request = vi.fn<typeof fetch>(async input => String(input).endsWith('/upload-capability')
+      ? new Response(null, { status: enabled ? 204 : 404 }) : jsonReply(availableTools))
+    await mount({ tools: request })
+    await userEvent.click(await screen.findByRole('button', { name: 'Attach image' }))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(await dialog.findByText(/attachments are unavailable/)).toBeVisible()
+    expect(dialog.queryByLabelText('Image file')).toBeNull()
+    enabled = true
+    await userEvent.click(dialog.getByRole('button', { name: 'Check again' }))
+    expect(await dialog.findByLabelText('Image file')).toBeVisible()
+    expect(request.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('does not resurrect a submitted image or move the user back after switching channels', async () => {
+    let settle!: (response: Response) => void
+    const { calls, request } = world(() => new Promise(resolve => { settle = resolve }))
+    await mount({ tools: request })
+    const form = await openForm()
+    await chooseFile(form)
+    await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    const post = calls.find(call => call.path === path + '/attach')
+    expect(post).toBeDefined()
+    act(() => live.nav.setMode('sage'))
+    expect(post?.init?.signal?.aborted).toBe(true)
+    await act(async () => { settle(jsonReply({ ...entry, use: 'portrait' })) })
+    expect(screen.queryByRole('img', { name: asset.alt })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(live.nav.mode).toBe('sage')
+    expect(calls.some(call => call.init?.method === 'DELETE')).toBe(false)
+  })
 })
 
 describe('the GM tool composer', () => {

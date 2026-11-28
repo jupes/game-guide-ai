@@ -207,15 +207,3 @@
     max-width: 100%;
   }
 }
-.assistant-lane__media summary {
-  cursor: pointer;
-  min-block-size: var(--aether-touch-min);
-  align-content: center;
-}
-
-.assistant-lane__media img {
-  display: block;
-  max-inline-size: 100%;
-  max-block-size: 60dvh;
-  object-fit: contain;
-}

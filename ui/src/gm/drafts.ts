@@ -39,6 +39,8 @@ export interface DraftStore {
   restoreDraft: (rejected: string, target?: string) => void
   /** Drop one conversation's draft — after a submit, or when it is deleted. */
   clearDraft: () => void
+  /** A private attachment can create a thread while its GM is still composing. */
+  moveToThread: (thread: string) => void
 }
 
 export function useConversationDrafts(conversationId: string | null): DraftStore {
@@ -81,5 +83,15 @@ export function useConversationDrafts(conversationId: string | null): DraftStore
     })
   }, [conversationId, revision, source])
 
-  return { draft: saved?.text ?? '', source, setDraft, restoreDraft, clearDraft }
+  const moveToThread = React.useCallback((thread: string) => {
+    setDrafts(prev => {
+      const before = prev.get(conversationId)
+      if (before === undefined || prev.has(thread)) return prev
+      const next = new Map(prev)
+      next.delete(conversationId)
+      return next.set(thread, before)
+    })
+  }, [conversationId])
+
+  return { draft: saved?.text ?? '', source, setDraft, restoreDraft, clearDraft, moveToThread }
 }

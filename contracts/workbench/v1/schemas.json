@@ -24,6 +24,7 @@
     "TimelineEntry",
     "TimelinePage",
     "AssetCreateRequest",
+    "ImageAttachRequest",
     "Asset",
     "TableAssetRef",
     "Cue",

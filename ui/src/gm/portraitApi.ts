@@ -1,7 +1,7 @@
 import { notifyUnauthorized } from '../api'
 import {
-  AssetCreateRequestSchema, AssetRefSchema, AssetSchema, CONTRACT_VERSION, ErrorBodySchema,
-  type Asset, type AssetRef,
+  AssetCreateRequestSchema, AssetRefSchema, AssetSchema, AttachedImageEntrySchema, CONTRACT_VERSION, ErrorBodySchema,
+  ImageAttachRequestSchema, type Asset, type AssetRef, type AttachedImageEntry, type ImageUse,
 } from './contracts'
 import { assetPath } from './documentFields'
 
@@ -15,8 +15,9 @@ function collection(campaignId: string): string {
 
 async function request(fetchImpl: typeof fetch, path: string, init: RequestInit): Promise<Response | null> {
   try {
-    const response = await fetchImpl(path, { ...init, credentials: 'include' })
-    if (response.status === 401) notifyUnauthorized()
+    init.signal?.throwIfAborted()
+    const response = await fetchImpl(path, { ...init, credentials: 'include', mode: 'same-origin', redirect: 'error' })
+    if (response.status === 401 && !init.signal?.aborted) notifyUnauthorized()
     return response
   } catch {
     return null
@@ -44,10 +45,38 @@ export async function discardPortraitUpload(
   await request(fetchImpl, assetPath(campaignId, assetId), { method: 'DELETE' })
 }
 
+export async function attachThreadImage(
+  campaignId: string, thread: string, assetId: string, use: ImageUse, signal: AbortSignal, fetchImpl: typeof fetch = fetch,
+): Promise<AttachedImageEntry> {
+  const body = ImageAttachRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, conversation_id: thread, use })
+  if (!body.success) throw new Error('Couldn’t open this GM thread. Reopen it and try again.')
+  const response = await request(fetchImpl, `${assetPath(campaignId, assetId)}/attach`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body.data), signal,
+  })
+  if (response?.status === 404) throw new Error('This image or GM thread is unavailable. Choose another image or reopen the thread.')
+  const entry = response?.status === 200 ? AttachedImageEntrySchema.safeParse(await readBody(response)) : null
+  if (!entry?.success || entry.data.asset_id !== assetId || entry.data.use !== use) {
+    throw new Error('Couldn’t confirm the attachment. Try again with the same image.')
+  }
+  return entry.data
+}
+
+export async function readThreadImage(
+  campaignId: string, assetId: string, signal: AbortSignal, fetchImpl: typeof fetch = fetch,
+): Promise<AssetRef | null> {
+  const response = await request(fetchImpl, `${assetPath(campaignId, assetId)}/status`, { signal, cache: 'no-store' })
+  const parsed = response?.ok ? AssetSchema.safeParse(await readBody(response)) : null
+  if (!parsed?.success || signal.aborted) return null
+  const asset = parsed.data
+  if (asset.campaign_id !== campaignId || asset.asset_id !== assetId || asset.kind !== 'image') return null
+  const result = portraitResult(asset)
+  return result.kind === 'ready' ? result.portrait : null
+}
+
 function portraitResult(asset: Asset): PortraitUploadResult {
   if (asset.state === 'failed') {
     const message = asset.failure === 'quota_exceeded'
-      ? 'There is no room for that portrait. Try a smaller image.'
+      ? 'There is no room for that image. Try a smaller file.'
       : 'This image could not be processed. Try this file again or choose another one.'
     return { kind: 'failed', message, startFresh: true, assetId: asset.asset_id }
   }
@@ -59,7 +88,7 @@ function portraitResult(asset: Asset): PortraitUploadResult {
   })
   return reference.success
     ? { kind: 'ready', portrait: reference.data }
-    : { kind: 'failed', message: 'The portrait could not be read. Try again.', assetId: asset.asset_id }
+    : { kind: 'failed', message: 'The image could not be read. Try again.', assetId: asset.asset_id }
 }
 
 export async function uploadPortrait(
@@ -77,7 +106,7 @@ export async function uploadPortrait(
   if (!input.success) {
     return { kind: 'failed', message: 'Choose a PNG, JPEG, or WebP image and enter a short description.' }
   }
-  const failed = { kind: 'failed', message: 'The portrait could not be uploaded. Try again.' } as const
+  const failed = { kind: 'failed', message: 'The image could not be uploaded. Try again.' } as const
   const response = await request(fetchImpl, collection(campaignId), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input.data), signal,
   })
@@ -86,7 +115,7 @@ export async function uploadPortrait(
     const error = ErrorBodySchema.safeParse(avatarBody)
     const code = error.data?.detail.code
     if (code === 'cap_reached' || code === 'account_limit_reached') {
-      return { kind: 'failed', message: 'There is no room for another portrait. Free up media storage and try again.' }
+      return { kind: 'failed', message: 'There is no room for another image. Free up media storage and try again.' }
     }
     return failed
   }

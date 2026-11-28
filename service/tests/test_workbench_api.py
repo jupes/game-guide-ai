@@ -1039,6 +1039,7 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("POST", "/campaigns/{campaign_id}/assets"), ("PUT", "/campaigns/{campaign_id}/assets/{asset_id}/bytes"),
     ("GET", "/campaigns/{campaign_id}/assets/upload-capability"),
     ("GET", "/campaigns/{campaign_id}/assets/{asset_id}/status"),
+    ("POST", "/campaigns/{campaign_id}/assets/{asset_id}/attach"),
     # 1kg.8.1.3's media reads and deletes: two more, dark the same way
     # (`service/asset_serving_api.py`).
     ("GET", "/campaigns/{campaign_id}/assets/{asset_id}"), ("DELETE", "/campaigns/{campaign_id}/assets/{asset_id}"),

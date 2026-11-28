@@ -380,6 +380,7 @@ def _dark_pairs() -> list[tuple[str, str]]:
             (_bytes_path(campaign, asset), f"/campaigns/{campaign}/assetz/{asset}/bytes"),
             (f"/campaigns/{campaign}/assets/upload-capability", f"/campaigns/{campaign}/assetz/upload-capability"),
             (f"/campaigns/{campaign}/assets/{asset}/status", f"/campaigns/{campaign}/assetz/{asset}/status"),
+            (f"/campaigns/{campaign}/assets/{asset}/attach", f"/campaigns/{campaign}/assetz/{asset}/attach"),
             *((f"/campaigns/{campaign}/cues{suffix}", f"/campaigns/{campaign}/cuez{suffix}")
               for suffix in cue_suffixes)]
 
@@ -420,7 +421,11 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert appmod._media_enabled() is True
     media = [(path, route) for path, route in api_routes(app) if "/assets" in path]
-    assert len([path for path, _ in media if path.startswith("/campaigns/")]) == 6
+    prefix = "/campaigns/{campaign_id}/assets"
+    assert sorted(path for path, _ in media if path.startswith("/campaigns/")) == sorted([
+        prefix, prefix + "/upload-capability", prefix + "/{asset_id}/status", prefix + "/{asset_id}/bytes",
+        prefix + "/{asset_id}/attach", prefix + "/{asset_id}", prefix + "/{asset_id}",
+    ])
     assert [path for path, _ in media if not path.startswith("/campaigns/")] == ["/table/assets/{handle}"]
     assert all(isinstance(route, assets_api.WorkbenchRoute) for _, route in media)
     assert not [path for path, _ in api_routes(app) if ":path}" in path]
@@ -444,6 +449,18 @@ def test_upload_availability_checks_ownership_without_reserving_storage(client: 
     assert client.get(path).json() == NOT_FOUND
     _as(PLAYER, "player")
     assert client.get(path).status_code == 403
+
+
+@pytest.mark.parametrize(("description", "expected"), [
+    ("  North\r\n gate\t and towers  ", "North gate and towers"),
+    ("A" * 300, "A" * 200),
+    (" \t\n", "Map"),
+    ("Old\x01caption", "Map"),
+])
+def test_saved_image_handout_uses_a_bounded_readable_title(description: str, expected: str) -> None:
+    from service.image_attachments import handout_name
+
+    assert handout_name(description, "map") == expected
 
 
 # ── AC 20: the proxies carry the prefix, and the bytes path's posture ───────

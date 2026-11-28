@@ -1,8 +1,19 @@
 {
   "schema": "TimelineEntry",
   "direction": "response",
-  "note": "One entry per exchange (1kg.4.2). An attached cue persists only a reference to the GM campaign's cue.",
+  "note": "One entry per exchange (1kg.4.2). GM attachments refer to campaign cues or images by id.",
   "valid": [
+    {
+      "name": "a private map attached to a GM thread",
+      "value": {
+        "schema_version": 1,
+        "entry_kind": "attached_image",
+        "entry_id": "ent_AttachedMap00000000001",
+        "created_at": "2026-11-28T09:00:00Z",
+        "use": "map",
+        "asset_id": "ast_Example000000000000001"
+      }
+    },
     {
       "name": "a private attached audio cue",
       "value": {
@@ -498,6 +509,11 @@
     }
   ],
   "invalid": [
+    {
+      "name": "an image attachment with no asset id",
+      "why": "Every durable attachment references an asset.",
+      "value": { "schema_version": 1, "entry_kind": "attached_image", "entry_id": "ent_AttachedMap00000000001", "created_at": "2026-11-28T09:00:00Z", "use": "map" }
+    },
     {
       "name": "an entry kind this contract does not know",
       "why": "X-8: a closed union; a new kind is a version bump, and the strict schema never guesses",

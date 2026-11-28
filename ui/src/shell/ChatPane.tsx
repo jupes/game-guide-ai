@@ -23,6 +23,7 @@ import { exportChat } from '../exportChat'
 import { toSpellCardProps, toStatBlockCardProps } from '../gm/adapters'
 import { GmThread, type GmThreadProps } from '../gm/GmThread'
 import { ToolComposer, type ToolInvocation } from '../gm/ToolComposer'
+import { ThreadImageAttachment } from '../gm/ThreadImageAttachment'
 import { useConversationDrafts, type DraftStore } from '../gm/drafts'
 import type { ArmedSuggestion, LaneActionId } from '../gm/laneState'
 import { composerGate, requestFromEntry, turnsWithPendingWork } from '../gm/pendingWork'
@@ -32,7 +33,7 @@ import { armDraft, parseDraft } from '../gm/slash'
 import { loadToolAvailability } from '../gm/toolInvocationApi'
 import { useToolInvocations, type ToolInvocations } from '../gm/useToolInvocations'
 import {
-  attachedCueTurn,
+  attachmentTurn,
   collapseSessionSpans,
   exchangesForExport,
   turnFromExchange,
@@ -142,7 +143,7 @@ export interface ChatPaneProps {
   loadTimeline?: LoadTimelinePageFn
   uploadAttachment?: UploadAttachmentFn
   getAttachments?: GetAttachmentsFn
-  onCustomiseRailOpenChange?: (open: boolean) => void
+  onComposerDialogChange?: (open: boolean) => void
 }
 
 /** Which side of the GM boundary a pane is on: the GM channel reads the typed
@@ -200,6 +201,7 @@ function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string
     <ChatPaneBody
       key={campaign === null ? side : `${side}:${campaign}`}
       {...props}
+      account={account}
       side={side}
       mode={paneMode}
       onPendingChange={holdWhilePending}
@@ -212,6 +214,7 @@ function ChatPaneScoped({ account, ...props }: ChatPaneProps & { account: string
 }
 
 interface ChatPaneBodyProps extends ChatPaneProps {
+  account?: string
   /** The mode's side of the GM boundary, or the side a turn in flight was sent from. */
   side: Side
   mode: ChatMode
@@ -223,6 +226,7 @@ interface ChatPaneBodyProps extends ChatPaneProps {
 }
 
 function ChatPaneBody({
+  account,
   side,
   mode,
   onPendingChange,
@@ -233,7 +237,7 @@ function ChatPaneBody({
   tools,
   pins,
   activeConversation,
-  onCustomiseRailOpenChange,
+  onComposerDialogChange,
   uploadAttachment = defaultUploadAttachment,
   getAttachments = defaultGetAttachments,
 }: ChatPaneBodyProps): React.JSX.Element {
@@ -364,13 +368,13 @@ function ChatPaneBody({
   // drawn list, so the pair still collapses once Load earlier prepends one
   // half above the other.
   const timeline = useGmTimeline(conversationId, gm, loadTimeline)
-  const { addAttachedCue } = timeline
+  const { addAttachment } = timeline
   React.useEffect(() => {
     if (!gm || conversationId === null) return
     return onCueAttachment((thread, entry) => {
-      if (thread === conversationId) addAttachedCue(entry)
+      if (thread === conversationId) addAttachment(entry)
     })
-  }, [gm, conversationId, onCueAttachment, addAttachedCue])
+  }, [gm, conversationId, onCueAttachment, addAttachment])
   const gmTurns = React.useMemo(() => {
     if (!gm) return []
     const stored = turnsFromTimeline(timeline.items)
@@ -380,10 +384,10 @@ function ChatPaneBody({
     const live = [
       ...exchanges.map((exchange) => ({ turn: turnFromExchange(exchange), submittedAt: exchange.submittedAt ?? 0 })),
       ...liveTools,
-      ...timeline.recentCueEntries.map(({ entry, receivedAt }) => ({ turn: attachedCueTurn(entry), submittedAt: receivedAt })),
+      ...timeline.recentAttachments.map(({ entry, receivedAt }) => ({ turn: attachmentTurn(entry), submittedAt: receivedAt })),
     ].sort((a, b) => a.submittedAt - b.submittedAt)
     return collapseSessionSpans([...turns, ...live.map(({ turn }) => turn)])
-  }, [gm, timeline.items, timeline.recentCueEntries, exchanges, conversationId, tools.work])
+  }, [gm, timeline.items, timeline.recentAttachments, exchanges, conversationId, tools.work])
   const threadError = gm ? timeline.error : historyError
   const threadLoading = gm ? timeline.loading : loadingHistory
   const threadLength = gm ? gmTurns.length : exchanges.length
@@ -449,7 +453,17 @@ function ChatPaneBody({
   } | null>(null)
   const availabilityKey = gmLive && campaignId !== null ? `${campaignId}:${availabilityAttempt}` : null
   const checked = capabilities !== null && capabilities.key === availabilityKey
-  const availability = checked ? capabilities.tools ?? toolAvailability(null) : toolAvailability(null)
+  const availability = React.useMemo(() => {
+    const available = (checked && capabilities.tools) || toolAvailability(null)
+    if (!showTools || !campaignId) return available
+    const tools = { ...available }
+    for (const id of ['portrait', 'map'] as const) {
+      if (!tools[id].enabled) tools[id] = {
+        enabled: false, reason: `${tools[id].reason ?? 'Image generation is unavailable.'} Use Attach image for an existing image.`,
+      }
+    }
+    return tools
+  }, [checked, capabilities, showTools, campaignId])
   React.useEffect(() => {
     if (availabilityKey === null || campaignId === null) return
     let left = false
@@ -546,6 +560,9 @@ function ChatPaneBody({
   // conversation without querying the DOM. These are the stable canvas ACTIONS, so a
   // document loading, opening or closing never re-renders this pane (C-13).
   const { openDocument, composerRef, setChatRegion, bumpDocumentsVersion } = useCanvasActions()
+  const mediaScope = React.useMemo(() => gmLive && account && conversationId && campaignId
+    ? { actorId: account, conversationId, onSaved: bumpDocumentsVersion } : undefined,
+  [gmLive, account, conversationId, campaignId, bumpDocumentsVersion])
   const openFromLink = React.useCallback(
     (link: DocumentLink): void => {
       void openDocument({ documentId: link.document_id, title: link.title }, { gesture: true })
@@ -821,6 +838,7 @@ function ChatPaneBody({
           <GmThread
             turns={gmTurns}
             campaignId={scope?.campaignId}
+            mediaScope={mediaScope}
             hasEarlier={timeline.hasEarlier}
             loadingEarlier={timeline.loadingEarlier}
             earlierError={timeline.earlierError}
@@ -986,6 +1004,19 @@ function ChatPaneBody({
 
       {/* Toolbar: export button */}
       <div className="chat-pane__toolbar">
+        {showTools && campaignId && scope && selectedId === conversationId && <ThreadImageAttachment
+          key={conversationId ?? scope.key} campaignId={campaignId} onOpenChange={onComposerDialogChange}
+          getThread={() => conversationId ? Promise.resolve(conversationId) : ensureThread()}
+          onAttached={(thread, entry) => {
+            if (!isCurrentScope(scope.key) || currentSelection.current !== selectionAtSend) return
+            if (conversationId === null) {
+              drafts.moveToThread(thread)
+              setConversationId(thread)
+            }
+            addAttachment(entry, thread)
+            setArrival(entry.use === 'map' ? 'Map added to the GM thread.' : 'Portrait added to the GM thread.')
+          }}
+        />}
         <IconButton
           icon="download"
           ariaLabel="Export chat"
@@ -1027,7 +1058,7 @@ function ChatPaneBody({
           composerRef={composerRef}
           focusRequest={focusRequest}
           attachmentControl={attachmentControl}
-          onCustomiseOpenChange={onCustomiseRailOpenChange}
+          onCustomiseOpenChange={onComposerDialogChange}
           onSlashAnnouncement={announceSlash}
           {...gate}
         />

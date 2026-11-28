@@ -91,6 +91,7 @@ from .asset_store import AccountMediaQuotaExceeded, AssetRecord, AssetStore, Ill
 from .campaign_store import MissingParent
 from .conversations_api import read_body
 from .db import TransactionalDatabase
+from .image_attachments import attach_image
 from .media_objects import (
     THUMBNAIL_MAX_BYTES,
     WAVEFORM_MAX_BYTES,
@@ -112,9 +113,11 @@ from .workbench_contracts import (
     AssetFailure,
     AssetKind,
     AssetState,
+    AttachedImageEntry,
     ErrorBody,
     ErrorCode,
     ErrorInfo,
+    ImageAttachRequest,
 )
 
 CREATE_PATH = "/campaigns/{campaign_id}/assets"
@@ -539,6 +542,17 @@ def build_router(
         _shaped(campaign_id)
         return create_asset(live_db, live.assets, campaign_id=campaign_id, owner_id=user.user_id, request=request,
                             now=clock())
+
+    @create_router.post(f"{CREATE_PATH}/{{asset_id}}/attach", include_in_schema=False)
+    def attach(
+        campaign_id: str, asset_id: str, user: SessionData = Depends(gm), raw: bytes = Depends(read_body),
+        db: TransactionalDatabase | None = Depends(database), runtime: MediaRuntime | None = Depends(media),
+        clock: Callable[[], datetime] = Depends(get_clock),
+    ) -> AttachedImageEntry:
+        live_db, _ = _available(db, runtime)
+        _shaped(campaign_id, asset_id)
+        body = _parse(ImageAttachRequest, raw)
+        return _guarded(lambda: attach_image(live_db, campaign_id, asset_id, user.user_id, body, clock()))
 
     @create_router.get(f"{CREATE_PATH}/{{asset_id}}/status", response_model=Asset, include_in_schema=False)
     def status(

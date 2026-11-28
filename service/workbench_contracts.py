@@ -417,6 +417,7 @@ class EntryKind(str, Enum):
     EDIT = "edit"
     SESSION_DIVIDER = "session_divider"
     ATTACHED_CUE = "attached_cue"
+    ATTACHED_IMAGE = "attached_image"
     OPAQUE = "opaque"
 
 
@@ -1891,7 +1892,24 @@ class CueAttachRequest(_Contract):
     conversation_id: OpaqueId
 
 
-AnyEntry = ChatEntry | ToolEntry | EditEntry | SessionDividerEntry | AttachedCueEntry | OpaqueEntry
+ImageUse = Literal["portrait", "map"]
+
+
+class AttachedImageEntry(_EntryBase):
+    """A deliberate GM attachment, distinct from a generated tool result."""
+
+    entry_kind: Literal["attached_image"]
+    use: ImageUse
+    asset_id: OpaqueId
+
+
+class ImageAttachRequest(_Contract):
+    schema_version: SchemaVersion
+    conversation_id: OpaqueId
+    use: ImageUse
+
+
+AnyEntry = ChatEntry | ToolEntry | EditEntry | SessionDividerEntry | AttachedCueEntry | AttachedImageEntry | OpaqueEntry
 TimelineEntry = Annotated[AnyEntry, Field(discriminator="entry_kind")]
 
 
@@ -4117,6 +4135,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "Cue": TypeAdapter(Cue),
     "CueCreateRequest": TypeAdapter(CueCreateRequest),
     "CueAttachRequest": TypeAdapter(CueAttachRequest),
+    "ImageAttachRequest": TypeAdapter(ImageAttachRequest),
     "CueRenameRequest": TypeAdapter(CueRenameRequest),
     "CueListQuery": TypeAdapter(CueListQuery),
     "CuePage": TypeAdapter(CuePage),

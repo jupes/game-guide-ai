@@ -1,0 +1,31 @@
+{
+  "schema": "ImageAttachRequest",
+  "direction": "request",
+  "valid": [
+    {
+      "name": "attach a ready image as a portrait",
+      "value": { "schema_version": 1, "conversation_id": "cnv_Example000000000000001", "use": "portrait" }
+    },
+    {
+      "name": "attach a ready image as a map",
+      "value": { "schema_version": 1, "conversation_id": "cnv_Example000000000000001", "use": "map" }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing choice of image use",
+      "why": "The GM chooses how the image appears in the thread.",
+      "value": { "schema_version": 1, "conversation_id": "cnv_Example000000000000001" }
+    },
+    {
+      "name": "unsupported image use",
+      "why": "The attachment accepts a portrait or map.",
+      "value": { "schema_version": 1, "conversation_id": "cnv_Example000000000000001", "use": "audio" }
+    },
+    {
+      "name": "client-supplied URL",
+      "why": "The service resolves the authorized campaign asset from the path.",
+      "value": { "schema_version": 1, "conversation_id": "cnv_Example000000000000001", "use": "map", "url": "https://example.invalid/harbor.png" }
+    }
+  ]
+}
