@@ -192,7 +192,7 @@ describe('private images in the GM thread', () => {
   const collection = '/campaigns/cmp_A/assets'
   const path = collection + '/ast_map'
   const entry = { schema_version: 1, entry_id: 'ent_map', entry_kind: 'attached_image', created_at: when, asset_id: asset.asset_id }
-  function world(attach: (body: Record<string, unknown>) => Promise<Response>) {
+  function world(attach: (body: Record<string, unknown>) => Promise<Response>, remove = () => new Response(null, { status: 204 })) {
     const calls: { path: string; init?: RequestInit }[] = []
     const request: typeof fetch = async (input, init) => {
       const url = String(input)
@@ -202,6 +202,7 @@ describe('private images in the GM thread', () => {
       if (url === collection) return jsonReply({ ...asset, state: 'uploading', width: null, height: null }, 201)
       if (url === path + '/bytes' || url === path + '/status') return jsonReply(asset)
       if (url === path + '/attach') return attach(JSON.parse(String(init?.body)))
+      if (url === path && init?.method === 'DELETE') return remove()
       return jsonReply({}, 404)
     }
     return { calls, request }
@@ -216,6 +217,79 @@ describe('private images in the GM thread', () => {
     await userEvent.upload(form.getByLabelText('Image file'), new File(['data'], 'private.png', { type: 'image/png' }))
     await userEvent.type(form.getByLabelText('Image description'), asset.alt)
   }
+  function refused(status: 404 | 429): Response {
+    const detail = status === 429 ? errorInfo({ code: 'throttled_user', retryable: true, retry_after_s: 5 }) :
+      errorInfo({ code: 'not_found', retryable: false })
+    return Response.json({ detail }, { status })
+  }
+  it.each([404, 429] as const)('keeps a definitely refused local upload for retry and releases it on abandon (%s)', async status => {
+    const { request, calls } = world(async () => refused(status))
+    await mount({ tools: request })
+    const form = await openForm()
+    await chooseFile(form)
+    const add = form.getByRole('button', { name: 'Add to GM thread' })
+    await userEvent.click(add)
+    expect(await form.findByRole('alert')).toHaveTextContent(status === 429 ? /wait a moment/i : /unavailable/i)
+    await userEvent.click(add)
+    expect(calls.filter(call => call.path === path + '/attach')).toHaveLength(2)
+    expect(calls.filter(call => call.path === path + '/bytes')).toHaveLength(1)
+    expect(calls.filter(call => call.init?.method === 'DELETE')).toHaveLength(0)
+    if (status === 429) await userEvent.click(form.getByRole('button', { name: 'Close' }))
+    else act(() => live.nav.setMode('sage'))
+    expect(calls.filter(call => call.init?.method === 'DELETE').map(call => call.path)).toEqual([path])
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('keeps an unconfirmed discard retryable and observes the server’s Retry-After before issuing another DELETE', async () => {
+    let attempts = 0
+    const { request, calls } = world(async () => refused(429), () => {
+      if (++attempts > 1) return new Response(null, { status: 204 })
+      const response = refused(429)
+      response.headers.set('Retry-After', '12')
+      return response
+    })
+    await mount({ tools: request })
+    const form = await openForm()
+    await chooseFile(form)
+    await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    await form.findByRole('alert')
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    await userEvent.click(form.getByRole('button', { name: 'Close' }))
+    const retry = form.getByRole('button', { name: 'Retry discard' })
+    expect(form.getByRole('alert')).toHaveTextContent(/retry discard after/i)
+    clock.mockReturnValue(now + 11_999)
+    await userEvent.click(retry)
+    expect(attempts).toBe(1)
+    clock.mockReturnValue(now + 12_000)
+    await userEvent.click(retry)
+    expect(attempts).toBe(2)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(calls.filter(call => call.path === path + '/bytes')).toHaveLength(1)
+    expect(calls.filter(call => call.path === path + '/attach')).toHaveLength(1)
+  })
+
+  it.each(['lost acknowledgement', 'proxy 404'])('never deletes an image after %s, even if the retry is throttled', async scenario => {
+    let attempt = 0
+    const { request, calls } = world(async () => {
+      if (++attempt > 1) return refused(429)
+      if (scenario === 'proxy 404') return new Response('<html>Not Found</html>', { status: 404, headers: { 'Content-Type': 'text/html' } })
+      throw new TypeError('Failed to fetch')
+    })
+    await mount({ tools: request })
+    const form = await openForm()
+    await chooseFile(form)
+    const add = form.getByRole('button', { name: 'Add to GM thread' })
+    await userEvent.click(add)
+    expect(await form.findByRole('alert')).toHaveTextContent(/couldn’t confirm/i)
+    await userEvent.click(add)
+    expect(await form.findByRole('alert')).toHaveTextContent(/wait a moment/i)
+    await userEvent.click(form.getByRole('button', { name: 'Close' }))
+    expect(calls.filter(call => call.path === path + '/attach')).toHaveLength(2)
+    expect(calls.filter(call => call.path === path + '/bytes')).toHaveLength(1)
+    expect(calls.some(call => call.init?.method === 'DELETE')).toBe(false)
+  })
+
   it('retries just the attachment, opens its new thread at once, and carries the unsent GM draft with it', async () => {
     let fail = true
     const { request, calls } = world(async body => {
@@ -236,6 +310,7 @@ describe('private images in the GM thread', () => {
     expect(await screen.findByRole('img', { name: asset.alt })).toBeVisible()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(draft)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Attach image' })).toHaveFocus())
     expect(server.posts().filter(call => call.url === '/conversations')).toHaveLength(1)
     expect(calls.filter(call => call.path === collection)).toHaveLength(1)
     expect(calls.filter(call => call.path === path + '/bytes')).toHaveLength(1)
@@ -251,7 +326,8 @@ describe('private images in the GM thread', () => {
       view: 'chat', documentsVersion: 0, guardDialog: null, announcement: '', announcementTick: 0,
     } as const
     vi.spyOn(canvas, 'useCanvasState').mockReturnValue(state)
-    const { calls, request } = world(async body => jsonReply({ ...entry, use: body.use }))
+    let available = false
+    const { calls, request } = world(async body => available ? jsonReply({ ...entry, use: body.use }) : refused(404))
     await mount({ tools: request })
     const form = await openForm()
     await chooseFile(form)
@@ -265,8 +341,14 @@ describe('private images in the GM thread', () => {
     await userEvent.click(source)
     expect(form.getByText(asset.alt)).toBeVisible()
     await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    expect(await form.findByRole('alert')).toHaveTextContent(/unavailable/i)
+    await userEvent.click(form.getByRole('button', { name: 'Close' }))
+    available = true
+    const retry = await openForm()
+    await userEvent.click(retry.getByRole('checkbox', { name: 'Use the open document’s image' }))
+    await userEvent.click(retry.getByRole('button', { name: 'Add to GM thread' }))
     expect(await screen.findByRole('img', { name: asset.alt })).toBeVisible()
-    expect(calls.filter(call => call.init?.method === 'POST').map(call => call.path)).toEqual([path + '/attach'])
+    expect(calls.filter(call => call.init?.method === 'POST').map(call => call.path)).toEqual(Array(2).fill(path + '/attach'))
     expect(calls.some(call => call.init?.method === 'PUT' || call.init?.method === 'DELETE')).toBe(false)
   })
 

@@ -10,6 +10,9 @@ interface Props {
   campaignId: string
   asset: AssetRef
   request: typeof fetch
+  /** Historical tool results may describe an older rendition. */
+  resolveImage?: (signal: AbortSignal) => Promise<AssetRef | null>
+  onConfirmed: (document: Document) => void
   onSaved: () => void
 }
 
@@ -77,16 +80,17 @@ function DocumentOptions({ type, ...props }: Props & { type: DocumentType }) {
   </>
 }
 
-function PortraitTarget({ campaignId, asset, request, onSaved, type, documentId }: Props & { type: DocumentType; documentId: string }) {
+function PortraitTarget({ campaignId, asset, request, resolveImage, onConfirmed, onSaved, type, documentId }: Props & { type: DocumentType; documentId: string }) {
   const [document, setDocument] = React.useState<Document | null>(null)
   const [attempt, setAttempt] = React.useState(0)
   const [message, setMessage] = React.useState('')
   const [busy, setBusy] = React.useState(false)
-  const active = React.useRef(false)
+  const active = React.useRef<AbortController | null>(null)
   const pending = React.useRef(false)
   React.useLayoutEffect(() => {
-    active.current = true
-    return () => { active.current = false }
+    const controller = new AbortController()
+    active.current = controller
+    return () => controller.abort()
   }, [])
   React.useEffect(() => {
     let current = true
@@ -102,15 +106,27 @@ function PortraitTarget({ campaignId, asset, request, onSaved, type, documentId 
     if (!document || pending.current) return
     pending.current = true
     setBusy(true)
-    const result = await saveDocumentField(document, 'portrait', asset, document.write_revision, request)
-    if (!active.current) return
-    pending.current = false
-    setBusy(false)
-    const portrait = result.kind === 'ok' && AssetRefSchema.safeParse(result.document.data.portrait)
-    if (portrait && portrait.success && portrait.data.asset_id === asset.asset_id) {
-      onSaved()
+    const signal = active.current!.signal
+    const currentImage = resolveImage ? await resolveImage(signal) : asset
+    if (signal.aborted) return
+    if (!currentImage) {
+      pending.current = false
+      setBusy(false)
+      setMessage('This image is unavailable for linking.')
       return
     }
+    const result = await saveDocumentField(document, 'portrait', currentImage, document.write_revision, request)
+    if (result.kind === 'ok') {
+      const portrait = AssetRefSchema.safeParse(result.document.data.portrait)
+      if (portrait.success && portrait.data.asset_id === asset.asset_id) {
+        onConfirmed(result.document)
+        if (!signal.aborted) onSaved()
+        return
+      }
+    }
+    if (signal.aborted) return
+    pending.current = false
+    setBusy(false)
     setDocument(null)
     setMessage(result.kind === 'conflict' ? 'The document changed. Review its current image before linking.'
       : 'Couldn’t confirm the link. Check the document before trying again.')
@@ -124,6 +140,7 @@ function PortraitTarget({ campaignId, asset, request, onSaved, type, documentId 
   if (previous.success && previous.data.asset_id === asset.asset_id) return <p role="status">This image is already linked.</p>
   const replacing = document.data.portrait != null
   return <>
+    {message && <p role="status">{message}</p>}
     {replacing && <p>{String(document.data.name)} already has an image. Replace it with this one?</p>}
     <Button variant="filled" aria-disabled={busy || undefined} onClick={() => void link()}>
       {busy ? 'Linking…' : replacing ? 'Replace image' : 'Link image'}

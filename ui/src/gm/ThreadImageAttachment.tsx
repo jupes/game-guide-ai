@@ -12,25 +12,40 @@ interface Props {
   campaignId: string
   getThread: () => Promise<string | null>
   onAttached: (thread: string, entry: AttachedImageEntry) => void
-  onOpenChange?: (open: boolean) => void
 }
 
-export function ThreadImageAttachment({ onOpenChange, ...props }: Props) {
+export function ThreadImageAttachment({ onOpenChange, triggerRef, ...props }: Props & {
+  onOpenChange?: (open: boolean) => void
+  triggerRef: React.RefObject<HTMLButtonElement | null>
+}) {
   const [open, setOpen] = React.useState(false)
-  const trigger = React.useRef<HTMLButtonElement>(null)
+  const closedByUser = React.useRef(false)
   React.useEffect(() => {
     if (!open) return
     onOpenChange?.(true)
     return () => onOpenChange?.(false)
   }, [open, onOpenChange])
-  const restoreFocus = React.useCallback(() => { trigger.current?.focus({ preventScroll: true }) }, [])
+  const restoreFocus = React.useCallback(() => {
+    if (!closedByUser.current) return
+    // A new thread replaces its opener and the workspace removes inert after
+    // the dialog unmounts. Keep any focus the GM has already moved elsewhere.
+    window.requestAnimationFrame(() => {
+      if (document.activeElement === document.body) triggerRef.current?.focus({ preventScroll: true })
+    })
+  }, [triggerRef])
   return <>
-    <Button ref={trigger} variant="text" size="small" aria-haspopup="dialog" onClick={() => setOpen(true)}>Attach image</Button>
-    {open && createPortal(<ImageForm {...props} onClose={() => setOpen(false)} restoreFocus={restoreFocus} />, document.body)}
+    <Button ref={triggerRef} variant="text" size="small" aria-haspopup="dialog" onClick={() => {
+      closedByUser.current = false
+      setOpen(true)
+    }}>Attach image</Button>
+    {open && createPortal(<ImageForm {...props} onClose={() => {
+      closedByUser.current = true
+      setOpen(false)
+    }} restoreFocus={restoreFocus} />, document.body)}
   </>
 }
 
-function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }: Omit<Props, 'onOpenChange'> & {
+function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }: Props & {
   onClose: () => void
   restoreFocus: () => void
 }) {
@@ -47,8 +62,11 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
   const [file, setFile] = React.useState<File | null>(null)
   const [alt, setAlt] = React.useState('')
   const [ready, setReady] = React.useState<AssetRef | null>(null)
-  const [stage, setStage] = React.useState<'uploading' | 'adding' | null>(null)
+  const [stage, setStage] = React.useState<'uploading' | 'adding' | 'discarding' | null>(null)
   const [error, setError] = React.useState<string | null>(null)
+  const [discardFailed, setDiscardFailed] = React.useState(false)
+  const discardAfter = React.useRef(0)
+  const cleanup = React.useRef<AbortController | null>(null)
   const pending = React.useRef<AbortController | null>(null)
   const reservation = React.useRef<string | null>(null)
   const command = React.useRef<string | null>(null)
@@ -62,7 +80,10 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
   }, [campaignId, checks])
   React.useLayoutEffect(() => () => {
     pending.current?.abort()
-    if (reservation.current !== null) void discardPortraitUpload(campaignId, reservation.current)
+    if (cleanup.current) cleanup.current.abort()
+    else if (reservation.current !== null && Date.now() >= discardAfter.current) {
+      void discardPortraitUpload(campaignId, reservation.current)
+    }
     reservation.current = null
   }, [campaignId])
 
@@ -73,9 +94,40 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
     setReady(null)
   }
 
+  async function close(): Promise<void> {
+    if (cleanup.current) return
+    pending.current?.abort()
+    pending.current = null
+    const unused = reservation.current
+    if (unused === null) { onClose(); return }
+    if (Date.now() < discardAfter.current) {
+      setDiscardFailed(true)
+      setError(discardWaitMessage(discardAfter.current))
+      return
+    }
+    const controller = new AbortController()
+    cleanup.current = controller
+    setStage('discarding')
+    setError(null)
+    const result = await discardPortraitUpload(campaignId, unused, fetch, AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]))
+    if (controller.signal.aborted) return
+    cleanup.current = null
+    setStage(null)
+    if (result.kind === 'gone') {
+      reservation.current = null
+      onClose()
+      return
+    }
+    setDiscardFailed(true)
+    discardAfter.current = result.after
+    setError(result.after > Date.now()
+      ? discardWaitMessage(result.after)
+      : 'Couldn’t confirm the unused upload was discarded. Retry discard to close.')
+  }
+
   async function add(): Promise<void> {
     if (capability === false) { setCapability(null); retryCheck(); return }
-    if (!capability || pending.current) return
+    if (!capability || pending.current || cleanup.current) return
     if (source === 'file' && ready === null) {
       if (!file || !MEDIA_TYPES.image.includes(file.type) || !file.size || file.size > IMAGE_MAX_BYTES) {
         setError('Choose a PNG, JPEG, or WebP file up to 10 MB.')
@@ -87,6 +139,7 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
     pending.current = controller
     const { signal } = controller
     setError(null)
+    setDiscardFailed(false)
     try {
       let image = source === 'document' ? saved : ready
       if (image === null && file) {
@@ -110,14 +163,19 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
       const thread = await getThread()
       if (signal.aborted) return
       if (!thread) throw new Error('Couldn’t open a GM thread. Try again with the same image.')
-      // A lost acknowledgement can still mean the attachment was saved.
-      // Never delete its asset after sending this idempotent write.
+      // Once this POST leaves, its upload is unsafe to discard. Return it to
+      // our cleanup only when every attempt came back with a definite refusal.
+      const unusedUpload = reservation.current
       reservation.current = null
-      const entry = await attachThreadImage(campaignId, thread, image.asset_id, use, signal)
-      if (!signal.aborted) {
-        onAttached(thread, entry)
-        onClose()
+      const result = await attachThreadImage(campaignId, thread, image.asset_id, use, signal)
+      if (result.kind === 'refused' && unusedUpload !== null) {
+        if (signal.aborted) void discardPortraitUpload(campaignId, unusedUpload)
+        else reservation.current = unusedUpload
       }
+      if (signal.aborted) return
+      if (result.kind !== 'attached') { setError(result.message); return }
+      onAttached(thread, result.entry)
+      onClose()
     } catch (cause) {
       if (!signal.aborted) setError(cause instanceof Error ? cause.message : 'Couldn’t add the image. Try again.')
     } finally {
@@ -130,12 +188,9 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
 
   return <LibraryDialog heading="Attach image to GM thread" confirmLabel={
     capability === false ? 'Check again' : capability === null ? 'Checking…' : 'Add to GM thread'
-  } cancelLabel="Close" busy={stage !== null || capability === null} allowDismissWhileBusy initialFocus="field" fieldRef={useField}
-    error={error} returnFocus={restoreFocus} onConfirm={() => void add()} onCancel={() => {
-      pending.current?.abort()
-      discard()
-      onClose()
-    }}>
+  } cancelLabel={discardFailed ? 'Retry discard' : 'Close'} busy={stage !== null || capability === null}
+    allowDismissWhileBusy={stage !== 'discarding'} initialFocus="field" fieldRef={useField}
+    error={error} returnFocus={restoreFocus} onConfirm={() => void add()} onCancel={() => void close()}>
     {capability === null && <p role="status">Checking image uploads…</p>}
     {capability === false && <p>Image attachments are unavailable. Check again after image uploads are enabled for this campaign.</p>}
     {capability === true && <>
@@ -164,7 +219,19 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
             onChange={event => { discard(); setAlt(event.target.value); setError(null) }} />
         </label>
       </>}
-      {stage && <p role="status">{stage === 'uploading' ? 'Uploading and preparing the image…' : 'Adding to the GM thread…'}</p>}
+      {discardFailed && <button type="button" disabled={stage !== null} onClick={() => {
+        reservation.current = null
+        onClose()
+      }}>Close without discarding</button>}
+      {stage && <p role="status">{stage === 'uploading' ? 'Uploading and preparing the image…' :
+        stage === 'discarding' ? 'Discarding the unused upload…' : 'Adding to the GM thread…'}</p>}
     </>}
   </LibraryDialog>
+}
+
+function discardWaitMessage(after: number): string {
+  const time = new Date(after)
+  return Number.isFinite(time.getTime())
+    ? `Couldn’t discard the unused upload yet. Retry discard after ${time.toLocaleTimeString()}.`
+    : 'Couldn’t discard the unused upload yet. Retry after the service’s waiting period.'
 }

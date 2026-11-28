@@ -4,7 +4,7 @@ import { Button } from '../ds/Button'
 import { DialogTableStop } from '../shell/DialogTableStop'
 import { wrapTab } from '../shell/focusTrap'
 import { isOpaqueId } from '../shell/workspaceFragment'
-import type { AssetRef, DocumentLink, ImageUse } from './contracts'
+import type { AssetRef, Document, DocumentLink, ImageUse } from './contracts'
 import { promoteTimelineEntry } from './documentApi'
 import { assetPath } from './documentFields'
 import { ImageDocumentPicker } from './ImageDocumentPicker'
@@ -15,6 +15,7 @@ export interface ImageCardScope {
   actorId: string
   conversationId: string
   onSaved: () => void
+  acceptDocument?: (document: Document) => void
 }
 
 interface Props {
@@ -41,7 +42,7 @@ function ImageCard({ campaignId, assetId, use, knownAsset, entryId, scope, onOpe
   const [attempt, setAttempt] = React.useState(0)
   const [viewer, setViewer] = React.useState<'view' | 'link' | null>(null)
   const [message, setMessage] = React.useState('')
-  const [saved, setSaved] = React.useState<DocumentLink | null>(null)
+  const [saved, setSaved] = React.useState<{ link: DocumentLink; archived: boolean } | null>(null)
   const [saving, setSaving] = React.useState(false)
   const sending = React.useRef(false)
   const opener = React.useRef<HTMLElement | null>(null)
@@ -104,7 +105,7 @@ function ImageCard({ campaignId, assetId, use, knownAsset, entryId, scope, onOpe
     if (!entryId || !scope || sending.current) return
     if (saved) {
       close()
-      onOpen?.(saved)
+      onOpen?.(saved.link)
       return
     }
     const signal = life.current!.signal
@@ -114,10 +115,11 @@ function ImageCard({ campaignId, assetId, use, knownAsset, entryId, scope, onOpe
     try {
       const result = await promoteTimelineEntry(campaignId, scope.conversationId, entryId, 'handout', request)
       if (signal.aborted) return
-      if (result.kind === 'ok' && !result.document.archived) {
-        setSaved({ document_id: result.document.document_id, type: 'handout', library_category: 'documents',
-          title: String(result.document.data.name) })
-        setMessage('Saved as a handout.')
+      if (result.kind === 'ok') {
+        const document = result.document
+        setSaved({ archived: document.archived, link: { document_id: document.document_id, type: 'handout',
+          library_category: 'documents', title: String(document.data.name) } })
+        setMessage(document.archived ? 'The saved handout is archived.' : 'Saved as a handout.')
         scope.onSaved()
       } else if (result.kind === 'limit') setMessage('The account’s document storage is full.')
       else if (result.kind === 'throttled') setMessage('Please wait a moment before trying again.')
@@ -131,9 +133,11 @@ function ImageCard({ campaignId, assetId, use, knownAsset, entryId, scope, onOpe
 
   function commands(inViewer: boolean) {
     if (!actions) return null
+    let saveLabel = saving ? 'Saving…' : 'Save as handout'
+    if (saved) saveLabel = onOpen ? (saved.archived ? 'Open archived handout' : 'Open handout') : 'Handout saved'
     return <div className="thread-image__actions">
       <Button variant="outlined" size="small" aria-disabled={saving || (saved !== null && !onOpen) || undefined}
-        onClick={() => void save()}>{saved ? (onOpen ? 'Open handout' : 'Handout saved') : saving ? 'Saving…' : 'Save as handout'}</Button>
+        onClick={() => void save()}>{saveLabel}</Button>
       <Button ref={inViewer ? linkButton : undefined} variant="outlined" size="small" onClick={event => {
         if (inViewer) { setMessage(''); setViewer('link') }
         else open(event.currentTarget, 'link')
@@ -168,12 +172,17 @@ function ImageCard({ campaignId, assetId, use, knownAsset, entryId, scope, onOpe
     {viewer && <ImageViewer label={label} close={close} restoreFocus={restoreFocus}>
       <img className="thread-image__full" src={path} alt={asset.alt} onError={unavailable} />
       {viewer === 'link' && scope
-        ? <ImageDocumentPicker campaignId={campaignId} asset={asset} request={request} onSaved={() => {
-          scope.onSaved()
-          setMessage('Image linked to document.')
-          linked.current = true
-          setViewer('view')
-        }} />
+        ? <ImageDocumentPicker campaignId={campaignId} asset={asset} request={request}
+          resolveImage={knownAsset ? signal => readThreadImage(campaignId, assetId, signal, fetchImpl) : undefined}
+          onConfirmed={document => {
+            if (!life.current || life.current.signal.aborted) return
+            scope.acceptDocument?.(document)
+            scope.onSaved()
+          }} onSaved={() => {
+            setMessage('Image linked to document.')
+            linked.current = true
+            setViewer('view')
+          }} />
         : commands(true)}
       {message && <p role="status">{message}</p>}
     </ImageViewer>}

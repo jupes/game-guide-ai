@@ -553,16 +553,17 @@ function ChatPaneBody({
 
   // Autoscroll (pp6q.1.3). A fresh thread starts at the bottom by definition.
   const feedRef = React.useRef<HTMLDivElement>(null)
+  const imageTrigger = React.useRef<HTMLButtonElement>(null)
   // 1kg.6.3: the Workbench canvas. `Open in canvas` on a tool result is an explicit
   // gesture (CANVAS-3); nothing else in this pane ever opens or closes a document
   // (CANVAS-4/18). The composer and the Conversation region are handed over as refs,
   // so the canvas can return focus to the composer and the shell can skip to the
   // conversation without querying the DOM. These are the stable canvas ACTIONS, so a
   // document loading, opening or closing never re-renders this pane (C-13).
-  const { openDocument, composerRef, setChatRegion, bumpDocumentsVersion } = useCanvasActions()
+  const { openDocument, composerRef, setChatRegion, bumpDocumentsVersion, acceptDocument } = useCanvasActions()
   const mediaScope = React.useMemo(() => gmLive && account && conversationId && campaignId
-    ? { actorId: account, conversationId, onSaved: bumpDocumentsVersion } : undefined,
-  [gmLive, account, conversationId, campaignId, bumpDocumentsVersion])
+    ? { actorId: account, conversationId, onSaved: bumpDocumentsVersion, acceptDocument } : undefined,
+  [gmLive, account, conversationId, campaignId, bumpDocumentsVersion, acceptDocument])
   const openFromLink = React.useCallback(
     (link: DocumentLink): void => {
       void openDocument({ documentId: link.document_id, title: link.title }, { gesture: true })
@@ -1005,7 +1006,7 @@ function ChatPaneBody({
       {/* Toolbar: export button */}
       <div className="chat-pane__toolbar">
         {showTools && campaignId && scope && selectedId === conversationId && <ThreadImageAttachment
-          key={conversationId ?? scope.key} campaignId={campaignId} onOpenChange={onComposerDialogChange}
+          key={conversationId ?? scope.key} campaignId={campaignId} triggerRef={imageTrigger} onOpenChange={onComposerDialogChange}
           getThread={() => conversationId ? Promise.resolve(conversationId) : ensureThread()}
           onAttached={(thread, entry) => {
             if (!isCurrentScope(scope.key) || currentSelection.current !== selectionAtSend) return

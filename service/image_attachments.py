@@ -24,20 +24,27 @@ def handout_name(description: str, use: str) -> str:
     return trim(" ".join(trim(checked).split())[:TEXT_FIELD_MAX_CHARS]) or use.capitalize()
 
 
-def image_for_thread(
-    unit: UnitOfWork, campaign_id: str, conversation_id: str, asset_id: str, owner_id: int,
-) -> AssetRef:
-    """Hold the active thread, campaign and ready image until their reference commits."""
+def hold_image_thread(unit: UnitOfWork, campaign_id: str, conversation_id: str, owner_id: int) -> None:
+    """Keep the owned campaign and GM thread active for a new reference or replay."""
     row = pg(unit).conn.execute(
-        """SELECT a.alt, a.width, a.height FROM chat.conversations c
+        """SELECT 1 FROM chat.conversations c
            JOIN campaign.campaigns k ON k.id = c.campaign_id AND k.owner_id = c.user_id
-           JOIN campaign.assets a ON a.campaign_id = k.id
            WHERE c.conversation_id = %s AND c.user_id = %s AND k.id = %s
              AND (c.started_mode IS NULL OR c.started_mode = 'gm')
              AND c.archived_at IS NULL AND k.archived_at IS NULL
-             AND a.id = %s AND a.kind = 'image' AND a.state = 'ready'
-           FOR SHARE OF k, c, a""",
-        (conversation_id, owner_id, campaign_id, asset_id),
+           FOR SHARE OF k, c""",
+        (conversation_id, owner_id, campaign_id),
+    ).fetchone()
+    if row is None:
+        raise MissingParent
+
+
+def ready_image(unit: UnitOfWork, campaign_id: str, asset_id: str) -> AssetRef:
+    """Hold the ready image until its new reference commits in the authorized campaign."""
+    row = pg(unit).conn.execute(
+        """SELECT alt, width, height FROM campaign.assets
+           WHERE campaign_id = %s AND id = %s AND kind = 'image' AND state = 'ready' FOR SHARE""",
+        (campaign_id, asset_id),
     ).fetchone()
     if row is None:
         raise MissingParent
@@ -58,7 +65,8 @@ def attach_image(
         if conn.execute(owner, (campaign_id, owner_id)).fetchone() is None:
             raise MissingParent
         unit.lock_campaign(campaign_id, shared=True)
-        image_for_thread(unit, campaign_id, body.conversation_id, asset_id, owner_id)
+        hold_image_thread(unit, campaign_id, body.conversation_id, owner_id)
+        ready_image(unit, campaign_id, asset_id)
         inserted = conn.execute(
             """INSERT INTO chat.timeline_entries
                  (entry_id, conversation_id, entry_kind, schema_version, created_at, payload)

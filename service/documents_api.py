@@ -107,7 +107,7 @@ from .document_wire import (
     to_snapshot,
     writable,
 )
-from .image_attachments import handout_name, image_for_thread
+from .image_attachments import handout_name, hold_image_thread, ready_image
 from .session import SessionData
 from .timeline_store import PostgresTimelineStore, TimelineStore, entry_id_check_regex
 from .workbench_api import SessionDependency, not_found, reads_by_post, workbench_router
@@ -176,7 +176,8 @@ class DocumentStores:
     campaigns: CampaignStore
     documents: DocumentStore
     read_asset: Callable[[UnitOfWork, str, str, int], AssetRecord | None] = read_campaign_asset
-    image_for_thread: Callable[[UnitOfWork, str, str, str, int], AssetRef] = image_for_thread
+    hold_image_thread: Callable[[UnitOfWork, str, str, int], None] = hold_image_thread
+    ready_image: Callable[[UnitOfWork, str, str], AssetRef] = ready_image
 
 
 def get_document_stores() -> DocumentStores:
@@ -464,9 +465,9 @@ def promote_entry(
                 if "cr" in fields:
                     fields["challenge_rating"] = str(fields.pop("cr"))
             elif isinstance(entry, AttachedImageEntry) or isinstance(result, MediaResult):
-                if (not media_enabled or campaign.archived_at is not None
-                        or conversation.started_mode not in (None, "gm")):
+                if not media_enabled:
                     not_found()
+                stores.hold_image_thread(unit, campaign_id, conversation_id, owner_id)
                 existing = stores.documents.created_by_command(unit, campaign_id, command)
                 if existing is not None:
                     return to_document(existing)
@@ -476,7 +477,7 @@ def promote_entry(
                 else:
                     assert isinstance(result, MediaResult)
                     asset_id, label = result.asset.asset_id, result.tool_id.value
-                ref = stores.image_for_thread(unit, campaign_id, conversation_id, asset_id, owner_id)
+                ref = stores.ready_image(unit, campaign_id, asset_id)
                 doc_type = DocumentTypeId.HANDOUT
                 fields = {
                     "name": handout_name(ref.alt, label), "portrait": ref.model_dump(mode="json", exclude_none=True),

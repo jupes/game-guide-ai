@@ -145,6 +145,11 @@ test('a GM attaches a map, reads it across services and saves the same handout a
   })
   expect(npc.ok()).toBe(true)
   const { document_id: npcId } = await npc.json() as { document_id: string }
+  await page.goto(`${other}/workspace#campaign=${campaign}&conversation=${thread}&document=${npcId}`)
+  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
+  const switchToChat = page.getByRole('button', { name: 'Chat', exact: true })
+  const switchToCanvas = page.getByRole('button', { name: 'Canvas', exact: true })
+  if (await switchToChat.isVisible()) await switchToChat.click()
   await page.getByRole('button', { name: 'Link to document' }).click()
   await viewer.getByRole('combobox', { name: 'Document', exact: true }).selectOption({ label: name })
   await viewer.getByRole('button', { name: 'Link image', exact: true }).click()
@@ -152,10 +157,8 @@ test('a GM attaches a map, reads it across services and saves the same handout a
   const linked = await context.request.get(`${origin}/campaigns/${campaign}/documents/${npcId}`)
   expect(await linked.json()).toMatchObject({ data: { name, portrait: { asset_id: entry.asset_id } } })
   await viewer.getByRole('button', { name: 'Close', exact: true }).click()
-
-  await page.goto(`${origin}/workspace#campaign=${campaign}&conversation=${thread}&document=${npcId}`)
-  await expect(page.getByRole('heading', { name, exact: true })).toBeVisible()
-  const switchToChat = page.getByRole('button', { name: 'Chat', exact: true })
+  if (await switchToCanvas.isVisible()) await switchToCanvas.click()
+  await expect(page.locator('.canvas-host').getByRole('img', { name: alt })).toBeVisible()
   if (await switchToChat.isVisible()) await switchToChat.click()
   const newUploads: string[] = []
   page.on('request', request => {

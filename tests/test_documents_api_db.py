@@ -21,6 +21,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -36,7 +37,8 @@ from service import migrations as mig
 from service.asset_store import Measured, PostgresAssetStore
 from service.audit_log import PostgresAuditLog
 from service.campaign_store import InMemoryCampaignStore, PostgresCampaignStore
-from service.db import CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
+from service.conversation_store import PostgresConversationStore
+from service.db import AdvisoryLock, CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
 from service.document_edit_store import PostgresDocumentEditStore
 from service.document_lifecycle_api import (
     NOT_APPLIED_MESSAGE,
@@ -57,19 +59,23 @@ from service.documents_api import (
     DocumentStores,
     create_document,
     patch_document,
+    promote_entry,
     query_library,
     read_history,
     read_snapshot,
     restore_document,
     seal_document,
 )
+from service.image_attachments import attach_image
 from service.jobs import PostgresJobQueue
 from service.table_session_store import PostgresTableSessionStore, TableSession, no_slots
+from service.timeline_store import PostgresTimelineStore
 from service.workbench_api import NOT_FOUND_DETAIL
 from service.workbench_contracts import (
     Document,
     DocumentCreateRequest,
     FieldPatchRequest,
+    ImageAttachRequest,
     LibraryQuery,
 )
 
@@ -209,6 +215,51 @@ def _waiting(dsn: str, waiters: int) -> bool:
                 return True
             time.sleep(0.05)
     return False
+
+
+@pytest.mark.parametrize("archiving", ["campaign", "thread"])
+def test_saved_image_replay_rechecks_parent_archived_while_waiting_for_storage(
+    dsn: str, owner: int, archiving: str,
+) -> None:
+    db, stores = _database(dsn), _stores()
+    conversations, timeline = PostgresConversationStore(), PostgresTimelineStore()
+    assets = PostgresAssetStore(PostgresJobQueue(db))
+    try:
+        with db.transaction() as unit:
+            thread = conversations.create(unit, owner_id=owner, campaign_id=CAMPAIGN, title=None, started_mode="gm").id
+            image = assets.create(unit, CAMPAIGN, owner_id=owner, kind="image", media_type="image/png",
+                                  size_bytes=120, alt="Castle map", now=NOW)
+            assets.start_processing(unit, CAMPAIGN, image.id, owner_id=owner, now=NOW)
+            assets.mark_ready(unit, CAMPAIGN, image.id, owner_id=owner, now=NOW,
+                              measured=Measured("image/png", 120, width=10, height=12))
+        card = attach_image(db, CAMPAIGN, image.id, owner, ImageAttachRequest.model_validate({
+            "schema_version": 1, "conversation_id": thread, "use": "map",
+        }), NOW)
+
+        def promote() -> Document:
+            return promote_entry(db, stores, (conversations, timeline), campaign_id=CAMPAIGN, conversation_id=thread,
+                                 entry_id=card.entry_id, owner_id=owner, now=NOW, media_enabled=True)
+
+        saved = promote()
+        with db.transaction() as unit:
+            assets.delete(unit, CAMPAIGN, image.id, owner_id=owner, now=NOW)
+        assert promote() == saved
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with db.transaction() as holder:
+                holder.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner))
+                replay = executor.submit(promote)
+                assert _waiting(dsn, 1), "the promotion never reached the held account storage lock"
+                with db.transaction() as unit:
+                    if archiving == "campaign":
+                        assert stores.campaigns.set_archived(unit, CAMPAIGN, owner_id=owner, archived=True)
+                    else:
+                        assert conversations.set_archived(unit, thread, owner_id=owner, archived=True)
+            with pytest.raises(HTTPException) as refused:
+                replay.result(timeout=PATIENCE)
+            assert (refused.value.status_code, refused.value.detail) == (404, dict(NOT_FOUND_DETAIL))
+    finally:
+        db.close()
 
 
 @contextmanager

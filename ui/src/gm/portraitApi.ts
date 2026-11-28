@@ -1,4 +1,5 @@
 import { notifyUnauthorized } from '../api'
+import { tableReadRetryAt as retryAfterDeadline } from '../table/readResponse'
 import {
   AssetCreateRequestSchema, AssetRefSchema, AssetSchema, AttachedImageEntrySchema, CONTRACT_VERSION, ErrorBodySchema,
   ImageAttachRequestSchema, type Asset, type AssetRef, type AttachedImageEntry, type ImageUse,
@@ -40,25 +41,47 @@ export async function canUploadPortrait(
 }
 
 export async function discardPortraitUpload(
-  campaignId: string, assetId: string, fetchImpl: typeof fetch = fetch,
-): Promise<void> {
-  await request(fetchImpl, assetPath(campaignId, assetId), { method: 'DELETE' })
+  campaignId: string, assetId: string, fetchImpl: typeof fetch = fetch, signal?: AbortSignal,
+): Promise<{ kind: 'gone' } | { kind: 'retry'; after: number }> {
+  const response = await request(fetchImpl, assetPath(campaignId, assetId), { method: 'DELETE', signal })
+  if (response?.status === 204) return { kind: 'gone' }
+  const detail = response?.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'application/json'
+    ? ErrorBodySchema.safeParse(await readBody(response)).data?.detail : null
+  // A prior DELETE may have succeeded even when its acknowledgement was lost.
+  if (response?.status === 404 && detail?.code === 'not_found') return { kind: 'gone' }
+  return { kind: 'retry', after: response?.status === 429 ? retryAfterDeadline(response) : 0 }
 }
+
+type AttachImageResult =
+  | { kind: 'attached'; entry: AttachedImageEntry }
+  | { kind: 'refused' | 'unconfirmed'; message: string }
 
 export async function attachThreadImage(
   campaignId: string, thread: string, assetId: string, use: ImageUse, signal: AbortSignal, fetchImpl: typeof fetch = fetch,
-): Promise<AttachedImageEntry> {
+): Promise<AttachImageResult> {
   const body = ImageAttachRequestSchema.safeParse({ schema_version: CONTRACT_VERSION, conversation_id: thread, use })
-  if (!body.success) throw new Error('Couldn’t open this GM thread. Reopen it and try again.')
+  if (!body.success) return { kind: 'refused', message: 'Couldn’t open this GM thread. Reopen it and try again.' }
   const response = await request(fetchImpl, `${assetPath(campaignId, assetId)}/attach`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body.data), signal,
   })
-  if (response?.status === 404) throw new Error('This image or GM thread is unavailable. Choose another image or reopen the thread.')
-  const entry = response?.status === 200 ? AttachedImageEntrySchema.safeParse(await readBody(response)) : null
-  if (!entry?.success || entry.data.asset_id !== assetId || entry.data.use !== use) {
-    throw new Error('Couldn’t confirm the attachment. Try again with the same image.')
+  const reply = await readBody(response)
+  if (response && response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'application/json') {
+    const code = ErrorBodySchema.safeParse(reply).data?.detail.code
+    if (response.status === 404 && code === 'not_found') {
+      return { kind: 'refused', message: 'This image or GM thread is unavailable. Choose another image or reopen the thread.' }
+    }
+    if (response.status === 429 && code === 'throttled_user') {
+      return { kind: 'refused', message: 'Wait a moment, then try adding the same image again.' }
+    }
+    if ((response.status === 422 && code === 'invalid') || (response.status === 403 && code === 'forbidden')) {
+      return { kind: 'refused', message: 'Couldn’t add this image. Reopen the thread and try again.' }
+    }
   }
-  return entry.data
+  const entry = response?.status === 200 ? AttachedImageEntrySchema.safeParse(reply) : null
+  if (!entry?.success || entry.data.asset_id !== assetId || entry.data.use !== use) {
+    return { kind: 'unconfirmed', message: 'Couldn’t confirm the attachment. Try again with the same image.' }
+  }
+  return { kind: 'attached', entry: entry.data }
 }
 
 export async function readThreadImage(
