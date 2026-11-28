@@ -40,14 +40,48 @@ function section(document: Document, label: string, projection: TableProjection)
   return article.childElementCount > 1 ? article : null
 }
 
-export function renderProjections(target: HTMLElement, slots: readonly TableSlot[]): boolean {
-  const { ownerDocument: document } = target
-  target.replaceChildren()
-  for (const [slot, label] of [['mine', 'For you'], ['table', 'Shared with the table']] as const) {
-    const projection = slots.find((entry) => entry.slot === slot)?.content
-    if (projection == null) continue
-    const article = section(document, label, projection)
-    if (article !== null) target.append(article)
+export function tableProjections(target: HTMLElement) {
+  type DisplayedSlot = { key: string; seq: number; article: HTMLElement | null }
+  const previous = new Map<TableSlot['slot'], DisplayedSlot>()
+
+  function update(slots: readonly TableSlot[]): 'shared' | 'stopped' | 'unchanged' {
+    let shared = false
+    let stopped = false
+    for (const [slot, label] of [['mine', 'For you'], ['table', 'Shared with the table']] as const) {
+      const frame = slots.find(entry => entry.slot === slot)
+      const content = frame?.content ?? null
+      const key = JSON.stringify(content)
+      const seq = frame?.seq ?? 0
+      const prior = previous.get(slot)
+      if (prior?.key === key) {
+        if (prior.article && seq > prior.seq) shared = true
+        prior.seq = seq
+        continue
+      }
+      const article = content && section(target.ownerDocument, label, content)
+      if (prior?.article && article?.isEqualNode(prior.article)) {
+        previous.set(slot, { key, seq, article: prior.article })
+        if (seq > prior.seq) shared = true
+        continue
+      }
+      previous.set(slot, { key, seq, article })
+      if (article) {
+        if (prior?.article) prior.article.replaceWith(article)
+        else if (slot === 'mine') target.prepend(article)
+        else target.append(article)
+        shared = true
+      } else if (prior?.article) {
+        prior.article.remove()
+        stopped = true
+      }
+    }
+    return shared ? 'shared' : stopped ? 'stopped' : 'unchanged'
   }
-  return target.childElementCount !== 0
+
+  function clear(): void {
+    previous.clear()
+    target.replaceChildren()
+  }
+
+  return { update, clear }
 }

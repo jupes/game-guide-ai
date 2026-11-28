@@ -1,6 +1,6 @@
 import { CONTRACT_VERSION } from '../gm/contracts'
 import { openIdentityBroadcast, type IdentityChannelFactory } from '../shell/identityBroadcast'
-import { renderProjections } from './projection'
+import { tableProjections } from './projection'
 import { mountTableAudio } from './audioControls'
 import type { MixerCue } from './audioMixer'
 import { tablePresence } from './presence'
@@ -9,6 +9,7 @@ import { responseClock, streamTable, tablePicture, type TablePicture } from './s
 const POLL_MS = 5000
 const BLANK_MS = 10_000
 const READ_TIMEOUT_MS = 8000
+const ANNOUNCEMENT_INTERVAL_MS = 100
 
 type ReadResult = TablePicture | { kind: 'inactive' | 'signed-out' | 'retry' } | { kind: 'limited'; delay: number }
 
@@ -37,6 +38,7 @@ const COPY = {
   joining: 'Joining the table…',
   waiting: 'Nothing to see yet. Your GM hasn’t shared anything.',
   changed: 'Your GM shared something new.',
+  stopped: 'Your GM stopped sharing something.',
   reconnecting: 'Reconnecting…',
   degraded: 'Reconnecting… Live updates are delayed.',
   hidden: 'Reconnecting… hidden until the connection is back.',
@@ -55,6 +57,8 @@ export function mountTable(
   const status = document.querySelector<HTMLElement>('#table-status')!
   const connection = document.querySelector<HTMLElement>('#table-connection')!
   const projections = document.querySelector<HTMLElement>('#table-projections')!
+  const picture = tableProjections(projections)
+  const heading = document.querySelector<HTMLElement>('#player-table h1')!
   const reload = document.querySelector<HTMLButtonElement>('#table-reload')!
   const signIn = document.querySelector<HTMLAnchorElement>('#table-sign-in')!
   const signOut = document.querySelector<HTMLButtonElement>('#table-sign-out')!
@@ -76,15 +80,54 @@ export function mountTable(
   let soundTimer: number | undefined
   let resync = true
   let audioContext: string | null = null
-  let pictureKey: string | null = null
+  let hasPicture = false
   let streamRetryAt = 0
   let streamFailures = 0
   let paused = false
   let departed = false
   let actionPending = false
+  let disposed = false
+
+  const revealAnnouncements: string[] = []
+  let announcementTimer: number | undefined
+
+  function cancelAnnouncements(): void {
+    browser.clearTimeout(announcementTimer)
+    announcementTimer = undefined
+    revealAnnouncements.length = 0
+    delete status.dataset.repeat
+  }
 
   function announce(message: string): void {
+    cancelAnnouncements()
     if (status.textContent !== message) status.textContent = message
+  }
+
+  function deliverReveal(): void {
+    announcementTimer = undefined
+    const next = revealAnnouncements[0]
+    if (next === undefined) return
+    if (status.textContent === next) {
+      // Leave the mounted live region empty for a separate rendering turn so
+      // successive, identically worded reveals are distinct accessibility events.
+      status.dataset.repeat = next
+      status.textContent = ''
+    } else {
+      status.textContent = next
+      delete status.dataset.repeat
+      revealAnnouncements.shift()
+    }
+    announcementTimer = browser.setTimeout(deliverReveal, ANNOUNCEMENT_INTERVAL_MS)
+  }
+
+  function announceReveal(message: string): void {
+    revealAnnouncements.push(message)
+    if (announcementTimer === undefined) deliverReveal()
+  }
+
+  function restoreRedactedFocus(previous: Element | null): void {
+    if (!previous || previous === document.body || (previous.isConnected && !previous.closest('[hidden]'))) return
+    if (document.activeElement === previous || document.activeElement === document.body) heading.focus()
   }
 
   function showDegraded(degraded: boolean): void {
@@ -93,8 +136,11 @@ export function mountTable(
   }
 
   function redact(): void {
-    projections.replaceChildren()
-    pictureKey = null
+    cancelAnnouncements()
+    const focused = document.activeElement
+    picture.clear()
+    hasPicture = false
+    restoreRedactedFocus(focused)
   }
 
   function reset(): void {
@@ -114,6 +160,7 @@ export function mountTable(
 
   function showPicture(result: TablePicture): void {
     presenceRefused = false
+    const focused = document.activeElement
     const nextContext = result.audioEnabled ? result.audioContext : null
     if (audioContext !== null && nextContext !== audioContext) {
       // A poll can be the first observation of a Rotate, reseat or new session.
@@ -135,18 +182,23 @@ export function mountTable(
     audio.show(audioContext !== null, slots, resync)
     presence.authorize(audioContext)
     resync = false
-    if (document.visibilityState === 'hidden') return
+    if (document.visibilityState === 'hidden') {
+      restoreRedactedFocus(focused)
+      return
+    }
     signOut.hidden = !result.participant
     leave.hidden = result.participant
-    const key = JSON.stringify(result.slots.map(({ slot, content }) => [slot, content]))
-    if (key !== pictureKey) {
-      const wasLive = pictureKey !== null
-      const showing = renderProjections(projections, result.slots)
-      announce(showing ? (wasLive ? COPY.changed : '') : COPY.waiting)
-      pictureKey = key
+    const change = picture.update(result.slots)
+    const showing = projections.childElementCount > 0
+    if (!hasPicture || !showing) {
+      announce(showing ? '' : COPY.waiting)
+    } else if (change !== 'unchanged') {
+      announceReveal(change === 'shared' ? COPY.changed : COPY.stopped)
     } else if (status.textContent === COPY.reconnecting) {
-      announce(projections.childElementCount > 0 ? '' : COPY.waiting)
+      announce('')
     }
+    hasPicture = true
+    restoreRedactedFocus(focused)
   }
 
   function armSilenceTimer(onSilence?: () => void): void {
@@ -167,14 +219,17 @@ export function mountTable(
   }
 
   function clearSound(): void {
+    const focused = document.activeElement
     browser.clearTimeout(soundTimer)
     audioContext = null
     audio.hide()
     presence.reset()
     resync = true
+    restoreRedactedFocus(focused)
   }
 
   function finish(kind: 'signed-out' | 'inactive'): void {
+    const focused = document.activeElement
     browser.clearTimeout(blankTimer)
     redact()
     clearSound()
@@ -188,6 +243,7 @@ export function mountTable(
       leave.hidden = true
     }
     announce(offerSignIn ? COPY.signedOut : COPY.inactive)
+    restoreRedactedFocus(focused)
   }
 
   async function openStream(id: string, controller: AbortController): Promise<void> {
@@ -279,10 +335,12 @@ export function mountTable(
 
   function recheck(): void {
     if (departed || actionPending) return
+    const focused = document.activeElement
     reset()
     resync = true
     signIn.hidden = true
     announce(campaignId === null ? COPY.inactive : COPY.joining)
+    restoreRedactedFocus(focused)
     void read()
   }
 
@@ -314,21 +372,25 @@ export function mountTable(
   }
 
   const identity = openIdentityBroadcast(() => {
+    const focused = document.activeElement
     presenceRefused = false
     clearSound()
     audio.reset()
     signOut.hidden = true
     leave.hidden = true
     recheck()
+    restoreRedactedFocus(focused)
   }, channelFactory)
 
   async function depart(kind: 'account' | 'screen'): Promise<void> {
     if (actionPending || departed) return
+    const action = kind === 'account' ? signOut : leave
     actionPending = true
     reset()
     clearSound()
-    signOut.disabled = true
-    leave.disabled = true
+    // Keep the pending action in the tab order. A native disabled button
+    // drops focus on both mobile engines; actionPending guards re-entry.
+    action.setAttribute('aria-disabled', 'true')
     try {
       const options: RequestInit = { method: 'POST', cache: 'no-store' }
       if (kind === 'screen') {
@@ -336,8 +398,9 @@ export function mountTable(
         options.body = JSON.stringify({ schema_version: CONTRACT_VERSION })
       }
       const response = await request(kind === 'account' ? '/auth/logout' : '/table/leave', options)
+      if (disposed) return
       if (!response.ok && !(kind === 'account' && response.status === 401)) throw new Error('Table exit failed')
-      const focusWasOnAction = document.activeElement === signOut || document.activeElement === leave
+      const focused = document.activeElement
       departed = true
       signOut.hidden = true
       leave.hidden = true
@@ -347,16 +410,15 @@ export function mountTable(
         signIn.hidden = false
       }
       announce(kind === 'account' ? 'You signed out.' : 'You left the table.')
-      if (focusWasOnAction) {
+      if (focused === action) {
         if (kind === 'account') signIn.focus()
         else document.querySelector<HTMLElement>('a[href="/tavern"]')?.focus()
-      }
+      } else restoreRedactedFocus(focused)
     } catch {
-      announce(kind === 'account' ? 'Couldn’t sign out. Try again.' : 'Couldn’t leave the table. Try again.')
+      if (!disposed) announce(kind === 'account' ? 'Couldn’t sign out. Try again.' : 'Couldn’t leave the table. Try again.')
     } finally {
       actionPending = false
-      signOut.disabled = false
-      leave.disabled = false
+      action.removeAttribute('aria-disabled')
     }
   }
 
@@ -374,6 +436,7 @@ export function mountTable(
   onVisibility()
 
   return () => {
+    disposed = true
     reset()
     clearSound()
     audio.dispose()

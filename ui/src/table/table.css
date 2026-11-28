@@ -36,7 +36,9 @@ h1 { margin: 0 0 12px; font-size: 2rem; }
 h2 { margin: 0; font-size: 1.45rem; }
 h3 { font-size: 1rem; margin: 16px 0 4px; }
 p { margin: 0 0 12px; }
-[role='status']:empty { margin: 0; }
+[role='status']:empty:not([data-repeat]) { margin: 0; }
+/* Reserve the same wrapped lines while the live region resets between reveals. */
+#table-status[data-repeat]:empty::before { content: attr(data-repeat); visibility: hidden; }
 
 article {
   padding: 16px;
