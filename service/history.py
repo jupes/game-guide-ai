@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from threading import Lock
 from typing import Any, Protocol, cast
 
+from psycopg import Error as DatabaseError
 from psycopg import IsolationLevel
 
 import config
@@ -37,6 +38,10 @@ MAX_CONVERSATION_ATTACHMENTS = 10
 
 class AttachmentLimitReached(Exception):
     """The conversation has no room for another attachment."""
+
+
+class ConversationUnavailable(Exception):
+    """A linked conversation that has been permanently deleted cannot be claimed."""
 
 
 @dataclass
@@ -325,10 +330,12 @@ class PostgresMessageStore:
             conn.isolation_level = IsolationLevel.READ_COMMITTED
             # Serialize competing uploads for this conversation. The next
             # statement sees attachments committed by the previous lock holder.
-            conn.execute(
+            parent = conn.execute(
                 "SELECT 1 FROM chat.conversations WHERE conversation_id = %s FOR NO KEY UPDATE",
                 (conversation_id,),
-            )
+            ).fetchone()
+            if parent is None:
+                raise ConversationUnavailable
             at_limit = conn.execute(
                 "SELECT 1 FROM chat.attachments WHERE conversation_id = %s OFFSET %s LIMIT 1",
                 (conversation_id, MAX_CONVERSATION_ATTACHMENTS - 1),
@@ -391,15 +398,22 @@ class PostgresMessageStore:
         """Record the owner on first use; return the owner (existing or new).
         INSERT ... ON CONFLICT DO NOTHING then SELECT returns whoever won."""
         with self._connect() as conn:
-            conn.execute(
-                "INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s) "
-                "ON CONFLICT (conversation_id) DO NOTHING",
-                (conversation_id, user_id),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO chat.conversations (conversation_id, user_id) VALUES (%s, %s) "
+                    "ON CONFLICT (conversation_id) DO NOTHING",
+                    (conversation_id, user_id),
+                )
+            except DatabaseError as exc:
+                if exc.sqlstate != "GGC01":
+                    raise
+                raise ConversationUnavailable from None
             row = conn.execute(
                 "SELECT user_id FROM chat.conversations WHERE conversation_id = %s",
                 (conversation_id,),
             ).fetchone()
+        if row is None:  # deletion committed after the ownership conflict
+            raise ConversationUnavailable
         return row[0]
 
     def claim_conversation_strategy(
@@ -413,8 +427,8 @@ class PostgresMessageStore:
         gate: only the request that finds it still unbound gets to set it, so
         two concurrent first messages can't each believe they won. Requires
         the conversation's ownership row to already exist (claim_conversation
-        runs at authorization, earlier in the request than this) — a missing
-        row here means a caller bug, not a legitimate race outcome."""
+        runs at authorization, earlier in the request than this). Campaign
+        deletion can remove the row between those operations."""
         with self._connect() as conn:
             row = conn.execute(
                 "UPDATE chat.conversations "
@@ -430,10 +444,7 @@ class PostgresMessageStore:
                     (conversation_id,),
                 ).fetchone()
         if row is None:
-            raise LookupError(
-                f"claim_conversation_strategy({conversation_id!r}): no ownership row — "
-                "claim_conversation() must run first"
-            )
+            raise ConversationUnavailable
         return (row[0], row[1])
 
     def conversation_strategy(self, conversation_id: str) -> tuple[str, str | None] | None:
@@ -468,12 +479,14 @@ class PostgresMessageStore:
         gate, because the caller (j9w's retirement heal) is deliberately
         replacing a binding that already exists."""
         with self._connect() as conn:
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE chat.conversations "
                 "SET selection_strategy = %s, manual_alias = %s, catalog_revision = %s "
                 "WHERE conversation_id = %s",
                 (strategy, manual_alias, catalog_revision, conversation_id),
             )
+            if not updated.rowcount:
+                raise ConversationUnavailable
 
     def owner_of(self, conversation_id: str) -> int | None:
         with self._connect() as conn:
