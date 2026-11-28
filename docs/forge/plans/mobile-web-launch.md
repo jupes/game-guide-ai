@@ -84,11 +84,15 @@ on `na7`. That bead owns execution of the DNS, TLS, and infrastructure changes.
 
 ## Distribute the mobile web app
 
-- Send the canonical browser URL and short joining instructions. The default
-  path is sign in, open **Your seats**, and choose **Join table** after the GM
-  confirms the seat. A table QR, if provided, uses the canonical
-  `/table?campaign_id=<opaque-id>` address. Account and seat authorization still
-  apply. Use a neutral message for players who need help finding their seat.
+- Once the GM confirms a player's seat, the player can sign in, open **Your
+  seats**, and choose **Join table**. At a live table, the GM can also open
+  **Share table** and choose **Show QR code** so players can scan it, or
+  **Copy link** to send the address. If copying is unavailable, select and
+  copy the displayed address. The QR is drawn on the GM's device and contains
+  the current origin and `/table?campaign_id=<opaque-id>`. For the external
+  pilot, open the GM workspace on the approved canonical hostname before
+  sharing. A player who scans while signed out can use **Sign in**, then
+  **Your seats** to join, or reopen the same address after signing in.
 - Put install guidance in optional help. iPhone Safari offers **Add to Home
   Screen** and **Open as Web App** on supported versions. Android Chrome
   provides its browser-controlled installation or shortcut menu for eligible

@@ -127,9 +127,14 @@ export function RevealSheet(props: RevealSheetProps): React.JSX.Element {
   const headingId = `${id}-heading`
   const dialogRef = React.useRef<HTMLDivElement>(null)
   const headingRef = React.useRef<HTMLHeadingElement>(null)
+  const lastFocused = React.useRef<Element | null>(null)
   const restoreRef = React.useRef(props.restoreFocus)
   React.useLayoutEffect(() => {
     restoreRef.current = props.restoreFocus
+    // A live-session change can remove the focused control while the sheet stays open.
+    if (lastFocused.current && !lastFocused.current.isConnected && document.activeElement === document.body) {
+      headingRef.current?.focus()
+    }
   })
 
   React.useEffect(() => {
@@ -175,6 +180,7 @@ export function RevealSheet(props: RevealSheetProps): React.JSX.Element {
         aria-labelledby={headingId}
         className="gm-reveal"
         data-phase={phase}
+        onFocusCapture={(event) => { lastFocused.current = event.target }}
         onKeyDown={handleKeyDown}
       >
         <h2 id={headingId} ref={headingRef} className="gm-reveal__heading" tabIndex={-1}>

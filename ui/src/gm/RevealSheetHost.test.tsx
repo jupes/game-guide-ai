@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { SESSION_REFRESH_EVENT } from '../shell/tableSession'
 import type { Seat } from './contracts'
 import {
   campaignFixture, defaultWorkbenchRoute, documentBody, flush, live, mountSelected, revealPicture, run, seatBody,
@@ -348,8 +349,11 @@ describe('the effects (test 22)', () => {
 
 describe('a Confirm in flight (test 23, AE-50, Critic 13)', () => {
   it('only Stop showing is enabled, Escape and the scrim are inert, and focus stays on the button', async () => {
-    const { server, user } = await openSheet({ worldOverrides: { confirm: () => 'defer' } })
+    const { server, user } = await openSheet({ worldOverrides: { session: tableSessionBody(), confirm: () => 'defer' } })
     await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Share table' }))
+    expect(inDialog().getByRole('textbox', { name: 'Table address' })).toHaveValue(`${location.origin}/table?campaign_id=cmp_A`)
+    expect(posts(server, REVEALS)).toEqual([])
     const reveal = inDialog().getByRole('button', { name: 'Reveal to the table' })
     reveal.focus()
     await user.click(reveal)
@@ -357,6 +361,8 @@ describe('a Confirm in flight (test 23, AE-50, Critic 13)', () => {
     // Mutation: a natively `disabled` button would drop focus to <body>.
     expect(revealing).toHaveFocus()
     expect(revealing).toHaveAttribute('aria-disabled', 'true')
+    expect(inDialog().queryByRole('textbox', { name: 'Table address' })).toBeNull()
+    expect(inDialog().queryByRole('button', { name: 'Share table' })).toBeNull()
     expect(inDialog().getByRole('button', { name: 'Stop showing' })).toBeEnabled()
     expect(inDialog().getByRole('button', { name: 'Cancel' })).toBeDisabled()
     await user.keyboard('{Escape}')
@@ -369,6 +375,44 @@ describe('a Confirm in flight (test 23, AE-50, Critic 13)', () => {
     const held = server.calls.find((call) => isPost(call, REVEALS))
     act(() => held?.reply({ status: 500, body: {} }))
     await flush()
+  })
+})
+
+describe('sharing the table from the reveal sheet (REVEAL-20, SEC-43)', () => {
+  it('returns focus to the sharing control on Escape, and a second Escape closes the sheet', async () => {
+    const { server, user } = await openSheet({ worldOverrides: { session: tableSessionBody() } })
+    await ready()
+    const share = inDialog().getByRole('button', { name: 'Share table' })
+    await user.click(share)
+    await user.click(inDialog().getByRole('textbox', { name: 'Table address' }))
+    await user.keyboard('{Escape}')
+    expect(share).toHaveFocus()
+    expect(inDialog().queryByRole('textbox', { name: 'Table address' })).toBeNull()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(posts(server, REVEALS)).toEqual([])
+  })
+
+  it('withholds sharing when the live session and the reveal picture disagree', async () => {
+    await openSheet({ worldOverrides: { session: tableSessionBody({ session_id: OTHER_SESSION }) } })
+    await ready()
+    expect(inDialog().queryByRole('button', { name: 'Share table' })).toBeNull()
+    expect(inDialog().getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+
+  it('keeps focus inside the sheet when another tab ends the session while the address is selected', async () => {
+    const { user } = await openSheet({ worldOverrides: { session: tableSessionBody() } })
+    await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Share table' }))
+    const address = inDialog().getByRole('textbox', { name: 'Table address' })
+    await user.click(address)
+    expect(address).toHaveFocus()
+    world.session = tableSessionBody({ state: 'ended', ended_at: new Date().toISOString() })
+    world.picture = revealPicture(null)
+    act(() => { window.dispatchEvent(new Event(SESSION_REFRESH_EVENT)) })
+    await waitFor(() => expect(inDialog().queryByRole('button', { name: 'Share table' })).toBeNull())
+    expect(inDialog().queryByRole('textbox', { name: 'Table address' })).toBeNull()
+    expect(inDialog().getByRole('heading')).toHaveFocus()
   })
 })
 
@@ -587,6 +631,7 @@ describe('no live session (REVEAL-1, Critic 17)', () => {
     expect(await screen.findByRole('dialog', { name: 'Start a table session' })).toBeInTheDocument()
     expect(inDialog().getByText('Revealing needs a live table session. Starting one shows players nothing.')).toBeInTheDocument()
     expect(inDialog().queryByText(/link|QR|token/i)).toBeNull()
+    expect(inDialog().queryByRole('button', { name: 'Share table' })).toBeNull()
     world.picture = revealPicture({ epoch: 3 })
     await user.click(inDialog().getByRole('button', { name: 'Start session' }))
     await waitFor(() => expect(posts(server, /\/table-session$/)).toHaveLength(1))
@@ -716,10 +761,13 @@ describe('the sheet cannot strand the shell (Critic 14)', () => {
   })
 
   it('closes on a campaign switch', async () => {
-    await openSheet()
+    const { user } = await openSheet({ worldOverrides: { session: tableSessionBody() } })
     await ready()
+    await user.click(inDialog().getByRole('button', { name: 'Share table' }))
+    expect(inDialog().getByRole('textbox', { name: 'Table address' })).toBeVisible()
     await run(() => live.campaign.selectCampaign(campaignFixture('cmp_B')))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.queryByRole('textbox', { name: 'Table address' })).toBeNull()
     expect(live.reveals.sheet).toBeNull()
   })
 })

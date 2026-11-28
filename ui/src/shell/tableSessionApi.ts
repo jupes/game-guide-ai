@@ -60,7 +60,9 @@ async function call(fetchImpl: typeof fetch, campaignId: string, init?: RequestI
   const body: unknown = await res.json().catch(() => undefined)
   if (res.ok) {
     const answer = TableSessionAnswerSchema.safeParse(body)
-    return answer.success ? { kind: 'ok', session: answer.data.session } : FAILED
+    if (!answer.success) return FAILED
+    const { session } = answer.data
+    return session === null || session.campaign_id === campaignId ? { kind: 'ok', session } : FAILED
   }
   if (res.status === 404) return UNAVAILABLE
   const error = readErrorBody(body)

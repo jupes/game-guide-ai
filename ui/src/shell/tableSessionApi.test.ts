@@ -73,6 +73,7 @@ describe('readTableSession', () => {
     ['a network failure', 'network'],
     ['an unreadable body', { status: 200, raw: '<html>' }],
     ['a session that breaks the contract', { status: 200, body: { schema_version: 1, session: { ...LIVE, state: 'paused' } } }],
+    ['a live session from another campaign', { status: 200, body: { schema_version: 1, session: { ...LIVE, campaign_id: 'cmp_B' } } }],
   ])('reads %s as failed', async (_label, answer) => {
     expect(await readTableSession('cmp_A', recorder(answer).fetchImpl)).toEqual({ kind: 'failed' })
   })
