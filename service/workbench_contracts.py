@@ -458,6 +458,8 @@ class ErrorCode(str, Enum):
     #: A new code rather than ``conflict`` with a widened meaning: a new code is
     #: no version bump, a changed meaning is one.
     ALREADY_LINKED = "already_linked"
+    # An edit has a separate capability from Workbench tools.
+    EDIT_DISABLED = "edit_disabled"
     #: Campaigns and seats (1kg.2.2). Each 409 is reachable only by the
     #: campaign's owner, after ownership was shown (SEC-3); none names a value.
     ALIAS_TAKEN = "alias_taken"

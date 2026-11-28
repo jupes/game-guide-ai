@@ -45,6 +45,7 @@ from . import (
     card_executors,
     conversations_api,
     cues_api,
+    document_edits_api,
     document_lifecycle_api,
     documents_api,
     gcp_logging,
@@ -2042,6 +2043,7 @@ app.include_router(
 )
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
+app.include_router(document_edits_api.build_router(WORKBENCH_GM, get_timeline_database))
 if config.TABLE_STREAMS_ENABLED:
     app.include_router(gm_stream_api.build_router(WORKBENCH_GM, get_gm_streams, media_enabled=_media_enabled))
 app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
