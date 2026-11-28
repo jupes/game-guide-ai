@@ -35,6 +35,7 @@ from service.security_headers import (
     REFERRER_POLICY,
     STRICT_TRANSPORT_SECURITY,
     X_CONTENT_TYPE_OPTIONS,
+    SecurityHeadersMiddleware,
 )
 from service.spa_fallback import SPA_MOUNT_NAME, SPA_ROUTE_PREFIX
 
@@ -148,6 +149,35 @@ def test_started_response_gets_no_second_headers_or_private_transport_error() ->
         asyncio.run(RouteErrors(broken_body)({"type": "http"}, receive, send))
     assert error.value.__suppress_context__
     assert messages == [{"type": "http.response.start", "status": 200, "headers": []}]
+
+
+def test_security_headers_preserve_streamed_frames_and_separate_cookies() -> None:
+    cookies = [(b"set-cookie", b"session=; Path=/"), (b"set-cookie", b"screen=; Path=/table")]
+    frames: list[Message] = [
+        {"type": "http.response.body", "body": b"first", "more_body": True},
+        {"type": "http.response.body", "body": b"last"},
+        {"type": "http.response.trailers", "headers": [(b"x-checksum", b"ok")]},
+    ]
+    delivered: list[Message] = []
+
+    async def stream(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 206, "headers": cookies.copy(), "trailers": True})
+        for frame in frames:
+            await send(frame)
+            assert delivered[-1] == frame
+
+    async def receive() -> Message:
+        raise AssertionError("Preparing response headers must not consume the request")
+
+    async def send(message: Message) -> None:
+        delivered.append(message)
+
+    asyncio.run(SecurityHeadersMiddleware(stream)({"type": "http"}, receive, send))
+    start = delivered[0]
+    assert (start["type"], start["status"], start["trailers"]) == ("http.response.start", 206, True)
+    assert [header for header in start["headers"] if header[0] == b"set-cookie"] == cookies
+    assert (b"content-security-policy", CONTENT_SECURITY_POLICY.encode()) in start["headers"]
+    assert delivered[1:] == frames
 
 
 def _without_built_ui(routes):

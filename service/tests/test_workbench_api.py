@@ -97,7 +97,7 @@ def _is_spa(route: APIRoute) -> bool:
     return route.name.startswith(SPA_ROUTE_PREFIX)
 
 
-#: Every header `service.app`'s `set_security_headers` middleware adds, with
+#: Every default header the application's security-header middleware adds, with
 #: the values taken from `service.security_headers` itself (never copied here),
 #: so the golden bytes below fail if the middleware drops or changes one and
 #: cannot drift from it again (agent-forge-harness-y58). agent-forge-harness-5ir1
