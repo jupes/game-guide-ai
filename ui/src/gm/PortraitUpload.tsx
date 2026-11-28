@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Button } from '../ds/Button'
 import { mintCommandId } from '../shell/tableSessionApi'
 import { ALT_MAX_CHARS, IMAGE_MAX_BYTES, MEDIA_TYPES, type AssetRef } from './contracts'
-import { canUploadPortrait, discardPortraitUpload, uploadPortrait } from './portraitApi'
+import { canUploadPortrait, discardDetachedPortraitUpload, discardPortraitUpload, uploadPortrait } from './portraitApi'
 import './PortraitUpload.css'
 
 interface PortraitUploadProps {
@@ -40,7 +40,7 @@ export function PortraitUpload({
       capability.abort()
       pending.current?.abort()
       const unused = reserved.current
-      if (unused !== null) void discardPortraitUpload(campaignId, unused, fetchImpl)
+      if (unused !== null) void discardDetachedPortraitUpload(campaignId, unused, fetchImpl)
     }
   }, [campaignId, fetchImpl])
 

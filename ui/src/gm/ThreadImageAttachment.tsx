@@ -5,7 +5,7 @@ import { LibraryDialog } from '../shell/LibraryDialog'
 import { useCanvasState } from '../shell/canvasContext'
 import { mintCommandId } from '../shell/tableSessionApi'
 import { ALT_MAX_CHARS, AssetRefSchema, IMAGE_MAX_BYTES, MEDIA_TYPES, type AssetRef, type AttachedImageEntry, type ImageUse } from './contracts'
-import { attachThreadImage, canUploadPortrait, discardPortraitUpload, uploadPortrait } from './portraitApi'
+import { attachThreadImage, canUploadPortrait, discardDetachedPortraitUpload, discardPortraitUpload, uploadPortrait } from './portraitApi'
 import './PortraitUpload.css'
 
 interface Props {
@@ -64,13 +64,20 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
   const [ready, setReady] = React.useState<AssetRef | null>(null)
   const [stage, setStage] = React.useState<'uploading' | 'adding' | 'discarding' | null>(null)
   const [error, setError] = React.useState<string | null>(null)
-  const [discardFailed, setDiscardFailed] = React.useState(false)
+  const [retryDiscard, setRetryDiscard] = React.useState<'edit' | 'close' | null>(null)
+  const [interruptedUpload, setInterruptedUpload] = React.useState<'retryable' | 'rejected' | null>(null)
   const discardAfter = React.useRef(0)
   const cleanup = React.useRef<AbortController | null>(null)
   const pending = React.useRef<AbortController | null>(null)
   const reservation = React.useRef<string | null>(null)
   const command = React.useRef<string | null>(null)
   const useField = React.useRef<HTMLSelectElement>(null)
+  const focusAfterDiscard = React.useRef(false)
+  React.useLayoutEffect(() => {
+    if (!focusAfterDiscard.current || interruptedUpload !== null || stage !== null) return
+    focusAfterDiscard.current = false
+    useField.current?.focus()
+  }, [interruptedUpload, stage])
   React.useEffect(() => {
     const controller = new AbortController()
     void canUploadPortrait(campaignId, AbortSignal.any([controller.signal, AbortSignal.timeout(8000)])).then(available => {
@@ -82,26 +89,19 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
     pending.current?.abort()
     if (cleanup.current) cleanup.current.abort()
     else if (reservation.current !== null && Date.now() >= discardAfter.current) {
-      void discardPortraitUpload(campaignId, reservation.current)
+      void discardDetachedPortraitUpload(campaignId, reservation.current)
     }
     reservation.current = null
   }, [campaignId])
 
-  function discard(): void {
-    if (reservation.current !== null) void discardPortraitUpload(campaignId, reservation.current)
-    reservation.current = null
-    command.current = null
-    setReady(null)
-  }
-
-  async function close(): Promise<void> {
+  async function discard(next: 'edit' | 'close'): Promise<void> {
     if (cleanup.current) return
     pending.current?.abort()
     pending.current = null
     const unused = reservation.current
     if (unused === null) { onClose(); return }
     if (Date.now() < discardAfter.current) {
-      setDiscardFailed(true)
+      setRetryDiscard(next)
       setError(discardWaitMessage(discardAfter.current))
       return
     }
@@ -115,19 +115,27 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
     setStage(null)
     if (result.kind === 'gone') {
       reservation.current = null
-      onClose()
+      if (next === 'close') onClose()
+      else {
+        command.current = null
+        discardAfter.current = 0
+        focusAfterDiscard.current = true
+        setRetryDiscard(null)
+        setInterruptedUpload(null)
+      }
       return
     }
-    setDiscardFailed(true)
+    setRetryDiscard(next)
     discardAfter.current = result.after
     setError(result.after > Date.now()
       ? discardWaitMessage(result.after)
-      : 'Couldn’t confirm the unused upload was discarded. Retry discard to close.')
+      : 'Couldn’t confirm the unused upload was discarded. Retry discard when the service is available.')
   }
 
   async function add(): Promise<void> {
     if (capability === false) { setCapability(null); retryCheck(); return }
     if (!capability || pending.current || cleanup.current) return
+    if (interruptedUpload === 'rejected') { await discard('edit'); return }
     if (source === 'file' && ready === null) {
       if (!file || !MEDIA_TYPES.image.includes(file.type) || !file.size || file.size > IMAGE_MAX_BYTES) {
         setError('Choose a PNG, JPEG, or WebP file up to 10 MB.')
@@ -139,21 +147,33 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
     pending.current = controller
     const { signal } = controller
     setError(null)
-    setDiscardFailed(false)
+    setRetryDiscard(null)
     try {
       let image = source === 'document' ? saved : ready
       if (image === null && file) {
         setStage('uploading')
         command.current ??= mintCommandId()
-        const uploaded = await uploadPortrait(campaignId, file, alt, command.current, signal)
+        const previousReservation = reservation.current
+        const uploaded = await uploadPortrait(campaignId, file, alt, command.current, signal, fetch, {
+          label: 'image',
+          onReserved: assetId => {
+            if (!signal.aborted) {
+              reservation.current = assetId
+              setInterruptedUpload('retryable')
+            } else if (previousReservation !== assetId) {
+              // A late create acknowledgement for an abandoned, previously unknown reservation.
+              void discardDetachedPortraitUpload(campaignId, assetId)
+            }
+          },
+        })
         if (signal.aborted) return
         if (uploaded.kind === 'failed') {
-          reservation.current = uploaded.assetId ?? reservation.current
-          if (uploaded.startFresh) discard()
+          if (reservation.current !== null) setInterruptedUpload(uploaded.startFresh ? 'rejected' : 'retryable')
           setError(uploaded.message)
           return
         }
         image = uploaded.portrait
+        setInterruptedUpload(null)
         reservation.current = image.asset_id
         setReady(image)
         setFile(null)
@@ -169,7 +189,7 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
       reservation.current = null
       const result = await attachThreadImage(campaignId, thread, image.asset_id, use, signal)
       if (result.kind === 'refused' && unusedUpload !== null) {
-        if (signal.aborted) void discardPortraitUpload(campaignId, unusedUpload)
+        if (signal.aborted) void discardDetachedPortraitUpload(campaignId, unusedUpload)
         else reservation.current = unusedUpload
       }
       if (signal.aborted) return
@@ -187,22 +207,23 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
   }
 
   return <LibraryDialog heading="Attach image to GM thread" confirmLabel={
-    capability === false ? 'Check again' : capability === null ? 'Checking…' : 'Add to GM thread'
-  } cancelLabel={discardFailed ? 'Retry discard' : 'Close'} busy={stage !== null || capability === null}
+    capability === false ? 'Check again' : capability === null ? 'Checking…' :
+    interruptedUpload === 'rejected' ? 'Discard upload and edit' : 'Add to GM thread'
+  } cancelLabel={retryDiscard ? 'Retry discard' : 'Close'} busy={stage !== null || capability === null}
     allowDismissWhileBusy={stage !== 'discarding'} initialFocus="field" fieldRef={useField}
-    error={error} returnFocus={restoreFocus} onConfirm={() => void add()} onCancel={() => void close()}>
+    error={error} returnFocus={restoreFocus} onConfirm={() => void add()} onCancel={() => void discard(retryDiscard ?? 'close')}>
     {capability === null && <p role="status">Checking image uploads…</p>}
     {capability === false && <p>Image attachments are unavailable. Check again after image uploads are enabled for this campaign.</p>}
     {capability === true && <>
       <label>Use as
-        <select ref={useField} className="gm-field__input" value={use} disabled={stage !== null || ready !== null}
+        <select ref={useField} className="gm-field__input" value={use} disabled={stage !== null || ready !== null || interruptedUpload !== null}
           onChange={event => setUse(event.target.value === 'map' ? 'map' : 'portrait')}>
           <option value="portrait">Portrait</option><option value="map">Map</option>
         </select>
       </label>
       {saved && !ready && <label>
-        <input type="checkbox" checked={source === 'document'} disabled={stage !== null} onChange={event => {
-          discard()
+        <input type="checkbox" checked={source === 'document'} disabled={stage !== null || interruptedUpload !== null} onChange={event => {
+          command.current = null
           setFile(null)
           setAlt('')
           setSource(event.target.checked ? 'document' : 'file')
@@ -211,15 +232,17 @@ function ImageForm({ campaignId, getThread, onAttached, onClose, restoreFocus }:
       </label>}
       {source === 'document' || ready ? <p>{(source === 'document' ? saved : ready)?.alt}</p> : <>
         <label>Image file
-          <input type="file" className="portrait-upload__choice" accept={MEDIA_TYPES.image.join(',')} disabled={stage !== null}
-            onChange={event => { discard(); setFile(event.target.files?.[0] ?? null); setError(null) }} />
+          <input type="file" className="portrait-upload__choice" accept={MEDIA_TYPES.image.join(',')} disabled={stage !== null || interruptedUpload !== null}
+            onChange={event => { command.current = null; setFile(event.target.files?.[0] ?? null); setError(null) }} />
         </label>
         <label>Image description
-          <input className="gm-field__input" value={alt} maxLength={ALT_MAX_CHARS} disabled={stage !== null}
-            onChange={event => { discard(); setAlt(event.target.value); setError(null) }} />
+          <input className="gm-field__input" value={alt} maxLength={ALT_MAX_CHARS} disabled={stage !== null || interruptedUpload !== null}
+            onChange={event => { command.current = null; setAlt(event.target.value); setError(null) }} />
         </label>
       </>}
-      {discardFailed && <button type="button" disabled={stage !== null} onClick={() => {
+      {interruptedUpload === 'retryable' && <button type="button" disabled={stage !== null}
+        onClick={() => void discard('edit')}>Discard upload and edit</button>}
+      {retryDiscard && <button type="button" disabled={stage !== null} onClick={() => {
         reservation.current = null
         onClose()
       }}>Close without discarding</button>}

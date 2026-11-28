@@ -23,7 +23,7 @@ import * as canvas from './canvasContext'
 import { documentResult, errorInfo, toolInvocation } from '../gm/laneFixtures'
 import type { LoadTimelinePageFn } from '../gm/gmTimeline'
 import { AppNavProvider, useAppNav, type AppNavState } from './AppNav'
-import { CurrentUserProvider } from './currentUser'
+import { CurrentUserProvider, useCurrentUser, type CurrentUserContextValue } from './currentUser'
 import { ConversationStoreProvider, useConversationStore } from './ConversationStoreContext'
 import { LocalStorageConversationStore, type ConversationStore } from './conversationStore'
 import { CampaignProvider, useCampaign, type CampaignContextValue } from './campaignContext'
@@ -69,10 +69,11 @@ function serve(campaign: Reply = { status: 200, body: campaignBody('cmp_A') }, c
   return { fetchImpl, calls, posts: () => calls.filter((c) => c.method !== 'GET') }
 }
 
-const live = {} as { stored: AppNavState; nav: AppNavState; c: CampaignContextValue; threads: CampaignThreadsValue; store: ConversationStore }
+const live = {} as { stored: AppNavState; nav: AppNavState; c: CampaignContextValue; threads: CampaignThreadsValue; store: ConversationStore; identity: CurrentUserContextValue }
 function Stored(): null {
   const nav = useAppNav()
-  React.useLayoutEffect(() => { live.stored = nav })
+  const identity = useCurrentUser()
+  React.useLayoutEffect(() => { live.stored = nav; live.identity = identity })
   return null
 }
 function Probe(): null {
@@ -192,7 +193,8 @@ describe('private images in the GM thread', () => {
   const collection = '/campaigns/cmp_A/assets'
   const path = collection + '/ast_map'
   const entry = { schema_version: 1, entry_id: 'ent_map', entry_kind: 'attached_image', created_at: when, asset_id: asset.asset_id }
-  function world(attach: (body: Record<string, unknown>) => Promise<Response>, remove = () => new Response(null, { status: 204 })) {
+  function world(attach: (body: Record<string, unknown>) => Promise<Response>,
+    remove: () => Response | Promise<Response> = () => new Response(null, { status: 204 }), put = () => jsonReply(asset)) {
     const calls: { path: string; init?: RequestInit }[] = []
     const request: typeof fetch = async (input, init) => {
       const url = String(input)
@@ -200,7 +202,8 @@ describe('private images in the GM thread', () => {
       if (url.endsWith('/tool-availability')) return jsonReply(availableTools)
       if (url === collection + '/upload-capability') return new Response(null, { status: 204 })
       if (url === collection) return jsonReply({ ...asset, state: 'uploading', width: null, height: null }, 201)
-      if (url === path + '/bytes' || url === path + '/status') return jsonReply(asset)
+      if (url === path + '/bytes') return put()
+      if (url === path + '/status') return jsonReply(asset)
       if (url === path + '/attach') return attach(JSON.parse(String(init?.body)))
       if (url === path && init?.method === 'DELETE') return remove()
       return jsonReply({}, 404)
@@ -221,6 +224,14 @@ describe('private images in the GM thread', () => {
     const detail = status === 429 ? errorInfo({ code: 'throttled_user', retryable: true, retry_after_s: 5 }) :
       errorInfo({ code: 'not_found', retryable: false })
     return Response.json({ detail }, { status })
+  }
+  function openSavedImage() {
+    const doc = documentFixture('npc')
+    const state = { doc: { kind: 'open', document: { ...doc, campaign_id: 'cmp_A',
+      data: { ...doc.data, portrait: { asset_id: asset.asset_id, media_type: 'image', alt: asset.alt } } } },
+      view: 'chat', documentsVersion: 0, guardDialog: null, announcement: '', announcementTick: 0,
+    } as const
+    vi.spyOn(canvas, 'useCanvasState').mockReturnValue(state)
   }
   it.each([404, 429] as const)('keeps a definitely refused local upload for retry and releases it on abandon (%s)', async status => {
     const { request, calls } = world(async () => refused(status))
@@ -267,6 +278,80 @@ describe('private images in the GM thread', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(calls.filter(call => call.path === path + '/bytes')).toHaveLength(1)
     expect(calls.filter(call => call.path === path + '/attach')).toHaveLength(1)
+  })
+
+  it.each(['detached', 'mounted'] as const)('a %s cleanup 401 only expires the session of a still-active form', async mode => {
+    let settle!: (response: Response) => void
+    const { calls, request } = world(async () => refused(404), () => new Promise(done => { settle = done }))
+    await mount({ tools: request })
+    const form = await openForm()
+    await chooseFile(form)
+    await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    await form.findByRole('alert')
+    if (mode === 'detached') act(() => live.nav.setMode('sage'))
+    else await userEvent.click(form.getByRole('button', { name: 'Close' }))
+    const deletions = calls.filter(call => call.init?.method === 'DELETE')
+    expect(deletions).toHaveLength(1)
+    expect(deletions[0]).toMatchObject({ path, init: { credentials: 'include', mode: 'same-origin' } })
+    if (mode === 'detached') {
+      act(() => live.identity.signIn({ email: 'bea@example.com', role: 'dm' }))
+      expect(live.identity.user.id).toBe('bea@example.com')
+    }
+    await act(async () => { settle(Response.json({ detail: 'authentication required' }, { status: 401 })) })
+    expect(live.identity.authStatus).toBe(mode === 'detached' ? 'authenticated' : 'unauthenticated')
+    expect(live.identity.user.id).toBe(mode === 'detached' ? 'bea@example.com' : 'guest')
+  })
+
+  it.each(['lost PUT acknowledgement', 'rejected file'])('holds the original upload through a throttled discard before editing (%s)', async failure => {
+    openSavedImage()
+    let attempts = 0
+    let puts = 0
+    const { request, calls } = world(async body => jsonReply({ ...entry, use: body.use }), () => {
+      if (++attempts > 1) return new Response(null, { status: 204 })
+      const limited = refused(429)
+      limited.headers.set('Retry-After', '7')
+      return limited
+    }, () => {
+      if (++puts > 1) return jsonReply(asset)
+      if (failure === 'lost PUT acknowledgement') throw new TypeError('connection closed after PUT')
+      return jsonReply({ ...asset, state: 'failed', failure: 'unsupported_type', width: null, height: null }, 415)
+    })
+    await mount({ tools: request })
+    const form = await openForm()
+    await chooseFile(form)
+    await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    expect(await form.findByRole('alert')).toHaveTextContent(failure === 'rejected file' ? /could not be processed/i : /could not be uploaded/i)
+    const description = form.getByLabelText('Image description')
+    const file = form.getByLabelText('Image file')
+    const source = form.getByRole('checkbox', { name: 'Use the open document’s image' })
+    for (const control of [description, file, source]) expect(control).toBeDisabled()
+    if (failure === 'rejected file') expect(form.queryByRole('button', { name: 'Add to GM thread' })).toBeNull()
+    await userEvent.type(description, 'Unintended edit')
+    expect(description).toHaveValue(asset.alt)
+    expect(attempts).toBe(0)
+    const now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+    await userEvent.click(form.getByRole('button', { name: 'Discard upload and edit' }))
+    expect(form.getByRole('alert')).toHaveTextContent(/retry discard after/i)
+    const retry = form.getByRole('button', { name: 'Retry discard' })
+    clock.mockReturnValue(now + 6_999)
+    await userEvent.click(retry)
+    expect(attempts).toBe(1)
+    expect(description).toBeDisabled()
+    clock.mockReturnValue(now + 7_000)
+    await userEvent.click(retry)
+    expect(calls.filter(call => call.init?.method === 'DELETE').map(call => call.path)).toEqual([path, path])
+    expect(calls.filter(call => call.path === path + '/attach')).toHaveLength(0)
+    for (const control of [description, file, source]) expect(control).toBeEnabled()
+    expect(form.getByRole('combobox', { name: 'Use as' })).toHaveFocus()
+    expect(description).toHaveValue(asset.alt)
+    await userEvent.type(description, ' at dusk')
+    await userEvent.click(form.getByRole('button', { name: 'Add to GM thread' }))
+    expect(await screen.findByRole('img', { name: asset.alt })).toBeVisible()
+    const creates = calls.filter(call => call.path === collection).map(call => JSON.parse(String(call.init?.body)))
+    expect(creates.map(create => create.alt)).toEqual([asset.alt, asset.alt + ' at dusk'])
+    expect(creates[0].command_id).not.toBe(creates[1].command_id)
+    expect(puts).toBe(2)
   })
 
   it.each(['lost acknowledgement', 'proxy 404'])('never deletes an image after %s, even if the retry is throttled', async scenario => {
@@ -320,12 +405,7 @@ describe('private images in the GM thread', () => {
   })
 
   it('can attach the saved image of the open document without creating or uploading media bytes', async () => {
-    const doc = documentFixture('npc')
-    const state = { doc: { kind: 'open', document: { ...doc, campaign_id: 'cmp_A',
-      data: { ...doc.data, portrait: { asset_id: asset.asset_id, media_type: 'image', alt: asset.alt } } } },
-      view: 'chat', documentsVersion: 0, guardDialog: null, announcement: '', announcementTick: 0,
-    } as const
-    vi.spyOn(canvas, 'useCanvasState').mockReturnValue(state)
+    openSavedImage()
     let available = false
     const { calls, request } = world(async body => available ? jsonReply({ ...entry, use: body.use }) : refused(404))
     await mount({ tools: request })

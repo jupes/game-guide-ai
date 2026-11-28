@@ -14,11 +14,11 @@ function collection(campaignId: string): string {
   return `/campaigns/${encodeURIComponent(campaignId)}/assets`
 }
 
-async function request(fetchImpl: typeof fetch, path: string, init: RequestInit): Promise<Response | null> {
+async function request(fetchImpl: typeof fetch, path: string, init: RequestInit, onUnauthorized: (() => void) | null = notifyUnauthorized): Promise<Response | null> {
   try {
     init.signal?.throwIfAborted()
     const response = await fetchImpl(path, { ...init, credentials: 'include', mode: 'same-origin', redirect: 'error' })
-    if (response.status === 401 && !init.signal?.aborted) notifyUnauthorized()
+    if (response.status === 401 && !init.signal?.aborted) onUnauthorized?.()
     return response
   } catch {
     return null
@@ -50,6 +50,12 @@ export async function discardPortraitUpload(
   // A prior DELETE may have succeeded even when its acknowledgement was lost.
   if (response?.status === 404 && detail?.code === 'not_found') return { kind: 'gone' }
   return { kind: 'retry', after: response?.status === 429 ? retryAfterDeadline(response) : 0 }
+}
+
+/** The originating form is gone. Its DELETE still authenticates at the
+ * server, but its late result cannot speak for the account now on screen. */
+export async function discardDetachedPortraitUpload(campaignId: string, assetId: string, fetchImpl: typeof fetch = fetch): Promise<void> {
+  await request(fetchImpl, assetPath(campaignId, assetId), { method: 'DELETE', signal: AbortSignal.timeout(8000) }, null)
 }
 
 type AttachImageResult =
@@ -92,14 +98,16 @@ export async function readThreadImage(
   if (!parsed?.success || signal.aborted) return null
   const asset = parsed.data
   if (asset.campaign_id !== campaignId || asset.asset_id !== assetId || asset.kind !== 'image') return null
-  const result = portraitResult(asset)
+  const result = portraitResult(asset, 'image')
   return result.kind === 'ready' ? result.portrait : null
 }
 
-function portraitResult(asset: Asset): PortraitUploadResult {
+type UploadLabel = 'portrait' | 'image'
+
+function portraitResult(asset: Asset, label: UploadLabel): PortraitUploadResult {
   if (asset.state === 'failed') {
     const message = asset.failure === 'quota_exceeded'
-      ? 'There is no room for that image. Try a smaller file.'
+      ? `There is no room for that ${label}. Try a smaller image.`
       : 'This image could not be processed. Try this file again or choose another one.'
     return { kind: 'failed', message, startFresh: true, assetId: asset.asset_id }
   }
@@ -111,11 +119,12 @@ function portraitResult(asset: Asset): PortraitUploadResult {
   })
   return reference.success
     ? { kind: 'ready', portrait: reference.data }
-    : { kind: 'failed', message: 'The image could not be read. Try again.', assetId: asset.asset_id }
+    : { kind: 'failed', message: `The ${label} could not be read. Try again.`, assetId: asset.asset_id }
 }
 
 export async function uploadPortrait(
   campaignId: string, file: File, alt: string, commandId: string, signal: AbortSignal, fetchImpl: typeof fetch = fetch,
+  { label, onReserved }: { label: UploadLabel; onReserved?: (assetId: string) => void } = { label: 'portrait' },
 ): Promise<PortraitUploadResult> {
   const input = AssetCreateRequestSchema.safeParse({
     schema_version: CONTRACT_VERSION,
@@ -129,7 +138,7 @@ export async function uploadPortrait(
   if (!input.success) {
     return { kind: 'failed', message: 'Choose a PNG, JPEG, or WebP image and enter a short description.' }
   }
-  const failed = { kind: 'failed', message: 'The image could not be uploaded. Try again.' } as const
+  const failed = { kind: 'failed', message: `The ${label} could not be uploaded. Try again.` } as const
   const response = await request(fetchImpl, collection(campaignId), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input.data), signal,
   })
@@ -138,7 +147,7 @@ export async function uploadPortrait(
     const error = ErrorBodySchema.safeParse(avatarBody)
     const code = error.data?.detail.code
     if (code === 'cap_reached' || code === 'account_limit_reached') {
-      return { kind: 'failed', message: 'There is no room for another image. Free up media storage and try again.' }
+      return { kind: 'failed', message: `There is no room for another ${label}. Free up media storage and try again.` }
     }
     return failed
   }
@@ -146,19 +155,24 @@ export async function uploadPortrait(
   const created = AssetSchema.safeParse(avatarBody)
   if (!created.success || created.data.campaign_id !== campaignId || created.data.kind !== 'image') return failed
   const asset = created.data
+  onReserved?.(asset.asset_id)
+  if (signal.aborted) {
+    if (!onReserved) void discardDetachedPortraitUpload(campaignId, asset.asset_id, fetchImpl)
+    return failed
+  }
   const path = assetPath(campaignId, asset.asset_id)
   try {
     // A repeat of the same create intent can return the already processed asset.
-    if (asset.state !== 'uploading') return portraitResult(asset)
+    if (asset.state !== 'uploading') return portraitResult(asset, label)
     const sent = await request(fetchImpl, `${path}/bytes`, {
       method: 'PUT', headers: { 'Content-Type': file.type }, body: file, signal,
     })
     const processed = AssetSchema.safeParse(await readBody(sent))
     if (!processed.success || processed.data.campaign_id !== campaignId || processed.data.asset_id !== asset.asset_id ||
         processed.data.kind !== 'image') return { ...failed, assetId: asset.asset_id }
-    return portraitResult(processed.data)
+    return portraitResult(processed.data, label)
   } finally {
     // An explicitly abandoned intent never attached this newly created asset.
-    if (signal.aborted) void discardPortraitUpload(campaignId, asset.asset_id, fetchImpl)
+    if (signal.aborted && !onReserved) void discardDetachedPortraitUpload(campaignId, asset.asset_id, fetchImpl)
   }
 }
