@@ -57,6 +57,11 @@
     flex: none;
   }
 }
+
+.session-control__audio {
+  color: var(--md-sys-color-on-surface);
+}
+
 .session-control__audio label {
   display: inline-flex;
   min-height: 44px;
@@ -65,4 +70,7 @@
   cursor: pointer;
 }
 
-.session-control__audio p { margin: 0; }
+.session-control__audio p {
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+}

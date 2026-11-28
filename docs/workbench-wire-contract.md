@@ -1301,6 +1301,31 @@ If streaming is unavailable, the GM controls reconcile against the session's
 audio read while retrying the stream. Only the campaign owner can read GM
 frames. The stream closes when the signed account cookie expires or the
 account loses GM access. Player and screen clients use `/table/stream`.
+
+`GET /table/assets/{handle}` serves the current audio slot to an entitled screen
+or account, using the processed audio type and a same-origin, `no-store` response.
+A full read returns `200`, a satisfiable byte range returns `206`, and an
+unsatisfiable range returns `416` after authorization. Each range and each
+1 MB of a longer transfer require fresh authorization against the live slot.
+
+With table media enabled, an entitled public snapshot or stream for an
+audio-enabled session supplies `X-Table-Audio-Context`. Open a page with
+`POST /table/presence?campaign_id=…` and `TablePresenceOpen`. The `200` answer
+contains a registration. Send `TablePresenceReport` when playback, consent or
+mute changes and every 15 seconds while the page remains present. Successful
+reports and closes return `204`. `404 inactive` requires fresh table state.
+An equal revision describing different playback returns `409 conflict`.
+A full table returns `503` with `Retry-After`. The player receives its own
+registration. The GM receives the rolled-up `PresenceEvent` privately by
+requesting `X-Table-Audio-Presence: 1` on the GM snapshot or stream, or via
+`GET /campaigns/{campaign_id}/sessions/{session_id}/audio/presence`.
+The fallback read also returns `X-Table-Audio-Enabled` (0 or 1) and
+`X-Table-Audio-Epoch`. GM streams without the opt-in header keep their
+original frame sequence. In an opted-in roll-up, `idle` means a device is
+ready between cues. The v1 `guests` field counts enrolled shared screens.
+`POST .../audio/settings` accepts an `AudioSettingsRequest`. Enable requires
+the current audio epoch. Disable sends immediately and clears both audio slots.
+
 Under the GM session's `/audio` path, `POST /play` accepts a `CuePlayRequest` and `POST /stop` accepts
 a `CueStopRequest`. All three return two `GmAudioEvent` records in order, ambience
 first and one-shot second. A stale play returns `409`. Audio Stop bypasses both the
@@ -1325,8 +1350,8 @@ of the answer that mints it, and is in no body, no URL and no list.
 | `GET /campaigns/{campaign_id}/table-session` | — | `TableSessionAnswer`: the campaign's live session, else the one most recently started, else `session: null`. A session still `live` past `ends_at` reads `ended`, with `ended_at` its `ends_at`. Writes nothing |
 | `POST /campaigns/{campaign_id}/table-session` | `TableSessionRequest` — `start`, `end` or `rotate`, idempotent by `command_id`; End and Rotate name their `session_id`, Start names none | `TableSessionAnswer`: the session as it stands after the command. `409 live_elsewhere` for a Start while the GM is live in another campaign; `429 throttled_user` with `retry_after_s` for a Start or a Rotate past SEC-35's per-campaign bound (End is never refused); `503 backend_unavailable`, retryable |
 | `DELETE /campaigns/{campaign_id}/table-session/screens/{screen_id}` | — | `204`, a repeat too. Another GM's screen, or none, is the one `404` |
-| `POST /table/screen` | `ScreenMintRequest` — the campaign | `ScreenMintAnswer`: when the grant ends. The same answer sets the grant's cookie, deletes the account's session cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). `inactive` for anyone but the owner of a campaign with a live session, and for a screen; `409 screen_limit` at SEC-48's bound, with the account kept signed in; `429 throttled_user` with `retry_after_s` when a grant-shaped cookie arrives past its source's budget (below) |
-| `POST /table/leave` | `TableLeaveRequest` — nothing | `204`: a live grant is revoked and its cookie deleted, a dead one's cookie is deleted, and no account is ever signed out (SEC-49). The one other answer is `429 throttled_user` with `retry_after_s`, when a grant-shaped cookie arrives past its source's budget (below); it deletes nothing |
+| `POST /table/screen` | `ScreenMintRequest` names the campaign | `ScreenMintAnswer` gives the expiry, sets the grant cookie, deletes the account cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). Only the owner of a live campaign session can mint. `409 screen_limit` keeps the account signed in. An exhausted lookup budget returns `429 throttled_user` with `retry_after_s`. |
+| `POST /table/leave` | `TableLeaveRequest` | `204` revokes the current screen grant and deletes its cookie. A dead grant cookie is cleared. An exhausted lookup budget returns `429 throttled_user` with `retry_after_s` (SEC-49). |
 
 `TableSession` is the GM's view: state, **admission generation** (`gen`, which
 §15.11 keeps), when it started and ends, whether table audio is on, and
@@ -1336,11 +1361,14 @@ list carries up to 16, above SEC-48's per-session bound of four (*suggested*), s
 tuning the bound is not a contract change. The GM routes are Workbench GM routes
 (the `dm` gate, SEC-2, SEC-3); the two `/table/` routes are the table router's
 (SEC-44 to SEC-46): Fetch Metadata first, then SEC-7, then one principal — a
-live screen grant alone, else the account session. A grant-shaped cookie costs
-a digest lookup before anyone is known, so each one first spends an attempt from
-the auth source budget (release review S6); past it the answer is `429
-throttled_user` with `retry_after_s`, and no lookup runs. No cookie, or one that
-is not a grant, spends nothing.
+live screen grant alone, else the account session. Each digest lookup spends
+a budget before it reaches the database. An unfamiliar grant uses the auth
+source budget (release review S6). A recently verified grant uses its own
+table-read budget. A bounded mapping of digests to grant IDs lets screens at
+one venue poll, report, and seek without using up that venue's login budget.
+Every lookup verifies current standing. A missing grant loses its mapping and
+uses the source budget again. Exhaustion returns `429 throttled_user` with
+`retry_after_s`. A request without a grant-shaped cookie skips the lookup.
 
 ## The realtime family
 
