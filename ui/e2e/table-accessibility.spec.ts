@@ -105,7 +105,12 @@ test('only visible changes produce a new polite announcement, including repeated
 test('announcing the same handout again keeps controls still at 320px with doubled text', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 })
   const state = await openTable(page)
-  await page.addStyleTag({ content: 'html { font-size: 200% }' })
+  const textSizeStylesheet = '/assets/test-double-text.css'
+  await page.route(`**${textSizeStylesheet}`, route => route.fulfill({
+    contentType: 'text/css', body: 'html { font-size: 200% }',
+  }))
+  await page.addStyleTag({ url: textSizeStylesheet })
+  await expect(page.locator('html')).toHaveCSS('font-size', '32px')
   const reload = page.getByRole('button', { name: 'Reload table' })
   const top = () => reload.evaluate(button => button.getBoundingClientRect().top)
   state.table = { ...state.table, seq: 2 }
