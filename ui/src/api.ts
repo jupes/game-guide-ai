@@ -7,6 +7,7 @@
  */
 
 import { z, type ZodType } from 'zod'
+import { isJsonResponse, isSignedOutResponse } from './authResponse'
 import {
   ChatResponseSchema,
   MessagesResponseSchema,
@@ -691,6 +692,13 @@ export function login(
   return postAuthJson('/auth/login', { email, password }, fetchImpl)
 }
 
+const sessionRequest: RequestInit = { credentials: 'include', mode: 'same-origin', redirect: 'error', cache: 'no-store' }
+
+function authResponseFrom(response: Response, path: string): boolean {
+  return !response.redirected && (!response.url || response.url === new URL(path, window.location.href).href)
+    && isJsonResponse(response)
+}
+
 /** Clear the session cookie. Returns whether the SERVER actually cleared it.
  *
  * The cookie is httpOnly, so only a successful server response ends the
@@ -698,8 +706,10 @@ export function login(
  * while a refresh silently signs the user back in (bad on a shared device). */
 export async function logout(fetchImpl: typeof fetch = fetch): Promise<boolean> {
   try {
-    const res = await fetchImpl('/auth/logout', { method: 'POST', credentials: 'include' })
-    return res.ok
+    const res = await fetchImpl('/auth/logout', { ...sessionRequest, method: 'POST' })
+    if (res.status !== 200 || !authResponseFrom(res, '/auth/logout')) return false
+    const answer: unknown = await res.json()
+    return typeof answer === 'object' && answer !== null && 'ok' in answer && answer.ok === true
   } catch {
     return false
   }
@@ -712,10 +722,13 @@ export async function logout(fetchImpl: typeof fetch = fetch): Promise<boolean> 
  * 503 or a network failure means the question went unanswered, and `status` is
  * absent for the latter — see currentUser.tsx, which maps anything that is not
  * a 401 to `unavailable` rather than logging the user out. */
-export async function getMe(fetchImpl: typeof fetch = fetch): Promise<AuthResult> {
+export async function getMe(fetchImpl: typeof fetch = fetch, { verifyIdentity = false } = {}): Promise<AuthResult> {
   let res: Response
   try {
-    res = await fetchImpl('/auth/me', { credentials: 'include' })
+    res = await fetchImpl('/auth/me', verifyIdentity ? { ...sessionRequest, signal: AbortSignal.timeout(8000) } : { credentials: 'include' })
+    if (verifyIdentity && (!authResponseFrom(res, '/auth/me') || (res.status === 401 && !(await isSignedOutResponse(res, 'account'))))) {
+      return { kind: 'error', message: UNREADABLE }
+    }
   } catch {
     return { kind: 'error', message: "Couldn't reach the service — is it running? (network error)" }
   }
@@ -731,7 +744,8 @@ export async function getMe(fetchImpl: typeof fetch = fetch): Promise<AuthResult
     }
   }
   const parsed = await parseJson<AuthUser>(res)
-  if (parsed === null) return { kind: 'error', message: UNREADABLE }
+  if (parsed === null || (verifyIdentity && (res.status !== 200 || typeof parsed.email !== 'string'
+    || !parsed.email || (parsed.role !== 'player' && parsed.role !== 'dm')))) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', user: parsed }
 }
 

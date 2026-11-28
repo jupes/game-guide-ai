@@ -103,6 +103,7 @@ from .auth_store import AuthStore
 from .campaign_store import MissingParent, ScreenLimit, pg
 from .db import TransactionalDatabase
 from .screen_lookup_budget import ScreenLookupBudget
+from .security_headers import CLEAR_SITE_DATA
 from .session import SessionData
 from .stream_response import leased_body
 from .table_admission import TableFull
@@ -143,9 +144,6 @@ SCREEN_COOKIE_PATH = "/table"
 #: What a grant looks like on the wire: `secrets.token_urlsafe(32)`. Anything
 #: else is not a grant, and is deleted without a lookup.
 _GRANT_SHAPE = re.compile(rf"^[A-Za-z0-9_-]{{{ident.SECRET_CHARS}}}$")
-#: SEC-48, SEC-49: never `"cookies"` (it would race the grant's own
-#: `Set-Cookie`) and never `"*"`.
-CLEAR_SITE_DATA = '"cache", "storage"'
 #: Every answer of a table route, whoever built it (TA-6, SEC-17, SEC-49).
 TABLE_HEADERS = {"cache-control": "no-store", "cross-origin-resource-policy": "same-origin"}
 #: Where the request records that its grant cookie must go (SEC-44(3)).

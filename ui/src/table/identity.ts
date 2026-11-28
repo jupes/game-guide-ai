@@ -1,18 +1,9 @@
 import { TableIdentitySchema, type TableIdentity } from '../gm/contracts'
+import { isSignedOutResponse } from '../authResponse'
 import { tableReadRetryAt } from './readResponse'
 
 export type TableActor = TableIdentity['kind']
 export type IdentityResult = { kind: TableActor | 'signed-out' } | { kind: 'unavailable'; retryAt?: number }
-
-export async function isSignedOutResponse(response: Response): Promise<boolean> {
-  if (response.status !== 401 || response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/json') return false
-  try {
-    const body = await response.json()
-    return body?.detail === 'not signed in' && Object.keys(body).length === 1
-  } catch {
-    return false
-  }
-}
 
 /** This endpoint identifies the effective cookie without naming an account, seat or campaign. */
 export async function readTableIdentity(request: typeof fetch, signal: AbortSignal): Promise<IdentityResult> {

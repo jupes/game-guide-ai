@@ -1393,6 +1393,14 @@ The account exit lives under `/table/` so its POST receives the screen cookie. I
 tab established a screen between the identity check and the click, the server refuses
 the account exit and the page refreshes its controls.
 
+The ordinary account menu uses `POST /auth/logout`. Its successful response
+is `200 {"ok":true}` with the account cookie expired and
+`Clear-Site-Data: "cache", "storage"`. The service checks the browser's
+`Origin` and `Sec-Fetch-Site` headers before setting either response header.
+Existing non-browser callers may omit those request headers.
+The app confirms the JSON response before clearing
+local account data or telling other tabs to check their identity.
+
 `TableSession` is the GM's view: state, **admission generation** (`gen`, which
 §15.11 keeps), when it started and ends, whether table audio is on, and
 `screens` — the live grants of a live session, each as `{screen_id, created_at,

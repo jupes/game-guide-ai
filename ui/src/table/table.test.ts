@@ -477,6 +477,24 @@ describe('effective account or screen credential', () => {
     expect(status()).toBe('You signed out.')
   })
 
+  it.each([
+    ['account', 'accepted', true], ['account', 'already signed out', true],
+    ['account', 'unrecognized 401', false], ['account', 'ordinary account 401', false], ['screen', 'accepted', false],
+  ] as const)('clears account storage on an explicit %s exit only when confirmed (%s)', async (actor, outcome, cleared) => {
+    const key = 'game-guide-ai:conversations:shared-device'
+    localStorage.setItem(key, 'Private conversation title')
+    try {
+      const reply = outcome === 'accepted' ? new Response(null, { status: 204 })
+        : outcome === 'already signed out' ? noIdentity()
+        : outcome === 'ordinary account 401' ? Response.json({ detail: 'authentication required' }, { status: 401 })
+        : new Response('proxy denied', { status: 401 })
+      await start(async () => reply, undefined, undefined, async () => identityOf(actor), null)
+      exit(actor === 'account' ? 'sign-out' : 'leave').click()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(localStorage.getItem(key)).toBe(cleared ? null : 'Private conversation title')
+    } finally { localStorage.removeItem(key) }
+  })
+
   it.each(['account', 'screen'] as const)('returns focusable retry to the %s exit when its POST stalls', async actor => {
     let late!: (response: Response) => void
     const request = vi.fn<typeof fetch>().mockResolvedValueOnce(picture('guest', slot('table', 'Live handout')))

@@ -112,6 +112,30 @@ on `na7`. That bead owns execution of the DNS, TLS, and infrastructure changes.
 
 ## Launch acceptance
 
+For the shared-device sign-out check, use the same seated account in two
+tabs. Open a sample conversation in one and a private table handout in
+the other. Use **Sign out** from the account menu. Confirm the table tab
+drops the handout and stops playback. Reopen the app
+and check that the next account cannot see the previous conversation title
+or profile alias. Repeat in the supported phone browsers. The server asks
+the browser to clear its HTTP cache and origin storage. If the browser ignores
+that request, the signing-out tab removes the app's shared local storage and
+its own app entries in session storage. The app stores conversation titles
+in local storage and keeps table handouts in memory. The open table tab
+discards its handout when it receives the identity change. HTTP cache
+eviction depends on the browser honoring the response header.
+
+Also navigate away from the signed-in app, sign out in the other tab, then
+use Back. If the browser restores the earlier page from memory, the workspace
+and any open dialog should stay hidden until the app verifies the session.
+Repeat with the original account still signed in and an unsent draft open.
+Interrupt the connection during the check. The page should offer a retry
+while the draft stays hidden. Restore the connection and retry. The draft
+should still be there when the original account is confirmed.
+
+To finish sharing with the other people at the table, use **Stop** or **End**
+and wait for confirmation before signing out of the GM account.
+
 | Check | Pass evidence |
 | --- | --- |
 | Distribution | Fresh Safari on an actual iPhone and Chrome on an actual Android phone can open the same QR or URL, complete sign-in, join, and use the browser and optional installed modes. Verify on Wi-Fi and cellular. |

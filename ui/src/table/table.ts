@@ -1,6 +1,8 @@
 import { CONTRACT_VERSION } from '../gm/contracts'
 import { openIdentityBroadcast, type IdentityChannelFactory } from '../shell/identityBroadcast'
-import { isSignedOutResponse, readTableIdentity, type IdentityResult, type TableActor } from './identity'
+import { clearSignedOutStorage } from '../signOutStorage'
+import { isSignedOutResponse } from '../authResponse'
+import { readTableIdentity, type IdentityResult, type TableActor } from './identity'
 import { tableProjections } from './projection'
 import { mountTableAudio } from './audioControls'
 import type { MixerCue } from './audioMixer'
@@ -639,6 +641,7 @@ export function mountTable(
       leave.hidden = true
       reload.hidden = true
       if (kind === 'account') {
+        clearSignedOutStorage()
         identity.post()
         signIn.hidden = false
       }

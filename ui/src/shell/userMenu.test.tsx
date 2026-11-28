@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactElement } from 'react'
-import { createEvent, fireEvent, render, screen, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, renderHook, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AppNavContext } from './AppNav'
 import type { AppNavState } from './AppNav'
@@ -8,6 +8,7 @@ import { CurrentUserContext } from './currentUser'
 import type { CurrentUserContextValue } from './currentUser'
 import { ThemeProvider } from '../ds/theme'
 import { UserMenu } from './UserMenu'
+import * as canvas from './canvasContext'
 
 // Render through the app's theme boundary so the no-duplicate assertion is
 // representative even though UserMenu no longer consumes the theme itself.
@@ -108,6 +109,28 @@ describe('UserMenu (#14)', () => {
     await userEvent.click(avatarBtn)
     await userEvent.click(screen.getByText(/sign out/i))
     expect(signOut).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps unsaved work in place and offers retry if an allowed sign-out fails', async () => {
+    const actions = renderHook(() => canvas.useCanvasActions()).result.current
+    const guard = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true)
+    const canvasHook = vi.spyOn(canvas, 'useCanvasActions').mockReturnValue({ ...actions, flushBeforeLeaving: guard })
+    try {
+      const state = makeUserState()
+      const logout = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+      state.user.signOut = logout
+      renderWithTheme(<CurrentUserContext.Provider value={state}><UserMenu /></CurrentUserContext.Provider>)
+      await userEvent.click(screen.getByRole('button', { name: /open user menu/i }))
+      const action = screen.getByRole('button', { name: 'Sign out' })
+      await userEvent.click(action)
+      expect(logout).not.toHaveBeenCalled()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      await userEvent.click(action)
+      expect(screen.getByRole('alert')).toHaveTextContent(/couldn't sign out/i)
+      await userEvent.click(action)
+      expect(logout).toHaveBeenCalledTimes(2)
+      expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument()
+    } finally { canvasHook.mockRestore() }
   })
 })
 

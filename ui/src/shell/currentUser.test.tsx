@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { readFileSync } from 'node:fs'
+import { URL as NodeURL } from 'node:url'
+import appHtml from '../../index.html?raw'
 import {
   CurrentUserProvider,
   useCurrentUser,
@@ -141,6 +145,11 @@ describe('session check', () => {
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
     setGoogleOutcome({ search: '?google=linked', pathname: '/profile' })
+    revealSignOutNotice.set(['Private NPC name'])
+    act(() => result.current.setDisplayName('Private alias'))
+    act(() => result.current.setAvatarTone('arcane'))
+    localStorage.setItem('game-guide-ai:gm-pending-stops:ada@example.com', 'command')
+    sessionStorage.setItem('rag-chat:conversations', 'legacy')
     await act(async () => {
       await result.current.user.signOut()
     })
@@ -148,6 +157,12 @@ describe('session check', () => {
     expect(result.current.authStatus).toBe('unauthenticated')
     expect(result.current.user.id).toBe('guest')
     expect(getGoogleOutcome()).toBeNull()
+    expect(revealSignOutNotice.text).toBeNull()
+    expect(localStorage.getItem('game-guide-ai:gm-pending-stops:ada@example.com')).toBeNull()
+    expect(sessionStorage.getItem('rag-chat:conversations')).toBeNull()
+    act(() => result.current.signIn({ email: 'ada@example.com', role: 'dm' }))
+    expect(result.current.user.displayName).toBe(STUB.displayName)
+    expect(result.current.user.avatarTone).toBe('gold')
   })
 
   it('a FAILED logout keeps the user signed in (the cookie is still live)', async () => {
@@ -160,6 +175,8 @@ describe('session check', () => {
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
 
+    const key = 'game-guide-ai:gm-pending-stops:ada@example.com'
+    localStorage.setItem(key, 'command')
     let outcome: boolean | undefined
     await act(async () => {
       outcome = await result.current.user.signOut()
@@ -169,6 +186,8 @@ describe('session check', () => {
     expect(outcome).toBe(false)
     expect(result.current.authStatus).toBe('authenticated')
     expect(result.current.user.id).toBe('ada@example.com')
+    expect(localStorage.getItem(key)).toBe('command')
+    localStorage.removeItem(key)
   })
 
   it('a 401 from any guarded call drops the app back to unauthenticated', async () => {
@@ -178,6 +197,9 @@ describe('session check', () => {
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
 
+    const key = 'game-guide-ai:gm-pending-stops:ada@example.com'
+    localStorage.setItem(key, 'command')
+    revealSignOutNotice.set(['Private NPC name'])
     // Simulate a guarded endpoint reporting the session is gone.
     await act(async () => {
       const res = await api.postChat('hi', 'sage', null, (async () =>
@@ -185,7 +207,136 @@ describe('session check', () => {
       expect(res.kind).toBe('error')
     })
     expect(result.current.authStatus).toBe('unauthenticated')
+    expect(localStorage.getItem(key)).toBe('command')
+    expect(revealSignOutNotice.text).toContain('Private NPC name')
+    localStorage.removeItem(key)
   })
+
+  it.each(['still signed in', 'signed out', 'unavailable'] as const)('checks the current cookie after a raced sign-in: %s', async outcome => {
+    const ada = { email: 'ada@example.com', role: 'dm' as const }
+    const bea = { email: 'bea@example.com', role: 'player' as const }
+    const me = vi.spyOn(api, 'getMe').mockResolvedValueOnce({ kind: 'ok', user: ada })
+      .mockResolvedValue(outcome === 'still signed in' ? { kind: 'ok', user: bea }
+        : { kind: 'error', status: outcome === 'signed out' ? 401 : 503, message: 'Could not load account' })
+    let finish!: (ok: boolean) => void
+    vi.spyOn(api, 'logout').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const channel = { onmessage: null, close: vi.fn(), postMessage: vi.fn() }
+    const { result } = renderHook(() => useCurrentUser(), {
+      wrapper: ({ children }) => <CurrentUserProvider identityChannelFactory={() => channel}>{children}</CurrentUserProvider>,
+    })
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+    const pending = result.current.user.signOut()
+    act(() => result.current.signIn(bea))
+    act(() => result.current.setDisplayName('Bea'))
+    await act(async () => {
+      finish(true)
+      await expect(pending).resolves.toBe(outcome === 'signed out')
+    })
+    expect(me).toHaveBeenCalledTimes(2)
+    expect(channel.postMessage).toHaveBeenCalledTimes(2)
+    const key = 'game-guide-ai:profile:bea@example.com'
+    expect(result.current.authStatus).toBe(outcome === 'still signed in' ? 'authenticated'
+      : outcome === 'signed out' ? 'unauthenticated' : 'unavailable')
+    if (outcome === 'still signed in') {
+      expect(result.current.user.id).toBe(bea.email)
+      expect(result.current.user.displayName).toBe('Bea')
+    } else expect(result.current.user.id).toBe('guest')
+    if (outcome === 'signed out') expect(localStorage.getItem(key)).toBeNull()
+    else expect(localStorage.getItem(key)).toContain('Bea')
+    localStorage.removeItem(key)
+  })
+
+  it.each(['same account', 'different account', 'signed out'] as const)(
+    'keeps cached drafts and portals covered across a failed restore and a verified retry: %s', async outcome => {
+      const ada = { email: 'ada@example.com', role: 'dm' as const }
+      const bea = { email: 'bea@example.com', role: 'player' as const }
+      let settle!: (current: api.AuthResult) => void
+      const me = vi.spyOn(api, 'getMe').mockResolvedValueOnce({ kind: 'ok', user: ada })
+        .mockImplementation(() => new Promise(resolve => { settle = resolve }))
+      function AccountView() {
+        const { user, authStatus } = useCurrentUser()
+        return authStatus === 'authenticated' ? <>
+          <label>{user.id}<input key={user.id} /></label>
+          {createPortal(<aside aria-label="Identity details">{user.id}</aside>, document.body)}
+        </> : <p>{authStatus}</p>
+      }
+      const root = document.createElement('div')
+      root.id = 'root'
+      const status = new DOMParser().parseFromString(appHtml, 'text/html').getElementById('session-restore-status')!
+      const styles = document.createElement('style')
+      styles.textContent = readFileSync(new NodeURL('../index.css', import.meta.url), 'utf8')
+      document.head.append(styles)
+      document.body.append(status, root)
+      const view = render(<CurrentUserProvider identityChannelFactory={() => null}><AccountView /></CurrentUserProvider>, { container: root })
+      try {
+        const draft = await view.findByRole('textbox') as HTMLInputElement
+        const portal = document.body.querySelector('aside')!
+        expect(root.contains(portal)).toBe(false)
+        expect(status).not.toBeVisible()
+        draft.value = 'Unsaved private draft'
+        act(() => window.dispatchEvent(new PageTransitionEvent('pagehide')))
+        expect(root).toBeVisible()
+        act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        expect(getComputedStyle(root).display).toBe('none')
+        expect(getComputedStyle(portal).display).toBe('none')
+        expect(status).toBeVisible()
+        expect(within(status).getByRole('status')).toHaveTextContent('Loading…')
+        expect(within(status).queryByRole('alert')).toBeNull()
+        act(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        expect(status).toBeVisible()
+        expect(me).toHaveBeenCalledTimes(2)
+        await act(async () => { settle({ kind: 'error', status: 503, message: 'Session check unavailable' }) })
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        expect(within(status).getByRole('alert')).toHaveTextContent('Can’t reach the service')
+        const retry = within(status).getByRole('button', { name: 'Try again' })
+        expect(retry).toBeVisible()
+        act(() => api.notifyUnauthorized()) // an old request can finish while the page remains covered
+        expect(draft).toBeInTheDocument()
+        expect(draft).toHaveValue('Unsaved private draft')
+        act(() => { retry.click(); retry.click() })
+        expect(me).toHaveBeenCalledTimes(3)
+        expect(me).toHaveBeenLastCalledWith(expect.any(Function), { verifyIdentity: true })
+        expect(within(status).getByRole('status')).toHaveTextContent('Loading…')
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        if (outcome === 'signed out') {
+          const old = settle
+          act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+          act(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+          expect(me).toHaveBeenCalledTimes(4)
+          await act(async () => { old({ kind: 'ok', user: ada }) })
+          expect(root).not.toBeVisible()
+        }
+        await act(async () => {
+          if (outcome === 'same account' || outcome === 'different account') {
+            settle({ kind: 'ok', user: outcome === 'same account' ? ada : bea })
+          } else settle({ kind: 'error', status: 401, message: 'not signed in' })
+        })
+        expect(root).toBeVisible()
+        expect(status).not.toBeVisible()
+        if (outcome === 'same account') expect(view.getByRole('textbox')).toHaveValue('Unsaved private draft')
+        else {
+          expect(draft).not.toBeInTheDocument()
+          expect(root).not.toHaveTextContent(ada.email)
+          expect(root).toHaveTextContent(outcome === 'different account' ? bea.email : 'unauthenticated')
+        }
+        act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+        expect(status).toBeVisible()
+      } finally {
+        view.unmount()
+        expect(status).not.toBeVisible()
+        expect(document.documentElement).not.toHaveAttribute('data-session-restoring')
+        root.remove()
+        status.remove()
+        styles.remove()
+      }
+    },
+  )
 })
 
 // ── swe1.7 — editable + persisted display name and avatar tone ────────────────

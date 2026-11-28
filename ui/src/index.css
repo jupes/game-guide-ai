@@ -30,6 +30,12 @@ body {
   padding: 0;
 }
 
+/* Keep the cached workspace and all body portals out of view until the
+   account is verified. Only the neutral status is available during the check. */
+html[data-session-restoring] body > :not(#session-restore-status),
+#session-restore-status[hidden],
+#session-restore-status [hidden] { display: none !important; }
+
 body {
   background:
     radial-gradient(ellipse at top, #1d1710 0%, var(--page-bg) 55%);
