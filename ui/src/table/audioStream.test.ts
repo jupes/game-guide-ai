@@ -26,3 +26,19 @@ it('rejects an ambiguous opening audio slot', () => {
   expect(tablePicture({ ...event, frames: [session, snapshot, frame('ambience', 1), frame('ambience', 2), ready] }))
     .toEqual({ kind: 'retry' })
 })
+
+it('recognizes an explicit terminal before ready without publishing a partial picture', async () => {
+  const frames = [session, snapshot, { ...event, event: 'reconnect' }]
+  const body = frames.map(f => `event: ${f.event}\ndata: ${JSON.stringify(f)}\n\n`).join('')
+  const received: TablePicture[] = []
+  const end = await streamTable('cmp_A', new AbortController().signal, async () => new Response(body, {
+    headers: { 'Content-Type': 'text/event-stream' },
+  }), { opened() {}, bytes() {}, picture: value => received.push(value) })
+  expect(end).toEqual({ kind: 'reconnect' })
+  expect(received).toEqual([])
+})
+
+it.each([null, 'abridged'])('keeps the public snapshot readable with missing or malformed sound context (%s)', context => {
+  const result = tablePicture({ ...event, frames: [session, snapshot, ready] }, 0, context)
+  expect(result).toMatchObject({ kind: 'live', slots: snapshot.slots, audioContext: null })
+})

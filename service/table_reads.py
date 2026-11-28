@@ -31,7 +31,9 @@ that is not accepted or is removed, an account that is nobody's, a grant that is
 dead or another campaign's. The route answers it with the one `inactive` (SEC-46).
 
 Streams use `TableStreamReads` to recheck a batch's standing, session
-generation and authorized pinned values in the same PostgreSQL statement.
+generation and authorized pinned values in the same PostgreSQL statement. A
+rotated watch gets a content-free signal only if its original account standing
+still entitles it to the same live session.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum, auto
 from itertools import groupby
 from operator import itemgetter
 from typing import Final, cast
@@ -130,6 +133,10 @@ class TableReads:
 TABLE_STREAM_BATCH_MAX: Final = 20
 
 
+class TableStreamSignal(Enum):
+    ROTATED = auto()
+
+
 @dataclass(frozen=True)
 class TableStreamWatch:
     """The server-derived standing to recheck for one admitted stream."""
@@ -151,23 +158,24 @@ WITH watched AS (
     SELECT * FROM unnest(%(campaigns)s::text[], %(sessions)s::text[], %(generations)s::int[],
                          %(accounts)s::bigint[], %(grants)s::text[], %(seats)s::text[])
     WITH ORDINALITY AS w(campaign_id, session_id, generation, account_id, grant_id, participant_id, ordinal)
-), eligible AS (
-    SELECT w.ordinal, s.id AS session_id, s.campaign_id, (s.table_audio AND c.archived_at IS NULL) AS table_audio,
-           p.id AS participant_id,
-           (w.account_id IS NOT NULL AND c.owner_id <> w.account_id AND p.confirmed_at IS NOT NULL) AS own_slot,
-           {AUDIO_SLOT_ROWS} AS audio_slots
+), standing AS (
+    SELECT w.ordinal, s.id, s.campaign_id, s.link_generation > w.generation AS rotated,
+           (s.table_audio AND c.archived_at IS NULL) AS table_audio,
+           p.id AS participant_id, p.confirmed_at IS NOT NULL AS own_slot
     FROM watched w
     JOIN campaign.table_sessions s ON s.id = w.session_id AND s.campaign_id = w.campaign_id
-        AND s.state = 'live' AND s.expires_at > %(now)s AND s.link_generation = w.generation
+        AND s.state = 'live' AND s.expires_at > %(now)s AND s.link_generation >= w.generation
     JOIN campaign.campaigns c ON c.id = s.campaign_id
-    LEFT JOIN campaign.participants p ON p.campaign_id = s.campaign_id AND p.user_id = w.account_id
+    LEFT JOIN campaign.participants p ON p.id = w.participant_id AND p.campaign_id = s.campaign_id
+        AND p.user_id = w.account_id AND c.owner_id <> w.account_id
         AND p.accepted_at IS NOT NULL AND p.removed_at IS NULL
     LEFT JOIN campaign.table_credentials g ON g.id = w.grant_id AND g.session_id = s.id
-        AND g.link_generation = s.link_generation AND g.revoked_at IS NULL
-    WHERE (c.owner_id = w.account_id OR p.id IS NOT NULL OR g.id IS NOT NULL)
-      AND (w.participant_id IS NULL OR w.participant_id = p.id)
+        AND g.link_generation = w.generation AND g.link_generation = s.link_generation AND g.revoked_at IS NULL
+    WHERE (c.owner_id = w.account_id AND w.participant_id IS NULL) OR p.id IS NOT NULL OR g.id IS NOT NULL
+), eligible AS (
+    SELECT s.*, {AUDIO_SLOT_ROWS} AS audio_slots FROM standing s WHERE NOT s.rotated
 )
-SELECT e.ordinal, e.own_slot, e.table_audio, audience.region, COALESCE(r.seq, 0), d.type, f.mask,
+SELECT e.ordinal, audience.ordering, e.own_slot, e.table_audio, audience.region, COALESCE(r.seq, 0), d.type, f.mask,
        (SELECT jsonb_object_agg(key, v.data -> key) FROM unnest(f.mask) AS k(key) WHERE v.data ? key), e.audio_slots
 FROM eligible e
 CROSS JOIN LATERAL (
@@ -175,14 +183,16 @@ CROSS JOIN LATERAL (
     UNION ALL
     SELECT 'mine', e.participant_id, 1 WHERE e.own_slot
 ) audience
-LEFT JOIN campaign.reveal_slots r ON r.session_id = e.session_id AND r.campaign_id = e.campaign_id
+LEFT JOIN campaign.reveal_slots r ON r.session_id = e.id AND r.campaign_id = e.campaign_id
     AND r.participant_id IS NOT DISTINCT FROM audience.participant_id
 LEFT JOIN campaign.reveal_disclosures f ON f.id = r.disclosure_id AND f.campaign_id = e.campaign_id
-    AND f.session_id = e.session_id AND f.ended_at IS NULL
+    AND f.session_id = e.id AND f.ended_at IS NULL
 LEFT JOIN campaign.documents d ON d.id = f.document_id AND d.campaign_id = e.campaign_id
 LEFT JOIN campaign.document_versions v ON v.document_id = d.id AND v.number = f.version_number
     AND v.sealed_at IS NOT NULL
-ORDER BY e.ordinal, audience.ordering
+UNION ALL
+SELECT ordinal, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM standing WHERE rotated
+ORDER BY ordinal, ordering
 """
 
 
@@ -194,8 +204,8 @@ class TableStreamReads:
 
     async def snapshots(
         self, watches: Sequence[TableStreamWatch], *, now: datetime
-    ) -> list[TableSnapshot | None]:
-        """Results align with the watches. A denied or expired watch is empty."""
+    ) -> list[TableSnapshot | TableStreamSignal | None]:
+        """Results align with the watches. Denied watches are empty. Rotated accounts reopen."""
         if not watches:
             return []
         if len(watches) > TABLE_STREAM_BATCH_MAX:
@@ -211,18 +221,21 @@ class TableStreamReads:
         }
         async with self._db.async_connection() as connection:
             rows = await (await connection.execute(_STREAM_READ_SQL, values)).fetchall()
-        snapshots: list[TableSnapshot | None] = [None] * len(watches)
+        snapshots: list[TableSnapshot | TableStreamSignal | None] = [None] * len(watches)
         for ordinal, group in groupby(rows, itemgetter(0)):
             entries = list(group)
+            _, ordering, own_slot, audio, *_, audio_rows = entries[0]
+            if ordering is None:
+                snapshots[ordinal - 1] = TableStreamSignal.ROTATED
+                continue
             slots = [
                 TableSlot(
                     slot=TableSlotName(region), seq=seq,
                     content=None if doc_type is None or data is None else build(doc_type, data, mask),
                 )
-                for _, _, _, region, seq, doc_type, mask, data, _ in entries
+                for _, _, _, _, region, seq, doc_type, mask, data, _ in entries
             ]
-            _, own_slot, audio, *_ = entries[0]
-            snapshots[ordinal - 1] = _frames(own_slot, audio, slots, table_audio_frames(entries[0][-1], now))
+            snapshots[ordinal - 1] = _frames(own_slot, audio, slots, table_audio_frames(audio_rows, now))
         return snapshots
 
 

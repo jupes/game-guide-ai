@@ -30,7 +30,8 @@ export function tablePicture(raw: unknown, clockOffsetMs = 0, audioContext: stri
     return { kind: 'retry' }
   }
   return { kind: 'live', participant: session.role === 'participant', slots: picture.slots,
-    audioEnabled: session.audio, audio, clockOffsetMs, audioContext }
+    audioEnabled: session.audio, audio, clockOffsetMs,
+    audioContext: audioContext !== null && /^[a-f0-9]{64}$/.test(audioContext) ? audioContext : null }
 }
 
 type StreamUpdates = {
@@ -55,6 +56,7 @@ export async function streamTable(
     })
     if (signal.aborted) return { kind: 'retry' }
     if (response.status === 401) return { kind: 'signed-out' }
+    if (response.status === 403) return { kind: 'inactive' }
     const retryAfter = response.headers.get('Retry-After')
     if (response.status === 503 && retryAfter !== null) {
       const seconds = Number(retryAfter)
@@ -76,7 +78,7 @@ export async function streamTable(
         return false
       }
       if (frame.event === 'reconnect') {
-        if (picture !== null) end = { kind: 'reconnect' }
+        end = { kind: 'reconnect' }
         return false
       }
       if (picture === null) {

@@ -51,3 +51,38 @@ it('forgets stale registrations and bounds repeated registration refusals', asyn
   expect(previous).toEqual(['open', 'open'])
   store.reset()
 })
+
+it.each([200, 403])('isolates a late open response (%i) after a rapid close and reopen', async (status) => {
+  vi.useFakeTimers()
+  const bodies: Record<string, unknown>[] = []
+  const refresh = vi.fn()
+  const oldToken = 'o'.repeat(32)
+  let finish!: (response: Response) => void
+  const store = tablePresence('cmp_Table', async (_path, init) => {
+    const body = JSON.parse(String(init?.body))
+    bodies.push(body)
+    if (body.action === 'open') {
+      if (bodies.length === 1) return new Promise(resolve => { finish = resolve })
+      return Response.json({ schema_version: 1, registration })
+    }
+    return new Response(null, { status: 204 })
+  }, refresh)
+  store.authorize(context)
+  await vi.advanceTimersByTimeAsync(2)
+  store.reset()
+  store.authorize(context)
+  store.update('muted', [])
+  await vi.advanceTimersByTimeAsync(2)
+  expect(bodies[0].page_id).not.toEqual(bodies[1].page_id)
+  expect(bodies[2]).toMatchObject({ action: 'report', registration, revision: 1, state: 'muted' })
+
+  finish(Response.json({ schema_version: 1, registration: oldToken }, { status }))
+  await vi.advanceTimersByTimeAsync(2)
+  expect(bodies.filter(b => b.action === 'close').map(b => b.registration)).toEqual(status === 200 ? [oldToken] : [])
+  expect(refresh).not.toHaveBeenCalled()
+  store.update('idle', [])
+  await vi.advanceTimersByTimeAsync(2)
+  expect(bodies.at(-1)).toMatchObject({ action: 'report', registration, revision: 2, state: 'idle' })
+  expect(bodies.some(b => b.registration === oldToken && b.action === 'report')).toBe(false)
+  store.reset()
+})

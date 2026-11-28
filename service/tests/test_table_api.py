@@ -944,7 +944,7 @@ def test_table_stream_releases_the_admitted_lease_before_asgi_request_returns(
     cookie = (f"{config.SESSION_COOKIE_NAME}={_account(PLAYER)}" if account is not None
               else f"{table_api.SCREEN_COOKIE}={reading.grant}")
     watch = TableStreamWatch(reading.campaign, reading.session, 1, account_id=account, grant_id=grant)
-    lease = StreamLease(uuid4(), watch)
+    lease = StreamLease(uuid4(), watch, session_expires_at=datetime.now(UTC) + timedelta(hours=1))
     events: list[str] = []
 
     class Admission:
