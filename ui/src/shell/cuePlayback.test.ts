@@ -357,6 +357,32 @@ describe('GM table cue commands', () => {
     expect(store.snapshot().frames).toEqual([])
   })
 
+  it('keeps a hidden monitor disconnected when a pending Play receives its result', async () => {
+    vi.useFakeTimers()
+    const { store, requests, dispose } = await fixture()
+    const hidden = vi.spyOn(document, 'hidden', 'get')
+    try {
+      requests[0].finish(state(1))
+      await vi.advanceTimersByTimeAsync(0)
+      const playing = store.play('cue_Rain', true)
+      hidden.mockReturnValue(true)
+      document.dispatchEvent(new Event('visibilitychange'))
+      requests[1].finish(state(2, 1, 'Rain'))
+      await playing
+      expect(store.snapshot().frames[0].playing?.title).toBe('Rain')
+      expect(store.snapshot()).toMatchObject({ connected: false, presence: null })
+      hidden.mockReturnValue(false)
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.waitFor(() => expect(requests).toHaveLength(3))
+      requests[2].finish(state(2, 1, 'Rain'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.snapshot()).toMatchObject({ connected: true, presence })
+    } finally {
+      dispose()
+      hidden.mockRestore()
+    }
+  })
+
   it('retries an uncertain Stop with the same id and bars Play until it is acknowledged', async () => {
     vi.useFakeTimers()
     const { store, requests, dispose } = await fixture()

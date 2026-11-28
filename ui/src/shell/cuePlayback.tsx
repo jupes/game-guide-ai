@@ -131,7 +131,7 @@ export class CuePlayback {
       if (Date.now() >= retryAt) {
         const initialRead = ++this.nextRead
         const result = await streamCueState(this.campaign, this.session, this.fetchImpl, request.signal, (pair, initial) => {
-          const accepted = this.accept(pair, initial ? initialRead : ++this.nextRead)
+          const accepted = this.accept(pair, initial ? initialRead : ++this.nextRead, true)
           if (accepted) {
             failures = 0
             clearPollExpiry()
@@ -231,11 +231,11 @@ export class CuePlayback {
     }
     const raw: unknown = await reply.json()
     signal.throwIfAborted()
-    if (this.controller && this.accept(audioPair(raw, this.session), read)) onAccepted?.()
+    if (this.controller && this.accept(audioPair(raw, this.session), read, !!onAccepted)) onAccepted?.()
     return reply
   }
 
-  private accept(frames: AudioFrame[], read: number): boolean {
+  private accept(frames: AudioFrame[], read: number, confirmsConnection: boolean): boolean {
     const old = this.state.frames[0]
     const next = frames[0]
     if (next.audio_epoch < this.settingsEpoch) return false
@@ -251,7 +251,7 @@ export class CuePlayback {
           frames.every((f, i) => f.seq === this.state.frames[i].seq)) return false
     }
     this.latestRead = Math.max(read, this.latestRead)
-    this.patch({ frames, connected: true })
+    this.patch({ frames, connected: confirmsConnection || this.state.connected })
     return true
   }
 
