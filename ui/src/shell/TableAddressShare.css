@@ -1,0 +1,129 @@
+.table-address-share {
+  flex: none;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  color: var(--md-sys-color-on-surface);
+}
+
+.session-control__group > .table-address-share:has(.table-address-share__contents) { flex-basis: 100%; }
+
+/* The workspace chrome sits above a separately scrolling document. Give an
+   open session its own touch-scroll region, leaving the header Stop in view. */
+.workspace-shell__session:has(.table-address-share__contents) {
+  --table-share-height: 62dvh;
+  max-block-size: var(--table-share-height);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.workspace-shell__session .table-address-share:has(.table-address-share__contents) > .aether-btn {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--md-sys-color-surface);
+}
+
+.workspace-shell__session .table-address-share__qr svg {
+  inline-size: min(256px, 100%, calc(var(--table-share-height) - var(--aether-touch-min) - 2rem));
+}
+
+/* The short landscape layout already gives the session its own column. Keep
+   End and Share on one line and let the other chrome use the adjacent column. */
+@media (height <= 460px) and (orientation: landscape) {
+  .workspace-shell__session .session-control__group:has(.table-address-share) {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    justify-items: start;
+  }
+
+  .workspace-shell__session .session-control__summary,
+  .workspace-shell__session .session-control__audio,
+  .workspace-shell__session .table-address-share:has(.table-address-share__contents) {
+    grid-column: 1 / -1;
+  }
+
+  .workspace-shell[data-layout='narrow'] .workspace-shell__chrome:has(.workspace-shell__session .table-address-share) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 44%);
+    > .workspace-shell__session { grid-area: 1 / 2 / span 3; align-self: start; }
+    > .app-header, .workbench-switch { grid-column: 1; }
+  }
+
+  .workspace-shell[data-layout] .workspace-shell__chrome:has(.workspace-shell__session .table-address-share__contents) {
+    > .workspace-shell__session { --table-share-height: 68dvh; grid-row: 1 / span 3; align-self: start; }
+    > .app-header, .workbench-switch { grid-column: 1; }
+  }
+}
+
+@media (width < 600px) {
+  .workspace-shell__session .table-address-share { display: flex; flex-direction: column; }
+  .session-control__group > .table-address-share:has(.table-address-share__contents) { flex-basis: auto; }
+
+  /* A live Stop occupies another header row on a short portrait phone. */
+  @media (height <= 700px) and (orientation: portrait) {
+    .workspace-shell__chrome:has(.reveal-indicator) .workspace-shell__session:has(.table-address-share__contents) {
+      --table-share-height: 42dvh;
+    }
+  }
+}
+
+.table-address-share__contents {
+  display: grid;
+  gap: var(--aether-space-2);
+  max-inline-size: 34rem;
+  margin-block-start: var(--aether-space-2);
+  padding: var(--aether-space-3);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container);
+}
+
+.table-address-share__field {
+  display: grid;
+  min-inline-size: 0;
+  gap: var(--aether-space-1);
+  font-family: var(--aether-font-ui);
+  font-weight: 600;
+}
+
+.table-address-share__field textarea {
+  box-sizing: border-box;
+  inline-size: 100%;
+  min-inline-size: 0;
+  field-sizing: content;
+  max-block-size: 8rem;
+  resize: vertical;
+  padding: var(--aether-space-2);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--aether-radius-field);
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font: 400 1rem/1.45 var(--aether-font-ui);
+  overflow-wrap: anywhere;
+}
+
+.table-address-share__field textarea:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+
+.table-address-share__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--aether-space-2);
+}
+
+.table-address-share__result p {
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.table-address-share__result:not(:has(p, svg)) { position: absolute; }
+.table-address-share__result > p + .table-address-share__qr:not([hidden]) { margin-block-start: var(--aether-space-2); }
+
+.table-address-share__qr svg {
+  display: block;
+  max-inline-size: 100%;
+  block-size: auto;
+  forced-color-adjust: none;
+}

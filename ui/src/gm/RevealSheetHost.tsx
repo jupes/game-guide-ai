@@ -38,6 +38,7 @@ import { mintCommandId } from '../shell/tableSessionApi'
 import { useTableSession } from '../shell/tableSession'
 import type { CharacterSheetLink, Document, RevealRequest, Seat } from './contracts'
 import { TableAudioSetting } from '../shell/TableAudioSetting'
+import { TableAddressShare } from '../shell/TableAddressShare'
 import { getCharacterSheetLink, getDocument, getDocumentVersion, sealDocument } from './documentApi'
 import { documentTitle } from './documentTitle'
 import { documentTypeById, seedsOwnerDefault, type DocumentType } from './registry'
@@ -585,9 +586,18 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
     }
   }
 
+  const { liveSession } = table
   return (
     <RevealSheet
-      sessionControls={<TableAudioSetting />}
+      sessionControls={
+        <>
+          {phase === 'ready' && !confirming && table.pending !== 'end' && liveSession !== null &&
+            liveSession.campaignId === campaignId && liveSession.sessionId === picture?.session_id && (
+              <TableAddressShare key={liveSession.sessionId} campaignId={liveSession.campaignId} announce={say} />
+            )}
+          <TableAudioSetting />
+        </>
+      }
       title={title}
       phase={phase}
       statusLine={statusLine}

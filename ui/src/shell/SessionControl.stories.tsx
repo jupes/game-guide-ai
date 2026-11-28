@@ -56,7 +56,7 @@ const STATES: Record<State, readonly [Partial<TableSessionValue>, RegExp, readon
   None: [{}, /No session running/, ['Start session']],
   Starting: [{ pending: 'start' }, /Starting…/, ['Start session']],
   StartFailed: [{ problem: { kind: 'start_failed' } }, /Couldn't start the session/, ['Retry']],
-  Live: [{ state: 'live', session: LIVE, liveSession: LIVE_SESSION }, /Live until/, ['End session']],
+  Live: [{ state: 'live', session: LIVE, liveSession: LIVE_SESSION }, /Live until/, ['End session', 'Share table']],
   EndingRetrying: [
     { state: 'live', session: LIVE, liveSession: LIVE_SESSION, pending: 'end', endRetrying: true },
     /Couldn't end the session yet/,

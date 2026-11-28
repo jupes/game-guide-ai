@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Cue } from '../gm/contracts'
 import type { MixerSlots } from '../table/audioMixer'
 import { readCue } from '../gm/cueApi'
-import type { AudioFrame } from './cueStream'
+import { CuePlayback } from './cuePlayback'
+import { CUE_STATE_SILENCE_MS, type AudioFrame } from './cueStream'
 import { GmCueMonitor } from './gmCueMonitor'
 
 const mixer = vi.hoisted(() => ({
@@ -42,6 +43,56 @@ beforeEach(() => {
 afterEach(() => { monitor.dispose(); vi.useRealTimers() })
 
 describe('GM monitoring of the current session', () => {
+  it.each(['stalled', 'failed'])('silences the local mixer at the last good poll’s deadline after a %s poll', async (fault) => {
+    const pair = [frame('ambience', 'rain'), frame('one_shot', null)]
+    const poll = vi.fn<() => Promise<Response>>().mockResolvedValueOnce(Response.json(pair))
+    if (fault === 'failed') poll.mockImplementation(async () => new Response(null, { status: 503 }))
+    else poll.mockImplementation(() => new Promise(() => {}))
+    const request: typeof fetch = async input => {
+      const path = String(input)
+      if (path.endsWith('/stream')) return new Response(null, { status: 404 })
+      if (path.endsWith('/presence')) return new Response(null, { status: 503 })
+      return poll()
+    }
+    vi.mocked(readCue).mockResolvedValue(cue('rain'))
+    const playback = new CuePlayback(campaign, 'ses_harbor', request)
+    const stop = playback.start()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(playback.snapshot().connected).toBe(true)
+      expect(applied()?.ambience?.url).toContain('rain_asset')
+      await vi.advanceTimersByTimeAsync(CUE_STATE_SILENCE_MS - 1)
+      expect(poll.mock.calls.length).toBeGreaterThan(1)
+      expect(mixer.silence).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(playback.snapshot().connected).toBe(false)
+      expect(mixer.silence).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(CUE_STATE_SILENCE_MS)
+      expect(mixer.silence).toHaveBeenCalledOnce()
+    } finally { stop() }
+  })
+
+  it('discards pending cue metadata at expiry and keeps a private preview until its owner ends it', async () => {
+    const old = pendingCue()
+    vi.mocked(readCue).mockReturnValueOnce(old.pending).mockResolvedValue(cue('waves'))
+    monitor.update([frame('ambience', 'rain')], true, true, 0)
+    const preview = document.createElement('audio')
+    const pause = vi.spyOn(preview, 'pause').mockImplementation(() => {})
+    monitor.previewStarted(preview)
+    mixer.apply.mockClear()
+    monitor.expire()
+    old.finish(cue('rain'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mixer.apply).not.toHaveBeenCalled()
+    expect(pause).not.toHaveBeenCalled()
+    monitor.update([frame('ambience', 'waves', 2)], true, true, 0)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mixer.apply).not.toHaveBeenCalled()
+    monitor.previewEnded(preview)
+    expect(applied()?.ambience?.url).toContain('waves_asset')
+    expect(mixer.apply.mock.lastCall?.[1]?.resync).toBe(true)
+  })
+
   it('starts a successfully resolved slot even when the other lookup fails first', async () => {
     const a = pendingCue(), b = pendingCue()
     vi.mocked(readCue).mockReturnValueOnce(a.pending).mockReturnValueOnce(b.pending)

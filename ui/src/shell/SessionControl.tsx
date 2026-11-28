@@ -20,6 +20,7 @@ import { Button } from '../ds/Button'
 import { useTableSession, type SessionProblem, type StartOutcome, type TableSessionValue } from './tableSession'
 import './SessionControl.css'
 import { TableAudioSetting } from './TableAudioSetting'
+import { TableAddressShare } from './TableAddressShare'
 
 // Section 12.2's strings verbatim; the others inferred, one constant each, for `cub`.
 const NONE = 'No session running'
@@ -77,10 +78,10 @@ export function SessionControl({ value, announce }: SessionControlProps): React.
   const session = value ?? fromProvider
   const [message, setMessage] = useState('')
   const say = announce ?? setMessage
-  const { state, problem, pending } = session
+  const { state, problem, pending, liveSession } = session
   const table = session.session
   const showEnd = table?.state === 'live'
-  const live = session.liveSession !== null
+  const live = liveSession !== null
 
   async function run(send: () => Promise<StartOutcome>): Promise<void> {
     if (pending !== 'start') say(STARTING)
@@ -131,6 +132,9 @@ export function SessionControl({ value, announce }: SessionControlProps): React.
               </Button>
             )}
           </div>
+          {liveSession !== null && pending !== 'end' && (
+            <TableAddressShare key={liveSession.sessionId} campaignId={liveSession.campaignId} announce={say} />
+          )}
           {live && <TableAudioSetting />}
         </div>
       )}

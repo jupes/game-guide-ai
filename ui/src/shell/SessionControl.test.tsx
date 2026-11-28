@@ -3,9 +3,10 @@
  * 1kg.2.5.3; brief sections 9 and 11: T4-3, T4-5, the one live region, Critic 23c).
  */
 
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { tableSessionBody } from '../testing/workbenchHarness'
 import { SessionControl } from './SessionControl'
 import { TableSessionProvider, type TableSessionValue, type TableSessionView } from './tableSession'
 import { EndCourier } from './tableSessionApi'
@@ -85,6 +86,7 @@ describe('SessionControl', () => {
     expect(screen.getByText('Session end time has passed')).toBeVisible()
     expect(screen.queryByText('Live')).toBeNull()
     expect(screen.queryByText(/Live until/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Share table' })).toBeNull()
     expect(screen.getByRole('button', { name: 'End session' })).toBeEnabled()
   })
 
@@ -119,6 +121,8 @@ describe('SessionControl', () => {
   it('starts and ends the selected campaign session through the merged provider', async () => {
     const route = '/campaigns/cmp_A/table-session'
     const actions: Array<{ path: string; body: unknown }> = []
+    let releaseEnd = () => {}
+    const heldEnd = new Promise<void>((resolve) => { releaseEnd = resolve })
     const active = {
       schema_version: 1,
       session_id: LIVE.sessionId,
@@ -137,6 +141,7 @@ describe('SessionControl', () => {
       if (init?.method !== 'POST') return Response.json({ schema_version: 1, session: null })
       const body = JSON.parse(String(init.body))
       actions.push({ path: String(input), body })
+      if (body.action === 'end') await heldEnd
       const session = body.action === 'end'
         ? { ...active, state: 'ended', ended_at: new Date().toISOString() }
         : active
@@ -148,15 +153,51 @@ describe('SessionControl', () => {
         <SessionControl />
       </TableSessionProvider>,
     )
-    await user.click(await screen.findByRole('button', { name: 'Start session' }))
+    const start = await screen.findByRole('button', { name: 'Start session' })
+    expect(screen.queryByRole('button', { name: 'Share table' })).toBeNull()
+    await user.click(start)
     expect(await screen.findByText('Live')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Share table' }))
+    expect(screen.getByRole('textbox', { name: 'Table address' })).toHaveValue(`${location.origin}/table?campaign_id=cmp_A`)
     await user.click(screen.getByRole('button', { name: 'End session' }))
+    expect(screen.queryByRole('textbox', { name: 'Table address' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Share table' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'End session' })).toBeEnabled()
+    await act(async () => { releaseEnd() })
     expect(await screen.findByText(/The last session ended at/)).toBeVisible()
     expect(screen.queryByRole('button', { name: 'End session' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Share table' })).toBeNull()
     expect(actions).toEqual([
       { path: route, body: { schema_version: 1, action: 'start', command_id: expect.any(String) } },
       { path: route, body: { schema_version: 1, action: 'end', command_id: expect.any(String), session_id: LIVE.sessionId } },
     ])
+  })
+
+  it('withdraws an open address as soon as the campaign changes, before the new session is known', async () => {
+    let releaseB = () => {}
+    const heldB = new Promise<void>((resolve) => { releaseB = resolve })
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === '/campaigns/cmp_A/table-session') return Response.json(tableSessionBody())
+      await heldB
+      return Response.json(tableSessionBody({ campaign_id: 'cmp_B', session_id: 'ses_B' }))
+    })
+    const courier = new EndCourier()
+    const controls = (campaignId: string) => (
+      <TableSessionProvider scope={{ campaignId, key: campaignId }} fetchImpl={fetchImpl} courier={courier}>
+        <SessionControl />
+      </TableSessionProvider>
+    )
+    const user = userEvent.setup()
+    const view = render(controls('cmp_A'))
+    await user.click(await screen.findByRole('button', { name: 'Share table' }))
+    expect(screen.getByRole('textbox', { name: 'Table address' })).toHaveValue(`${location.origin}/table?campaign_id=cmp_A`)
+    view.rerender(controls('cmp_B'))
+    expect(screen.queryByRole('button', { name: 'Share table' })).toBeNull()
+    expect(screen.queryByRole('textbox', { name: 'Table address' })).toBeNull()
+    await act(async () => { releaseB() })
+    expect(screen.queryByRole('textbox', { name: 'Table address' })).toBeNull()
+    await user.click(await screen.findByRole('button', { name: 'Share table' }))
+    expect(screen.getByRole('textbox', { name: 'Table address' })).toHaveValue(`${location.origin}/table?campaign_id=cmp_B`)
   })
 
   it('T4-5: through the real provider, a token in an answer never reaches the page', async () => {

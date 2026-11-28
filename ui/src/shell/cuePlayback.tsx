@@ -4,7 +4,7 @@ import { AudioSettingsAnswerSchema, CONTRACT_VERSION, GmEventSchema, type CuePla
 import { AudioLiveStrip } from '../gm/AudioLiveStrip'
 import { useCampaign } from './campaignContext'
 import { CueStopCourier, cueStops } from './cueStopCourier'
-import { audioPair, streamCueState, type AudioFrame, type PresenceFrame } from './cueStream'
+import { audioPair, CUE_STATE_SILENCE_MS, streamCueState, type AudioFrame, type PresenceFrame } from './cueStream'
 import { CurrentUserContext } from './currentUser'
 import { useLibraryPanel } from './libraryPanel'
 import { SESSION_REFRESH_EVENT, useTableSession } from './tableSession'
@@ -88,7 +88,7 @@ export class CuePlayback {
       if (!reply.ok) throw new Error()
       const frame = GmEventSchema.parse(await reply.json())
       if (frame.event !== 'presence' || frame.session_id !== this.session || frame.gen !== this.state.frames[0]?.gen) throw new Error()
-      if (signal.aborted) return
+      if (signal.aborted || !this.state.connected) return
       this.patch({ presence: frame })
       const flag = reply.headers.get('X-Table-Audio-Enabled')
       const epoch = reply.headers.get('X-Table-Audio-Epoch')
@@ -114,52 +114,75 @@ export class CuePlayback {
     let reading: AbortController | null = null
     let failures = 0
     let retryAt = 0
+    let pollExpiry: ReturnType<typeof setTimeout> | undefined
+    const clearPollExpiry = () => {
+      clearTimeout(pollExpiry)
+      pollExpiry = undefined
+    }
+    const disconnect = () => this.patch({ connected: false, presence: null })
+    const expire = () => {
+      clearPollExpiry()
+      disconnect()
+      this.monitor.expire()
+    }
     const read = async () => {
       const request = new AbortController()
       reading = request
       if (Date.now() >= retryAt) {
         const initialRead = ++this.nextRead
         const result = await streamCueState(this.campaign, this.session, this.fetchImpl, request.signal, (pair, initial) => {
-          failures = 0
-          this.accept(pair, initial ? initialRead : ++this.nextRead)
+          const accepted = this.accept(pair, initial ? initialRead : ++this.nextRead, true)
+          if (accepted) {
+            failures = 0
+            clearPollExpiry()
+          }
+          return accepted
         }, {
           presence: (presence) => this.patch({ presence }),
           session: (session) => this.settings(session.audio, session.audio_epoch),
           clock: (clockOffsetMs) => this.patch({ clockOffsetMs }),
         })
         if (request.signal.aborted) return
-        this.patch({ connected: false, presence: null })
         if (result === 'signed-out' || result === 'gone') {
+          clearPollExpiry()
           this.latestRead = ++this.nextRead
-          this.patch({ frames: [] })
+          this.patch({ frames: [], connected: false, presence: null })
           if (result === 'signed-out') notifyUnauthorized()
           else window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
           return
         }
         if (result === 'reconnect') {
+          expire()
           this.timer = setTimeout(() => void read(), 0)
           return
         }
+        // A failed stream probe does not invalidate a still-fresh polling snapshot.
+        if (pollExpiry === undefined) expire()
         const wait = Math.min(30_000, 1000 * 2 ** Math.min(failures++, 5))
         const backoff = Math.min(30_000, wait * (0.75 + Math.random() * 0.5))
-        retryAt = Date.now() + Math.max(backoff, typeof result === 'object' ? result.retryAfterMs : 0)
+        retryAt = Date.now() + Math.ceil(Math.max(backoff, typeof result === 'object' ? result.retryAfterMs : 0))
       }
       try {
         const began = Date.now()
-        const reply = await this.send('', undefined, request.signal)
-        if (reply.ok && !request.signal.aborted) {
+        let accepted = false
+        const reply = await this.send('', undefined, request.signal, () => {
+          accepted = true
+          clearPollExpiry()
+          pollExpiry = setTimeout(expire, CUE_STATE_SILENCE_MS)
+        })
+        if (accepted && !request.signal.aborted) {
           const server = Date.parse(reply.headers.get('Date') ?? '')
           if (Number.isFinite(server)) this.patch({ clockOffsetMs: server + 500 - (began + Date.now()) / 2 })
           await this.readPresence(request.signal)
         }
       }
-      catch { if (!request.signal.aborted) this.patch({ connected: false }) }
+      catch { if (!request.signal.aborted) disconnect() }
       if (!request.signal.aborted) this.timer = setTimeout(() => void read(), Math.min(POLL_MS, Math.max(0, retryAt - Date.now())))
     }
     const refresh = () => {
       reading?.abort()
       clearTimeout(this.timer)
-      this.patch({ connected: false, presence: null })
+      expire()
       retryAt = failures = 0
       if (!document.hidden && navigator.onLine) void read()
     }
@@ -177,13 +200,15 @@ export class CuePlayback {
       reading?.abort()
       controller.abort()
       clearTimeout(this.timer)
+      clearPollExpiry()
       this.controller = null
       this.patch(EMPTY)
       this.monitor.dispose()
     }
   }
 
-  private async send(action: string, body: CuePlayRequest | CueStopRequest | undefined, signal: AbortSignal): Promise<Response> {
+  private async send(action: string, body: CuePlayRequest | CueStopRequest | undefined, signal: AbortSignal,
+    onAccepted?: () => void): Promise<Response> {
     const read = ++this.nextRead
     const fetchImpl = this.fetchImpl
     const reply = await fetchImpl(this.path + action, {
@@ -200,33 +225,34 @@ export class CuePlayback {
           this.latestRead = read
           this.patch({ frames: [], connected: false, presence: null })
           if (!action && reply.status === 404) window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
-        } else if (!action) this.patch({ connected: false })
+        } else if (!action) this.patch({ connected: false, presence: null })
       }
       return reply
     }
     const raw: unknown = await reply.json()
     signal.throwIfAborted()
-    if (this.controller) this.accept(audioPair(raw, this.session), read)
+    if (this.controller && this.accept(audioPair(raw, this.session), read, !!onAccepted)) onAccepted?.()
     return reply
   }
 
-  private accept(frames: AudioFrame[], read: number): void {
+  private accept(frames: AudioFrame[], read: number, confirmsConnection: boolean): boolean {
     const old = this.state.frames[0]
     const next = frames[0]
-    if (next.audio_epoch < this.settingsEpoch) return
-    if (!old && read < this.latestRead) return
-    if (old && next.gen < old.gen) return
+    if (next.audio_epoch < this.settingsEpoch) return false
+    if (!old && read < this.latestRead) return false
+    if (old && next.gen < old.gen) return false
     if (old && next.gen === old.gen) {
-      if (next.audio_epoch < old.audio_epoch) return
+      if (next.audio_epoch < old.audio_epoch) return false
       for (const [index, frame] of frames.entries()) {
         const previous = this.state.frames[index]
-        if (frame.seq < previous.seq || (frame.seq === previous.seq && !previous.playing && frame.playing)) return
+        if (frame.seq < previous.seq || (frame.seq === previous.seq && !previous.playing && frame.playing)) return false
       }
       if (next.audio_epoch === old.audio_epoch && read < this.latestRead &&
-          frames.every((f, i) => f.seq === this.state.frames[i].seq)) return
+          frames.every((f, i) => f.seq === this.state.frames[i].seq)) return false
     }
     this.latestRead = Math.max(read, this.latestRead)
-    this.patch({ frames, connected: true })
+    this.patch({ frames, connected: confirmsConnection || this.state.connected })
+    return true
   }
 
   async play(cueId: string, loop: boolean, retry = false): Promise<void> {
