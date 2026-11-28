@@ -300,10 +300,7 @@ def _spa_installed_on_the_real_app(tmp_dist: Path) -> Iterator[None]:
 def test_the_csp_middleware_still_wraps_an_allowlisted_route(
     _spa_installed_on_the_real_app: None,
 ) -> None:
-    """`set_security_headers` (`service/app.py`) wraps the router, so it
-    should already apply to `/`, `/workspace` and `/profile` now that they
-    are API routes rather than files under the StaticFiles mount -- prove it
-    rather than assume it (LA-3)."""
+    """The security-header middleware also covers the SPA entry routes (LA-3)."""
     response = TestClient(service_app.app).get("/profile")
     assert response.status_code == 200
     assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY

@@ -126,14 +126,7 @@ from .ratelimit import (
 )
 from .reveals import Reveals
 from .route_errors import RouteErrors
-from .security_headers import (
-    CONTENT_SECURITY_POLICY,
-    CROSS_ORIGIN_OPENER_POLICY,
-    PERMISSIONS_POLICY,
-    REFERRER_POLICY,
-    STRICT_TRANSPORT_SECURITY,
-    X_CONTENT_TYPE_OPTIONS,
-)
+from .security_headers import SecurityHeadersMiddleware
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .table_audio_media import TableAudioMedia
@@ -882,52 +875,19 @@ async def capture_chat_metrics(request: Request, call_next):
     return response
 
 
-# The job hook (1kg.2.7, RT-15): declared between the two middleware functions,
-# so it wraps `capture_chat_metrics` (job time never enters the chat duration)
-# and `set_security_headers` stays the outermost, as its docstring requires.
+# The job hook wraps capture_chat_metrics so job time stays outside chat duration.
 app.add_middleware(job_driver.JobHookMiddleware, driver=lambda: _state.get("jobs"))
 
 # The body ceiling (agent-forge-harness-ust7, release review S1): declared after
 # the job hook, so it wraps every route and every other middleware except
-# `set_security_headers`, which stays the outermost and puts its headers on the
+# SecurityHeadersMiddleware, which stays outermost and puts its headers on the
 # 413 too. The lambda defers the name, which is defined further down.
 app.add_middleware(body_limit.BodyLimitMiddleware, media_enabled=lambda: _media_enabled())
 
 
-@app.middleware("http")
-async def set_security_headers(request: Request, call_next):
-    """Send the security headers this app owns on every response it produces
-    (va8, agent-forge-harness-y58 for the four added after it, and
-    agent-forge-harness-5ir1 for Strict-Transport-Security).
-
-    A separate middleware rather than two lines inside `capture_chat_metrics`:
-    that one returns early for every path that is not `/chat`, so folding the
-    header into it would leave the SPA document, `/healthz`, `/auth/*` and every
-    404 with no policy at all — and its metric contract is pinned by
-    `service/tests/test_metrics.py`.
-
-    Declared last, so it is the OUTERMOST user middleware (Starlette inserts
-    each one at position 0) and `setdefault` therefore gets the last word. That
-    ordering is not what puts the header on the production SPA, though: ANY user
-    middleware wraps the router, and the router is what holds the `StaticFiles`
-    mount at the bottom of this file.
-
-    `setdefault`, not assignment, for every header here: a route may answer
-    with a stricter policy of its own — SEC-19 requires `default-src 'none';
-    sandbox` on asset responses — and must not have to unpick this middleware
-    to keep it.
-
-    `RouteErrors` converts unexpected failures from routes and dependencies
-    to a JSON 500 inside this layer, alongside handled API errors.
-    """
-    response = await call_next(request)
-    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
-    response.headers.setdefault("X-Content-Type-Options", X_CONTENT_TYPE_OPTIONS)
-    response.headers.setdefault("Referrer-Policy", REFERRER_POLICY)
-    response.headers.setdefault("Cross-Origin-Opener-Policy", CROSS_ORIGIN_OPENER_POLICY)
-    response.headers.setdefault("Permissions-Policy", PERMISSIONS_POLICY)
-    response.headers.setdefault("Strict-Transport-Security", STRICT_TRANSPORT_SECURITY)
-    return response
+# Registered last so defaults also apply to the body ceiling's 413 and
+# unexpected route failures converted to responses by RouteErrors.
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 def _persist_turn(
