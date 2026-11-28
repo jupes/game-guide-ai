@@ -135,6 +135,7 @@ from .security_headers import (
 )
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
+from .table_audio_media import TableAudioMedia
 from .table_reads import TableReads
 from .table_sessions import TableSessions
 from .table_streams import TableStreams, build_table_streams
@@ -430,6 +431,7 @@ def _build_stores(db: Database) -> None:
 
         asset_jobs.register_jobs(runner, db=db, queue=queue, objects=objects)
         _state["media"] = assets_api.MediaRuntime(objects, PostgresAssetStore(queue))
+        _state["table_audio_media"] = TableAudioMedia(db, objects)
     _state["jobs"] = job_driver.JobDriver(runner, healthy=_schema_understood)
 
 
@@ -1885,6 +1887,12 @@ def _media_enabled() -> bool:
     return isinstance(settings, media_objects.MediaSettings) and settings.enabled
 
 
+def get_table_audio_media() -> TableAudioMedia | None:
+    if "jobs" not in _state:
+        recover_database()
+    return _state.get("table_audio_media")
+
+
 def get_table_sessions() -> TableSessions | None:
     """The live table session's lifecycle (1kg.2.3), built with the stores; None
     on a degraded instance, which the table-session routes answer with a 503."""
@@ -2049,6 +2057,7 @@ app.include_router(
     table_api.build_router(
         require_session, get_auth_store, _clear_session_cookie, get_table_sessions, get_table_reads,
         table_streams=get_table_streams if config.TABLE_STREAMS_ENABLED else None,
+        table_media=get_table_audio_media, presence_database=get_timeline_database, media_enabled=_media_enabled,
     )
 )
 app.include_router(reveals_api.build_router(WORKBENCH_GM, get_reveals))

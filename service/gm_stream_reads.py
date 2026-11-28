@@ -10,6 +10,7 @@ from typing import Any, Final
 
 from .cue_playback import GM_AUDIO_ROWS, gm_audio_frames
 from .db import Database
+from .gm_audio_presence import PRESENCE_ROWS, presence_event
 from .workbench_contracts import REVEAL_MAX_SLOTS, TABLE_SCREENS_MAX, GmSnapshot
 
 GM_STREAM_LIMIT: Final = 4
@@ -61,7 +62,7 @@ _SCREENS = """
 """
 _READ = f"""
     SELECT w.n, c.id, s.id, s.started_at, s.expires_at, s.link_generation, s.audio_epoch, s.reveal_epoch,
-           s.table_audio, {_SCREENS}, {_REVEALS}, {GM_AUDIO_ROWS}
+           s.table_audio, {_SCREENS}, {_REVEALS}, {GM_AUDIO_ROWS}, {PRESENCE_ROWS}
     FROM unnest(%(campaigns)s::text[], %(accounts)s::bigint[]) WITH ORDINALITY w(campaign, account, n)
     {GM_OWNER_JOIN}
     CROSS JOIN (VALUES (%(now)s::timestamptz)) clock(moment)
@@ -71,7 +72,7 @@ _READ = f"""
 
 
 def _picture(row: Sequence[Any]) -> GmSnapshot:
-    _, campaign, session, start, end, gen, audio_epoch, reveal_epoch, enabled, screens, reveals, audio = row
+    _, campaign, session, start, end, gen, audio_epoch, reveal_epoch, enabled, screens, reveals, audio, presence = row
     frames: list[Any] = []
     if session is not None:
         frames.append({"schema_version": 1, "event": "session", "session": {
@@ -88,6 +89,7 @@ def _picture(row: Sequence[Any]) -> GmSnapshot:
         frames.append({"schema_version": 1, "event": "snapshot", "state": {
             "session_id": session, "gen": gen, "reveal_epoch": reveal_epoch, "slots": slots,
         }})
+        frames.append(presence_event(session, gen, presence))
         frames.extend(gm_audio_frames(session, gen, audio_epoch, audio))
     frames.append({"schema_version": 1, "event": "ready"})
     return GmSnapshot.model_validate({"schema_version": 1, "frames": frames})

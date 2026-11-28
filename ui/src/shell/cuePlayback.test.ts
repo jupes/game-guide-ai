@@ -24,6 +24,8 @@ const reveal = { schema_version: 1, event: 'snapshot', state: {
   session_id: session, gen: 1, reveal_epoch: 0, slots: [{ slot: { kind: 'table' }, seq: 0, live: null }],
 } }
 const ready = { schema_version: 1, event: 'ready' }
+const presence = { schema_version: 1, event: 'presence', session_id: session, gen: 1,
+  participants: [], guests: { connected: 1, listening: 0, muted: 0, pending: 1 } }
 
 function streamed() {
   let writer!: ReadableStreamDefaultController<Uint8Array>
@@ -32,6 +34,7 @@ function streamed() {
   const fetchImpl: typeof fetch = async (input) => {
     const path = String(input)
     paths.push(path)
+    if (path.endsWith('/presence')) return Response.json(presence)
     if (!path.endsWith('/stream')) return state(4, 3)
     return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
   }
@@ -46,6 +49,7 @@ async function fixture(courier = new CueStopCourier(), account = 'gm') {
   const requests: { path: string; body?: string; finish: (response: Response) => void }[] = []
   const fetchImpl: typeof fetch = (input, init) => {
     if (String(input).endsWith('/stream')) return Promise.resolve(new Response(null, { status: 503 }))
+    if (String(input).endsWith('/presence')) return Promise.resolve(Response.json(presence))
     return new Promise((finish) => requests.push({ path: String(input), body: init?.body as string | undefined, finish }))
   }
   const store = new CuePlayback('cmp_A', session, fetchImpl, account, courier)
@@ -77,7 +81,8 @@ describe('GM table cue commands', () => {
       expect(paths).toEqual(['/campaigns/cmp_A/stream'])
       send(sessionFrame(3), ...audioFrames(3, 3, 'Skipped state'))
       await vi.advanceTimersByTimeAsync(1)
-      expect(paths.at(-1)).toBe('/campaigns/cmp_A/sessions/tss_Test/audio')
+      expect(paths.slice(-2)).toEqual(['/campaigns/cmp_A/sessions/tss_Test/audio', '/campaigns/cmp_A/sessions/tss_Test/audio/presence'])
+      expect(store.snapshot().presence).toEqual(presence)
       expect(store.snapshot().frames[0]).toMatchObject({ audio_epoch: 4, playing: null })
     } finally { dispose() }
   })
@@ -108,7 +113,7 @@ describe('GM table cue commands', () => {
       send(sessionFrame(1), reveal, ...frames, ready)
       await vi.advanceTimersByTimeAsync(1)
       expect(seen).not.toContain('Wrong scope')
-      expect(paths.at(-1)).toMatch(/\/audio$/)
+      expect(paths.slice(-2).map((path) => path.split('/').at(-1))).toEqual(['audio', 'presence'])
       expect(store.snapshot().frames[0].audio_epoch).toBe(4)
     } finally { dispose() }
   })

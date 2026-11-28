@@ -195,13 +195,13 @@ describe('presenceSentence (AUDIO-21)', () => {
       participants: [],
       guests: makeGuests({ connected: 1, pending: 1 }),
     })
-    expect(sentence).toBe("0 listening · 0 muted · 1 guest hasn't tapped in yet")
+    expect(sentence).toBe("0 listening · 0 muted · 1 screen hasn't tapped in yet")
   })
 
   it('pluralises a count of guests', () => {
     expect(
       presenceSentence({ participants: [], guests: makeGuests({ connected: 3, pending: 2 }) }),
-    ).toBe("0 listening · 0 muted · 2 guests haven't tapped in yet")
+    ).toBe("0 listening · 0 muted · 2 screens haven't tapped in yet")
   })
 
   it('joins named participants with a count of guests in one clause', () => {
@@ -210,7 +210,7 @@ describe('presenceSentence (AUDIO-21)', () => {
         participants: [makeParticipant('Gorath', 'pending'), makeParticipant('Mira', 'pending')],
         guests: makeGuests({ connected: 2, pending: 2 }),
       }),
-    ).toBe("0 listening · 0 muted · Gorath, Mira and 2 guests haven't tapped in yet")
+    ).toBe("0 listening · 0 muted · Gorath, Mira and 2 screens haven't tapped in yet")
   })
 
   it('folds guest listeners and mutes into the counts', () => {

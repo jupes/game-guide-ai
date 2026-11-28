@@ -9,7 +9,15 @@ from typing import Any
 
 from .db import PgTransaction
 from .table_stream_events import SESSION_WAKEUP_CHANNEL
-from .workbench_contracts import AudioSlot, CuePlayRequest, CueStopRequest, GmAudioEvent, GmPlaying
+from .workbench_contracts import (
+    AudioSettingsAnswer,
+    AudioSettingsRequest,
+    AudioSlot,
+    CuePlayRequest,
+    CueStopRequest,
+    GmAudioEvent,
+    GmPlaying,
+)
 
 
 class NoSuchSession(Exception):
@@ -108,7 +116,7 @@ def _hold(
 
 
 def _received(
-    transaction: PgTransaction, session_id: str, command: CuePlayRequest | CueStopRequest,
+    transaction: PgTransaction, session_id: str, command: CuePlayRequest | CueStopRequest | AudioSettingsRequest,
 ) -> bool:
     """Read under the session lock, before checking a possibly retired epoch."""
     previous = transaction.conn.execute(
@@ -122,13 +130,19 @@ def _received(
     return True
 
 
-def _command_values(command: CuePlayRequest | CueStopRequest) -> tuple[str, str | None, int | None, bool | None]:
+def _command_values(
+    command: CuePlayRequest | CueStopRequest | AudioSettingsRequest,
+) -> tuple[str, str | None, int | None, bool | None]:
+    if isinstance(command, AudioSettingsRequest):
+        return ("enable" if command.enabled else "disable"), None, command.audio_epoch, None
     if isinstance(command, CuePlayRequest):
         return "play", command.cue_id, command.audio_epoch, command.loop
     return "stop", command.cue_id, None, None
 
 
-def _remember(transaction: PgTransaction, session_id: str, command: CuePlayRequest | CueStopRequest) -> None:
+def _remember(
+    transaction: PgTransaction, session_id: str, command: CuePlayRequest | CueStopRequest | AudioSettingsRequest,
+) -> None:
     transaction.conn.execute(
         "INSERT INTO campaign.audio_commands (session_id, command_id, operation, cue_id, audio_epoch, loop) "
         "VALUES (%s,%s,%s,%s,%s,%s)", (session_id, command.command_id, *_command_values(command)),
@@ -140,6 +154,25 @@ def _advance(transaction: PgTransaction, session_id: str) -> None:
         "UPDATE campaign.table_sessions SET audio_epoch = audio_epoch + 1 WHERE id = %s", (session_id,),
     )
     transaction.notify(SESSION_WAKEUP_CHANNEL, session_id)
+
+
+def settings(
+    transaction: PgTransaction, campaign: str, session: str, owner: int, command: AudioSettingsRequest, now: datetime,
+) -> AudioSettingsAnswer:
+    epoch, enabled = _hold(transaction, campaign, session, owner, now)
+    if not _received(transaction, session, command):
+        if command.enabled and epoch != command.audio_epoch:
+            raise StaleAudioEpoch
+        _remember(transaction, session, command)
+        # Every fresh Disable fences both kinds of stale widening, even on an
+        # empty or already-disabled table. The 0029 trigger clears only sound.
+        epoch, enabled = transaction.conn.execute(
+            "UPDATE campaign.table_sessions SET table_audio = %s, audio_epoch = audio_epoch + 1, "
+            "reveal_epoch = reveal_epoch + %s WHERE id = %s RETURNING audio_epoch, table_audio",
+            (command.enabled, int(not command.enabled), session),
+        ).fetchone()
+        transaction.notify(SESSION_WAKEUP_CHANNEL, session)
+    return AudioSettingsAnswer(schema_version=1, enabled=enabled, audio_epoch=epoch)
 
 
 def play(

@@ -1,0 +1,23 @@
+{
+  "schema": "TablePresenceRegistration",
+  "direction": "response",
+  "note": "One opaque page registration, usable only by its currently authorized principal.",
+  "valid": [
+    {
+      "name": "opaque registration",
+      "value": {
+        "schema_version": 1,
+        "registration": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "short handle",
+      "value": {
+        "schema_version": 1,
+        "registration": "abc"
+      }
+    }
+  ]
+}

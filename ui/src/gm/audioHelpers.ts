@@ -165,7 +165,7 @@ export function presenceSentence({ participants, guests }: PresenceSummary): str
   const segments = [`${listening} listening`, `${muted} muted`]
 
   const waiting = [...pendingAliases]
-  if (pendingGuests > 0) waiting.push(`${pendingGuests} guest${pendingGuests === 1 ? '' : 's'}`)
+  if (pendingGuests > 0) waiting.push(`${pendingGuests} screen${pendingGuests === 1 ? '' : 's'}`)
   if (waiting.length > 0) {
     const total = pendingAliases.length + pendingGuests
     segments.push(`${joinNames(waiting)} ${total === 1 ? "hasn't" : "haven't"} tapped in yet`)

@@ -26,10 +26,11 @@ class TableFull(Exception):
 class StreamLease:
     id: UUID = field(repr=False)
     watch: TableStreamWatch
+    audio_enabled: bool = False
 
 
 _STANDING_SQL: Final = """
-SELECT s.id, s.link_generation
+SELECT s.id, s.link_generation, s.table_audio
 FROM campaign.table_sessions s JOIN campaign.campaigns c ON c.id = s.campaign_id
 LEFT JOIN campaign.participants p ON p.campaign_id = s.campaign_id AND p.user_id = %(account)s
     AND p.accepted_at IS NOT NULL AND p.removed_at IS NULL
@@ -88,7 +89,7 @@ class TableAdmission:
             initial = await (await conn.execute(_STANDING_SQL, params)).fetchone()
             if initial is None:
                 return None
-            session_id, _ = initial
+            session_id = initial[0]
             await conn.execute("SELECT set_config('lock_timeout', '1000ms', true)")
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(%s, %s)", (int(AdvisoryLock.TABLE_SESSION), advisory_key(session_id))
@@ -97,7 +98,7 @@ class TableAdmission:
             if standing is None or standing[0] != session_id:
                 return None
             watch = TableStreamWatch(campaign_id, session_id, standing[1], account_id=account_id, grant_id=grant_id)
-            lease = StreamLease(uuid4(), watch)
+            lease = StreamLease(uuid4(), watch, audio_enabled=standing[2])
             capacity = params | {
                 "session": session_id, "cutoff": now - LEASE_EXPIRY, "limit": TABLE_STREAM_LIMIT,
                 "lease": lease.id, "instance": self._instance,

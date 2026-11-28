@@ -1,14 +1,15 @@
 import { createContext, useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 import { notifyUnauthorized } from '../api'
-import { CONTRACT_VERSION, type CuePlayRequest, type CueStopRequest } from '../gm/contracts'
+import { CONTRACT_VERSION, GmEventSchema, type CuePlayRequest, type CueStopRequest } from '../gm/contracts'
 import { AudioLiveStrip } from '../gm/AudioLiveStrip'
 import { useCampaign } from './campaignContext'
 import { CueStopCourier, cueStops } from './cueStopCourier'
-import { audioPair, streamCueState, type AudioFrame } from './cueStream'
+import { audioPair, streamCueState, type AudioFrame, type PresenceFrame } from './cueStream'
 import { CurrentUserContext } from './currentUser'
 import { useLibraryPanel } from './libraryPanel'
 import { SESSION_REFRESH_EVENT, useTableSession } from './tableSession'
 import { mintCommandId } from './tableSessionApi'
+import { GmCueMonitor } from './gmCueMonitor'
 
 interface State {
   frames: readonly AudioFrame[]
@@ -17,8 +18,12 @@ interface State {
   pendingStops: number
   failedPlay: CuePlayRequest | null
   stopError: string | null
+  presence: PresenceFrame | null
+  audioEnabled: boolean | null
+  clockOffsetMs: number
 }
-const EMPTY: State = { frames: [], connected: false, pendingPlay: false, pendingStops: 0, failedPlay: null, stopError: null }
+const EMPTY: State = { frames: [], connected: false, pendingPlay: false, pendingStops: 0, failedPlay: null, stopError: null,
+  presence: null, audioEnabled: null, clockOffsetMs: 0 }
 const POLL_MS = 5000
 
 // eslint-disable-next-line react-refresh/only-export-components -- separately exercised command and ordering state
@@ -29,6 +34,7 @@ export class CuePlayback {
   private latestRead = 0
   private nextRead = 0
   private stopRevision = 0
+  private settingsEpoch = -1
   private timer?: ReturnType<typeof setTimeout>
   private readonly path: string
   private readonly campaign: string
@@ -36,6 +42,7 @@ export class CuePlayback {
   private readonly fetchImpl: typeof fetch
   private readonly account: string
   private readonly courier: CueStopCourier
+  readonly monitor: GmCueMonitor
 
   constructor(campaign: string, session: string, fetchImpl: typeof fetch = fetch,
     account = '', courier = new CueStopCourier()) {
@@ -44,6 +51,7 @@ export class CuePlayback {
     this.fetchImpl = fetchImpl
     this.account = account
     this.courier = courier
+    this.monitor = new GmCueMonitor(campaign, fetchImpl)
     this.path = `/campaigns/${encodeURIComponent(campaign)}/sessions/${encodeURIComponent(session)}/audio`
   }
 
@@ -55,10 +63,38 @@ export class CuePlayback {
 
   private patch(change: Partial<State>): void {
     this.state = { ...this.state, ...change }
+    if ('frames' in change || 'connected' in change || 'audioEnabled' in change || 'clockOffsetMs' in change) {
+      this.monitor.update(this.state.frames, this.state.connected, this.state.audioEnabled !== false, this.state.clockOffsetMs)
+    }
     for (const listener of this.listeners) listener()
   }
 
+  private settings(enabled: boolean, epoch: number): void {
+    if (!Number.isSafeInteger(epoch) || epoch < this.settingsEpoch) return
+    this.settingsEpoch = epoch
+    if (this.state.audioEnabled !== enabled) this.patch({ audioEnabled: enabled })
+  }
+
+  private async readPresence(signal: AbortSignal): Promise<void> {
+    try {
+      const reply = await this.fetchImpl(this.path + '/presence', {
+        credentials: 'include', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(4000)]),
+      })
+      if (!reply.ok) throw new Error()
+      const frame = GmEventSchema.parse(await reply.json())
+      if (frame.event !== 'presence' || frame.session_id !== this.session || frame.gen !== this.state.frames[0]?.gen) throw new Error()
+      if (signal.aborted) return
+      this.patch({ presence: frame })
+      const flag = reply.headers.get('X-Table-Audio-Enabled')
+      const epoch = reply.headers.get('X-Table-Audio-Epoch')
+      if ((flag === '1' || flag === '0') && epoch && /^\d+$/.test(epoch)) this.settings(flag === '1', Number(epoch))
+    } catch {
+      if (!signal.aborted) this.patch({ presence: null })
+    }
+  }
+
   start(): () => void {
+    this.monitor.start()
     const controller = new AbortController()
     this.controller = controller
     let inheritedStops = this.courier.status(this.account, this.path).pendingStops > 0
@@ -81,9 +117,13 @@ export class CuePlayback {
         const result = await streamCueState(this.campaign, this.session, this.fetchImpl, request.signal, (pair, initial) => {
           failures = 0
           this.accept(pair, initial ? initialRead : ++this.nextRead)
+        }, {
+          presence: (presence) => this.patch({ presence }),
+          session: (session) => this.settings(session.audio, session.audio_epoch),
+          clock: (clockOffsetMs) => this.patch({ clockOffsetMs }),
         })
         if (request.signal.aborted) return
-        this.patch({ connected: false })
+        this.patch({ connected: false, presence: null })
         if (result === 'signed-out' || result === 'gone') {
           this.latestRead = ++this.nextRead
           this.patch({ frames: [] })
@@ -99,14 +139,22 @@ export class CuePlayback {
         const backoff = Math.min(30_000, wait * (0.75 + Math.random() * 0.5))
         retryAt = Date.now() + Math.max(backoff, typeof result === 'object' ? result.retryAfterMs : 0)
       }
-      try { await this.send('', undefined, request.signal) }
+      try {
+        const began = Date.now()
+        const reply = await this.send('', undefined, request.signal)
+        if (reply.ok && !request.signal.aborted) {
+          const server = Date.parse(reply.headers.get('Date') ?? '')
+          if (Number.isFinite(server)) this.patch({ clockOffsetMs: server + 500 - (began + Date.now()) / 2 })
+          await this.readPresence(request.signal)
+        }
+      }
       catch { if (!request.signal.aborted) this.patch({ connected: false }) }
       if (!request.signal.aborted) this.timer = setTimeout(() => void read(), Math.min(POLL_MS, Math.max(0, retryAt - Date.now())))
     }
     const refresh = () => {
       reading?.abort()
       clearTimeout(this.timer)
-      this.patch({ connected: false })
+      this.patch({ connected: false, presence: null })
       retryAt = failures = 0
       if (!document.hidden && navigator.onLine) void read()
     }
@@ -126,6 +174,7 @@ export class CuePlayback {
       clearTimeout(this.timer)
       this.controller = null
       this.patch(EMPTY)
+      this.monitor.dispose()
     }
   }
 
@@ -144,7 +193,7 @@ export class CuePlayback {
       if (read >= this.latestRead) {
         if (reply.status === 401 || reply.status === 403 || reply.status === 404) {
           this.latestRead = read
-          this.patch({ frames: [], connected: false })
+          this.patch({ frames: [], connected: false, presence: null })
           if (!action && reply.status === 404) window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
         } else if (!action) this.patch({ connected: false })
       }
@@ -177,7 +226,7 @@ export class CuePlayback {
   async play(cueId: string, loop: boolean, retry = false): Promise<void> {
     const signal = this.controller?.signal
     const { frames, connected, pendingPlay, pendingStops, failedPlay } = this.state
-    if (!signal || !connected || pendingPlay || pendingStops || !frames.length) return
+    if (!signal || !connected || pendingPlay || pendingStops || !frames.length || this.state.audioEnabled === false) return
     const body: CuePlayRequest = retry && failedPlay?.cue_id === cueId ? failedPlay : {
       schema_version: CONTRACT_VERSION, command_id: mintCommandId(), cue_id: cueId, loop, audio_epoch: frames[0].audio_epoch,
     }
@@ -194,6 +243,28 @@ export class CuePlayback {
     } finally {
       if (!signal.aborted) this.patch({ pendingPlay: false })
     }
+  }
+
+  async setEnabled(enabled: boolean): Promise<boolean> {
+    const signal = this.controller?.signal
+    const head = this.state.frames[0]
+    if (!signal || (enabled && (!head || !this.state.connected))) return false
+    try {
+      const response = await this.fetchImpl(this.path + '/settings', {
+        method: 'POST', credentials: 'include', cache: 'no-store',
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]), headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schema_version: CONTRACT_VERSION, command_id: mintCommandId(), enabled,
+          ...(enabled ? { audio_epoch: head.audio_epoch } : {}) }),
+      })
+      if (response.status === 401) notifyUnauthorized()
+      if (!response.ok) return false
+      const answer = await response.json()
+      if (signal.aborted || answer?.schema_version !== CONTRACT_VERSION || answer.enabled !== enabled ||
+          !Number.isSafeInteger(answer.audio_epoch) || answer.audio_epoch < 0) return false
+      this.settings(enabled, answer.audio_epoch)
+      window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
+      return true
+    } catch { return false }
   }
 
   async stop(cueId: string | null): Promise<void> {
@@ -233,11 +304,11 @@ export function useCuePlayback() {
 }
 
 export function LiveCueControls() {
-  const { playback, frames, connected, stopError } = useCuePlayback()
+  const { playback, frames, connected, stopError, presence } = useCuePlayback()
   if (!playback) return null
   const slots = frames.flatMap(({ slot, playing }) => playing ? [{ slot, title: playing.title, loop: playing.loop }] : [])
   return <>
-    <AudioLiveStrip slots={slots} connection={connected ? 'connected' : 'reconnecting'}
+    <AudioLiveStrip slots={slots} presence={presence ?? undefined} connection={connected ? 'connected' : 'reconnecting'}
       onStopSlot={(slot) => {
         const playing = frames.find((frame) => frame.slot === slot)?.playing
         if (playing) void playback.stop(playing.cue_id)

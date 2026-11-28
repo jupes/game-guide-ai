@@ -84,27 +84,41 @@ from typing import Any, cast
 
 import psycopg
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Match
 from starlette.types import Message, Receive, Scope, Send
 
 import config
 
 from . import campaign_identity as ident
-from . import ratelimit
+from . import ratelimit, table_presence
 from .auth_store import AuthStore
-from .campaign_store import MissingParent, ScreenLimit
+from .campaign_store import MissingParent, ScreenLimit, pg
+from .db import TransactionalDatabase
 from .session import SessionData
 from .stream_response import leased_body
 from .table_admission import TableFull
+from .table_audio_media import TableAudioMedia, TableMediaBusy, TableMediaUnavailable
 from .table_reads import TableReads
 from .table_session_store import LiveScreen
 from .table_sessions import BackendUnavailable, Inactive, TableSessions
 from .table_streams import TableStreams
-from .workbench_api import WorkbenchRoute, cross_site, inactive, mark_write_throttle, origin_check, spend_write
+from .workbench_api import (
+    WorkbenchRoute,
+    body_reader,
+    cross_site,
+    inactive,
+    mark_write_throttle,
+    origin_check,
+    spend_write,
+)
 from .workbench_contracts import (
     CONTRACT_VERSION,
+    TABLE_PRESENCE_REQUEST,
     ErrorBody,
     ErrorCode,
     ErrorInfo,
@@ -330,6 +344,9 @@ def build_router(
     table_reads: Callable[[], TableReads | None],
     *,
     table_streams: Callable[[], TableStreams | None] | None = None,
+    table_media: Callable[[], TableAudioMedia | None] | None = None,
+    presence_database: Callable[[], TransactionalDatabase | None] | None = None,
+    media_enabled: Callable[[], bool] = lambda: False,
 ) -> APIRouter:
     """The table router, given the application's session check (called
     directly, never declared), its auth store getter, its account-cookie
@@ -464,18 +481,20 @@ def build_router(
         if reads is None:
             raise _unavailable()
         screen, account = principal.screen, principal.account
-        found = _guarded(
-            lambda: reads.snapshot(
-                campaign_id,
-                now=now,
-                grant_id=None if screen is None else screen.grant_id,
-                account_id=None if account is None else account.user_id,
-            )
-        )
+        grant_id = None if screen is None else screen.grant_id
+        account_id = None if account is None else account.user_id
+        context = None
+        if media_enabled():
+            found, context = _guarded(lambda: reads.snapshot_with_context(
+                campaign_id, now=now, grant_id=grant_id, account_id=account_id,
+            ))
+        else:
+            found = _guarded(lambda: reads.snapshot(campaign_id, now=now, grant_id=grant_id, account_id=account_id))
         if found is None:
             _throttle(request)
             inactive()
-        return JSONResponse(found.model_dump(mode="json"))
+        headers = {"X-Table-Audio-Context": context} if context else {}
+        return JSONResponse(found.model_dump(mode="json"), headers=headers)
 
     if table_streams is not None:
 
@@ -485,7 +504,7 @@ def build_router(
             principal: Principal = Depends(table_principal),
             streams: TableStreams | None = Depends(table_streams),
             now: datetime = Depends(get_clock),
-        ) -> AsyncGenerator[AsyncGenerator[bytes]]:
+        ) -> AsyncGenerator[tuple[AsyncGenerator[bytes], dict[str, str]]]:
             if campaign_id is None or not ident.is_id(ident.CAMPAIGN, campaign_id):
                 inactive()
             _spend_read(principal)
@@ -515,13 +534,101 @@ def build_router(
                     streams.bytes(lease), lambda: streams.admission.release(lease),
                     release_warning="table_stream_release_failed",
                 ) as events:
-                    yield events
+                    headers = {"X-Accel-Buffering": "no"}
+                    if media_enabled() and lease.audio_enabled:
+                        watch = lease.watch
+                        headers["X-Table-Audio-Context"] = table_presence.context_for(
+                            campaign_id, watch.session_id, watch.generation,
+                            account_id=watch.account_id, grant_id=watch.grant_id,
+                        )
+                    yield events, headers
                 return
             raise failure
 
         @router.get("/table/stream")
-        async def stream(body: AsyncGenerator[bytes] = Depends(open_stream)) -> StreamingResponse:
-            return StreamingResponse(body, media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
+        async def stream(
+            body: tuple[AsyncGenerator[bytes], dict[str, str]] = Depends(open_stream),
+        ) -> StreamingResponse:
+            events, headers = body
+            return StreamingResponse(events, media_type="text/event-stream", headers=headers)
+
+    class MediaTableRoute(TableRoute):
+        def matches(self, scope: Scope) -> tuple[Match, Scope]:
+            return super().matches(scope) if media_enabled() else (Match.NONE, {})
+
+    router.route_class = MediaTableRoute
+    if table_media is not None:
+
+        @router.get("/table/assets/{handle}", include_in_schema=False)
+        async def audio_bytes(
+            handle: str, request: Request, principal: Principal = Depends(table_principal),
+            media: TableAudioMedia | None = Depends(table_media),
+        ) -> Response:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{32}", handle):
+                inactive()
+            _spend_read(principal)
+            if media is None:
+                raise _unavailable()
+            account, screen = principal.account, principal.screen
+            try:
+                result = await media.read(
+                    handle, account_id=account.user_id if account else None,
+                    grant_id=screen.grant_id if screen else None,
+                    expires_at=account.expires_at if account else None, range_header=request.headers.get("range"),
+                    if_range=request.headers.get("if-range"),
+                )
+            except TableMediaBusy as exc:
+                failure = _refusal(503, ErrorCode.BACKEND_UNAVAILABLE, UNAVAILABLE_MESSAGE,
+                                   retryable=True, retry_after_s=exc.retry_after_s)
+            except TableMediaUnavailable:
+                failure = _unavailable()
+            else:
+                if result is None:
+                    _throttle(request)
+                    inactive()
+                return result
+            raise failure
+
+    if presence_database is not None:
+        def presence_throttle(principal: Principal = Depends(table_principal)) -> None:
+            _spend_read(principal)
+
+        mark_write_throttle(presence_throttle)
+
+        @router.post("/table/presence", dependencies=[Depends(presence_throttle)], include_in_schema=False)
+        def presence(
+            request: Request, campaign_id: str | None = None, principal: Principal = Depends(table_principal),
+            raw: bytes = Depends(body_reader(2048)), db: TransactionalDatabase | None = Depends(presence_database),
+            now: datetime = Depends(get_clock),
+        ) -> Response:
+            if campaign_id is None or not ident.is_id(ident.CAMPAIGN, campaign_id):
+                inactive()
+            try:
+                body = TABLE_PRESENCE_REQUEST.validate_json(raw)
+            except ValidationError:
+                raise RequestValidationError([{"type": "value_error", "loc": ("body",), "msg": "invalid"}]) from None
+            if db is None:
+                raise _unavailable()
+            account, screen = principal.account, principal.screen
+            try:
+                with db.transaction() as unit:
+                    reply = table_presence.apply(
+                        pg(unit), campaign_id, account_id=account.user_id if account else None,
+                        grant_id=screen.grant_id if screen else None, body=body, now=now,
+                    )
+            except table_presence.PresenceInactive:
+                _throttle(request)
+                inactive()
+            except table_presence.PresenceFull:
+                failure = _refusal(503, ErrorCode.BACKEND_UNAVAILABLE, "This table is full.",
+                                   retryable=True, retry_after_s=5)
+            except table_presence.PresenceConflict:
+                failure = _refusal(409, ErrorCode.CONFLICT, "Table audio changed. Refresh the table.", retryable=False)
+            except psycopg.Error:
+                failure = _unavailable()
+            else:
+                return JSONResponse(reply.model_dump(mode="json")) if reply is not None else Response(status_code=204)
+            raise failure
 
     return router
 

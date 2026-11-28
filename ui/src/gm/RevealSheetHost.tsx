@@ -37,6 +37,7 @@ import { useReveals, useRevealSheetOpen } from '../shell/revealContext'
 import { mintCommandId } from '../shell/tableSessionApi'
 import { useTableSession } from '../shell/tableSession'
 import type { CharacterSheetLink, Document, RevealRequest, Seat } from './contracts'
+import { TableAudioSetting } from '../shell/TableAudioSetting'
 import { getCharacterSheetLink, getDocument, getDocumentVersion, sealDocument } from './documentApi'
 import { documentTitle } from './documentTitle'
 import { documentTypeById, seedsOwnerDefault, type DocumentType } from './registry'
@@ -586,6 +587,7 @@ function OpenSheet({ document, fetchImpl }: OpenSheetProps): React.JSX.Element {
 
   return (
     <RevealSheet
+      sessionControls={<TableAudioSetting />}
       title={title}
       phase={phase}
       statusLine={statusLine}

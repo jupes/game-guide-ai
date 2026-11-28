@@ -73,6 +73,7 @@ export interface RevealSheetSeats {
 }
 
 export interface RevealSheetProps {
+  readonly sessionControls?: React.ReactNode
   /** The document's title: GM-private, rendered and nothing more. */
   readonly title: string
   readonly phase: RevealSheetPhase
@@ -199,6 +200,7 @@ export function RevealSheet(props: RevealSheetProps): React.JSX.Element {
         {phase === 'refused' && <p className="gm-reveal__body">{REVEAL_COPY.documentRefused}</p>}
         {phase === 'unavailable' && <p className="gm-reveal__body">{REVEAL_COPY.documentUnavailable}</p>}
         {phase === 'ready' && <Ready {...props} idPrefix={id} />}
+        {props.sessionControls}
 
         <div className="gm-reveal__actions">
           <button type="button" className="gm-reveal__button" disabled={confirming} onClick={props.onCancel}>

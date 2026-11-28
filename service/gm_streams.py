@@ -19,7 +19,7 @@ from .table_admission import LEASE_HEARTBEAT_S
 from .table_fanout import RECONNECT_FRAME
 from .table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 from .table_streams import TableStreams
-from .workbench_contracts import GmAudioEvent, GmEvent, GmRevealSnapshotEvent, GmSessionEvent, GmSnapshot
+from .workbench_contracts import GmAudioEvent, GmEvent, GmRevealSnapshotEvent, GmSessionEvent, GmSnapshot, PresenceEvent
 
 _log = logging.getLogger(__name__)
 _FRESH_FOR_S = 5.0
@@ -76,6 +76,9 @@ def _updates(previous: GmSnapshot, current: GmSnapshot) -> list[GmEvent] | None:
         if any(new.seq - old.seq not in (0, 1) for old, new in zip(old_audio, new_audio, strict=True)):
             return None
         frames.extend(new_audio)
+    presence = next((f for f in current.frames if isinstance(f, PresenceEvent)), None)
+    if presence is not None and presence not in previous.frames:
+        frames.append(presence)
     return frames
 
 

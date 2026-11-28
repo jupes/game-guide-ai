@@ -1,4 +1,5 @@
 import { expect, test } from './fixtures'
+import { serveCueSound } from './cueSound'
 import { installRevealRoutes, SESSION_ID, tableSessionAnswer } from './revealStubs'
 import { CAMPAIGN_ID, DOCUMENT_ID, installWorkbenchRoutes, THREAD_PAGE } from './workbenchStubs'
 import { CuePlayRequestSchema, CueStopRequestSchema, TableSessionAnswerSchema, TOOL_IDS, type Cue } from '../src/gm/contracts'
@@ -11,12 +12,92 @@ const cue: Cue = {
   duration_ms: 16_020, archived: false, created_at: '2026-09-16T19:20:11Z', updated_at: '2026-09-16T19:20:11Z',
 }
 
-// MPEG-2 Layer III, 8 kb/s mono at 16 kHz. A 36-byte frame with zero side
-// information and zero spectral data encodes 576 silent samples (36 ms).
-const silentFrame = Buffer.concat([Buffer.from([0xff, 0xf3, 0x18, 0xc4]), Buffer.alloc(32)])
-const sound = Buffer.concat(Array.from({ length: 445 }, () => silentFrame))
+test('a player enables sound once per page, mutes it, and releases playback on revocation', async ({ page }, info) => {
+  const handle = 'm'.repeat(32)
+  const started = new Date(Date.now() - 3500).toISOString()
+  const postures: Array<{ state: string; playing_handles: string[] }> = []
+  let waiting = false
+  let active = true
+  let mediaReads = 0
+  const headers = { 'X-Table-Audio-Context': 'a'.repeat(64) }
+  await page.route('**/table/stream?*', route => route.fulfill({ status: 404 }))
+  await page.route('**/table/snapshot?*', route => route.fulfill({ headers, json: {
+    schema_version: 1,
+    frames: active ? [
+      { schema_version: 1, event: 'session', role: 'participant', audio: true },
+      { schema_version: 1, event: 'snapshot', slots: [
+        { slot: 'table', seq: 1, content: { content_kind: 'document', type: 'npc', fields: [{ key: 'name', value: 'The harbour keeper' }] } },
+        { slot: 'mine', seq: 0, content: null },
+      ] },
+      { schema_version: 1, event: 'audio', slot: 'ambience', seq: waiting ? 1 : 0, playing: waiting ? {
+        asset: { handle, kind: 'audio', media_type: 'audio/mpeg', width: null, height: null, duration_ms: cue.duration_ms },
+        started_at: started, start_offset_ms: 0, duration_ms: cue.duration_ms, loop: true,
+      } : null },
+      { schema_version: 1, event: 'ready' },
+    ] : [{ schema_version: 1, event: 'inactive' }, { schema_version: 1, event: 'ready' }],
+  } }))
+  await page.route('**/table/presence?*', route => {
+    const body = route.request().postDataJSON()
+    if (body.action === 'open') return route.fulfill({ json: { schema_version: 1, registration: 'r'.repeat(32) } })
+    if (body.action === 'report') postures.push(body)
+    return route.fulfill({ status: 204 })
+  })
+  await page.route(`**/table/assets/${handle}`, route => { mediaReads++; return serveCueSound(route) })
+
+  await page.goto(`/table?campaign_id=${CAMPAIGN_ID}`)
+  const sound = page.getByRole('region', { name: 'Table sound' })
+  const tap = sound.getByRole('button', { name: /Tap to enable sound/ })
+  const mute = sound.getByRole('button', { name: 'Mute' })
+  await expect(tap).toBeVisible()
+  await expect(sound.getByText('Your GM is playing something')).toBeHidden()
+  await expect.poll(() => postures.at(-1)?.state).toBe('pending')
+  waiting = true
+  await page.getByRole('button', { name: 'Reload table' }).click()
+  await expect(sound.getByText('Your GM is playing something')).toBeVisible()
+  expect(mediaReads).toBe(0)
+  await page.screenshot({ path: info.outputPath('player-sound-prompt.png'), animations: 'disabled', scale: 'css' })
+  await tap.click()
+  await expect(mute).toBeFocused()
+  await expect.poll(() => postures.at(-1)?.state).toBe('listening')
+  expect(postures.at(-1)?.playing_handles).toEqual([handle])
+  expect(mediaReads).toBeGreaterThan(0)
+  await mute.click()
+  await expect(mute).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => postures.at(-1)?.state).toBe('muted')
+  await page.screenshot({ path: info.outputPath('player-sound-muted.png'), animations: 'disabled', scale: 'css' })
+  await mute.click()
+  await expect.poll(() => postures.at(-1)?.state).toBe('listening')
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await expect(page.getByText('The harbour keeper')).toHaveCount(0)
+  await expect.poll(() => postures.at(-1)?.state).toBe('listening')
+  await page.evaluate(() => {
+    Reflect.deleteProperty(document, 'visibilityState')
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await expect(page.getByText('The harbour keeper')).toBeVisible()
+  await page.reload()
+  await expect(tap).toBeVisible()
+  await expect.poll(() => postures.at(-1)?.state).toBe('pending')
+  await tap.click()
+  await expect.poll(() => postures.at(-1)?.state).toBe('listening')
+  active = false
+  await page.getByRole('button', { name: 'Reload table' }).click()
+  await expect(page.getByText('This table isn’t active or available to you.')).toBeVisible()
+  await expect(sound).toBeHidden()
+  await expect(page.getByText('The harbour keeper')).toHaveCount(0)
+})
 
 test('private preview stays local and the GM can stop live audio from another channel on a phone', async ({ page }, info) => {
+  await page.addInitScript(() => {
+    const observed = new Set<HTMLMediaElement>()
+    const play = HTMLMediaElement.prototype.play
+    HTMLMediaElement.prototype.play = function () { observed.add(this); return play.call(this) }
+    Object.defineProperty(window, 'gmMonitorPlaying', { get: () => [...observed].some(media =>
+      !media.isConnected && media.currentSrc.includes('/campaigns/') && !media.paused && media.currentTime > 0) })
+  })
   await page.route('**/auth/me', (route) => route.fulfill({ json: { email: 'gm@example.com', role: 'dm' } }))
   await page.route('**/models', (route) => route.fulfill({ json: {
     default: 'auto', models: [{ id: 'auto', display_name: 'Automatic' }],
@@ -45,16 +126,13 @@ test('private preview stays local and the GM can stop live audio from another ch
   await page.route(`**${prefix}/assets/${cue.asset_id}?rendition=waveform`, (route) => route.fulfill({ json: {
     schema_version: 1, peaks: [0.32, 0.55, 0.35, 0.27, 0.72, 0.65, 0.49, 0.77, 0.35, 0.58, 0.24, 0.63],
   } }))
-  await page.route(`**${prefix}/assets/${cue.asset_id}`, (route) => {
-    const range = /^bytes=(\d+)-(\d*)$/.exec(route.request().headers().range ?? '')
-    const headers = { 'Accept-Ranges': 'bytes' }
-    if (range === null) return route.fulfill({ headers, contentType: 'audio/mpeg', body: sound })
-    const start = Number(range[1])
-    const end = Math.min(range[2] ? Number(range[2]) : sound.length - 1, sound.length - 1)
-    return route.fulfill({ status: 206, contentType: 'audio/mpeg', body: sound.subarray(start, end + 1),
-      headers: { ...headers, 'Content-Range': `bytes ${start}-${end}/${sound.length}` },
-    })
-  })
+  await page.route(`**${prefix}/assets/${cue.asset_id}`, serveCueSound)
+  await page.route(`**${prefix}/cues/${cue.cue_id}`, route => route.fulfill({ json: cue }))
+  await page.route(`**${livePath}/presence`, route => route.fulfill({ json: {
+    schema_version: 1, event: 'presence', session_id: SESSION_ID, gen: 1,
+    participants: [{ participant_id: 'prt_ondrey', alias: 'Ondrey', audio: 'listening' }],
+    guests: { connected: 1, muted: 0, listening: 0, pending: 1 },
+  } }))
 
   let epoch = 0
   let startedAt: string | null = null
@@ -100,6 +178,8 @@ test('private preview stays local and the GM can stop live audio from another ch
   expect(commands).toEqual([])
   await card.getByRole('button', { name: 'Play to table' }).click()
   await expect(live.getByText(cue.title)).toBeVisible()
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'gmMonitorPlaying'))).toBe(true)
+  await expect(live.getByText(/1 listening · 0 muted · 1 screen/)).toBeVisible()
   expect(commands).toEqual(['play'])
   await live.getByRole('button', { name: 'Stop all' }).click()
   await expect(live).toBeHidden()

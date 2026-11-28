@@ -78,6 +78,7 @@ EXEMPT: dict[tuple[str, str], str] = {
     ("POST", "/campaigns/{campaign_id}/library"): "reads only (X-7): a search sent by POST",
     ("POST", "/campaigns/{campaign_id}/cues/list"): "reads only (X-7): private cue search sent by POST",
     ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/stop"): "immediate audio Stop (SEC-35)",
+    ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/settings"): "enable spends after parsing",
     ("POST", "/table/leave"): "screen principal, revoke only, never a new row (SEC-49)",
 }
 _STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}

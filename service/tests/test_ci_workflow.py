@@ -54,6 +54,8 @@ DB_BACKED_TESTS = [
     "tests/test_table_stream_reads_db.py",
     "tests/test_cue_playback_db.py",
     "tests/test_gm_streams_db.py",
+    "tests/test_table_audio_media_db.py",
+    "tests/test_table_presence_db.py",
     "tests/test_table_snapshot_db.py",
     "tests/test_eligibility_db.py",
     "tests/test_policy_facts_db.py",

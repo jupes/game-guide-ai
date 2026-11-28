@@ -1,0 +1,43 @@
+{
+  "schema": "AudioSettingsRequest",
+  "direction": "request",
+  "note": "AUDIO-28: enabling is fenced and disabling is immediate.",
+  "valid": [
+    {
+      "name": "enable",
+      "value": {
+        "schema_version": 1,
+        "command_id": "command_0123456789",
+        "enabled": true,
+        "audio_epoch": 7
+      }
+    },
+    {
+      "name": "disable",
+      "value": {
+        "schema_version": 1,
+        "command_id": "command_0123456789",
+        "enabled": false
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "unfenced enable",
+      "value": {
+        "schema_version": 1,
+        "command_id": "command_0123456789",
+        "enabled": true
+      }
+    },
+    {
+      "name": "disable with null epoch",
+      "value": {
+        "schema_version": 1,
+        "command_id": "command_0123456789",
+        "enabled": false,
+        "audio_epoch": null
+      }
+    }
+  ]
+}

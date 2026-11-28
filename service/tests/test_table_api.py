@@ -713,10 +713,14 @@ def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
     """
     conf = NGINX.read_text(encoding="utf-8")
     table_paths = sorted({path for path, _ in api_routes(app) if path.startswith("/table/")})
-    assert table_paths == [LEAVE, MINT, SNAPSHOT]
+    assert table_paths == sorted({"/table/assets/{handle}", LEAVE, "/table/presence", MINT, SNAPSHOT,
+                                  *(["/table/stream"] if config.TABLE_STREAMS_ENABLED else [])})
     blocks = dict(re.findall(r"location\s+=\s+(/table/\S+)\s*\{([^}]*)\}", conf))
     # The client can already probe this exact path while the server stream is built.
-    assert sorted(blocks) == [*table_paths, "/table/stream"]
+    assert set(blocks) == {LEAVE, MINT, SNAPSHOT, "/table/stream", "/table/presence"}
+    assets = re.search(r"location\s+\^~\s+/table/assets/\s*\{([^}]*)\}", conf)
+    assert assets and "proxy_buffering    off;" in assets[1] and "proxy_cache        off;" in assets[1]
+    blocks["/table/assets/{handle}"] = assets[1]
     for path, block in blocks.items():
         assert "proxy_set_header   Host $host;" in block, path
         assert "proxy_set_header   X-Real-IP $remote_addr;" in block, path

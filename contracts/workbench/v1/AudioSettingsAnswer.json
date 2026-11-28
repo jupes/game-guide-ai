@@ -1,0 +1,25 @@
+{
+  "schema": "AudioSettingsAnswer",
+  "direction": "response",
+  "note": "The committed table-audio switch and session audio epoch.",
+  "valid": [
+    {
+      "name": "enabled",
+      "value": {
+        "schema_version": 1,
+        "enabled": true,
+        "audio_epoch": 3
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "invalid epoch",
+      "value": {
+        "schema_version": 1,
+        "enabled": false,
+        "audio_epoch": -1
+      }
+    }
+  ]
+}

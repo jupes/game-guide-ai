@@ -23,7 +23,7 @@ import { useCanvasState, useWorkbenchActive } from './canvasContext'
 import { useReveals } from './revealContext'
 import { STOP_ALL } from './revealStop'
 import { useCuePlayback } from './cuePlayback'
-import { kindSummary } from '../gm/audioHelpers'
+import { kindSummary, presenceSentence } from '../gm/audioHelpers'
 import './RevealIndicator.css'
 
 export interface RevealIndicatorProps {
@@ -180,6 +180,7 @@ function IndicatorBody({ projections, unknown, fallbackFocus, audio }: Indicator
 
       {open && (!unknown || combined) && (
         <ul id={listId} className="reveal-indicator__list" aria-label={combined ? 'Live reveals and sounds' : REVEAL_COPY.indicatorListLabel}>
+          {audio?.presence && cues.length > 0 && <li className="reveal-indicator__row">{presenceSentence(audio.presence)}</li>}
           {cues.map((cue) => (
             <li key={cue.slot} className="reveal-indicator__row">
               <span className="reveal-indicator__open">{cue.title} · {kindSummary(cue.slot, cue.loop)}</span>

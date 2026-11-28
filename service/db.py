@@ -131,6 +131,8 @@ class AdvisoryLock(IntEnum):
     ACCOUNT_STORAGE = 5
     #: Serializes selection of one of the four reserved GM stream permits (RT-8).
     GM_STREAM = 6
+    #: Admission of one of the bounded public audio-presence page registrations.
+    TABLE_AUDIO_PRESENCE = 7
 
 
 def advisory_key(key: str) -> int:

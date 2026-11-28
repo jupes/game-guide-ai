@@ -57,3 +57,12 @@
     flex: none;
   }
 }
+.session-control__audio label {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.session-control__audio p { margin: 0; }
