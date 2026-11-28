@@ -676,12 +676,10 @@ def test_nothing_is_scheduled_after_the_response_without_a_driver():
 
 
 def test_the_hook_is_outside_chat_metrics_and_inside_the_security_headers():
-    """Job time can never enter `service.chat.duration_ms`, and
-    `set_security_headers` stays the outermost user middleware, as its own
-    docstring says."""
+    """Job time stays outside chat duration, with security headers outermost."""
     stack = [(m.cls.__name__, getattr(m.kwargs.get("dispatch"), "__name__", None)) for m in app.user_middleware]
     assert stack == [
-        ("BaseHTTPMiddleware", "set_security_headers"),
+        ("SecurityHeadersMiddleware", None),
         ("BodyLimitMiddleware", None),  # agent-forge-harness-ust7
         ("JobHookMiddleware", None),
         ("BaseHTTPMiddleware", "capture_chat_metrics"),

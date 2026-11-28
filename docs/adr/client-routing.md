@@ -111,7 +111,7 @@ trailing slash so it blocks `/t/anything` and not `/tavern`).
   that builds and mounts the UI.
 
 **The Content-Security-Policy still reaches these three routes.**
-`service/app.py`'s `set_security_headers` middleware wraps the whole
+The security-header middleware registered in `service/app.py` wraps the whole
 router, so `/`, `/workspace` and `/profile` carry the same
 `Content-Security-Policy` as every other response
 (`service/tests/test_spa_fallback.py::test_the_csp_middleware_still_wraps_an_allowlisted_route`

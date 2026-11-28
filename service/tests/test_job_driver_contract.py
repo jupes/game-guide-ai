@@ -61,6 +61,7 @@ from service.job_driver import (
 from service.jobs import LEASE_SECONDS, InMemoryJobQueue, Job, JobContext, JobHandler, JobRunner, JobRunResult
 from service.migrations import Report
 from service.route_errors import RouteErrors
+from service.security_headers import SecurityHeadersMiddleware
 from service.workbench_api import api_route_dependants, install_workbench
 
 T0 = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
@@ -256,7 +257,7 @@ def test_every_declaration_that_existed_before_the_job_runner_is_unchanged() -> 
 
     stack = [(m.cls, m.kwargs.get("dispatch")) for m in appmod.app.user_middleware]
     expected = [
-        (BaseHTTPMiddleware, appmod.set_security_headers),
+        (SecurityHeadersMiddleware, None),  # 1gnb: response-start defaults only
         (BodyLimitMiddleware, None),  # agent-forge-harness-ust7
         (JobHookMiddleware, None),
         (BaseHTTPMiddleware, appmod.capture_chat_metrics),

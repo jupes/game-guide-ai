@@ -75,13 +75,10 @@ scoped away from some route. As of this bead:
   `payment` granted to any frame; the day Stripe Elements or Checkout ships,
   this line is what gets revisited.
 
-If any of the three had needed relaxing, the header would have shipped without
-that one entry — a `setdefault` per header in `service/app.py`'s
-`set_security_headers` middleware makes that a one-line change, not a
-re-architecture. None did, so all four ship together, unconditionally, on every
-response this app produces (the same `setdefault` semantics as the existing
-CSP: a route may still answer with a stricter policy of its own, e.g. SEC-19's
-future asset responses).
+All four headers apply to every HTTP response the app produces.
+The middleware in `service/security_headers.py` uses `setdefault` for
+each header at response start. A route can supply a stricter policy,
+as SEC-19 requires for asset responses.
 
 ## 4. Drift guard
 
