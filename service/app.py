@@ -74,7 +74,7 @@ from .hashing import (
     hash_password,
     verify_password,
 )
-from .history import AttachmentLimitReached, MessageStore, PostgresMessageStore
+from .history import AttachmentLimitReached, ConversationUnavailable, MessageStore, PostgresMessageStore
 from .invites import InviteError
 from .jobs import JobRunner, PostgresJobQueue
 from .metrics import (
@@ -624,22 +624,21 @@ def _auth_lookup[T](what: str, call: Callable[[], T]) -> T:
         raise HTTPException(status_code=503, detail="auth backend unavailable") from exc
 
 
-def _routing_store[T](conversation_id: str, call: Callable[[], T]) -> T:
+def _routing_store[T](call: Callable[[], T]) -> T:
     """Run a conversation-routing (strategy binding) store call, failing CLOSED
     on a backend outage with the ownership lookup's handled 503 (xiu.2.3, N-6).
 
     The binding lives on the same `chat.conversations` row as ownership. An
     outage here used to escape `chat()` before its `try:` as Starlette's raw
-    500, with no JSON body, no security headers and no chat metrics. Only
-    `_AUTH_BACKEND_ERRORS` are translated: the block's own 409 and 422 pass
-    through, and a bug stays a 500. The log line names the class, never the
-    message, and says which store it was, apart from the ownership lookup's."""
+    500, with no JSON body, no security headers and no chat metrics. A parent
+    deleted after authorization gets the same refusal as a failed claim."""
     try:
         return call()
+    except ConversationUnavailable:
+        raise HTTPException(status_code=403, detail="not your conversation") from None
     except _AUTH_BACKEND_ERRORS as exc:
         log.warning(
-            "conversation routing store unavailable (conversation_id=%s, error=%s)",
-            conversation_id, type(exc).__name__,
+            "conversation routing store unavailable (error=%s)", type(exc).__name__,
         )
         raise HTTPException(status_code=503, detail="authorization backend unavailable") from exc
 
@@ -903,8 +902,7 @@ def _persist_turn(
         return store.append_exchange(conversation_id, mode, prompt, answer, suggestions=suggestions)
     except Exception as exc:
         log.warning(
-            "history write failed (mode=%s, conversation_id=%s): %s",
-            mode, conversation_id, type(exc).__name__,
+            "history write failed (mode=%s): %s", mode, type(exc).__name__,
         )
         return None, None
 
@@ -952,8 +950,7 @@ def _record_timeline_entry(
             )
     except Exception as exc:
         log.warning(
-            "timeline entry write failed (mode=%s, conversation_id=%s): %s",
-            req.mode.value, conversation_id, type(exc).__name__,
+            "timeline entry write failed (mode=%s): %s", req.mode.value, type(exc).__name__,
         )
 
 
@@ -967,10 +964,8 @@ def _fetch_attachment_context(
         return None, None
     try:
         attachments = store.attachments_for(conversation_id)
-    except Exception:
-        log.warning(
-            "attachment fetch failed (conversation_id=%s)", conversation_id, exc_info=True,
-        )
+    except Exception as exc:
+        log.warning("attachment fetch failed (error=%s)", type(exc).__name__)
         return None, None
     if not attachments:
         return None, None
@@ -990,25 +985,20 @@ class ConversationAccess(Enum):
     EMPTY = "empty"
 
 
-def _conversation_lookup(conversation_id: str):
-    """Run an ownership/content lookup, converting any failure into a 503.
+def _conversation_lookup(fn, *args):
+    """Run an ownership/content lookup, refusing a deleted parent and failing closed on outages.
 
     **Fails CLOSED.** Reads and ownership checks run on separate connections, so
     a transient failure (or a role that can't see `chat.conversations`) must
     never be followed by a successful cross-user read.
     """
-    def run(fn, *args):
-        try:
-            return fn(*args)
-        except Exception as exc:
-            log.warning(
-                "conversation authorization failed (conversation_id=%s)",
-                conversation_id, exc_info=True,
-            )
-            raise HTTPException(
-                status_code=503, detail="authorization backend unavailable"
-            ) from exc
-    return run
+    try:
+        return fn(*args)
+    except ConversationUnavailable:
+        raise HTTPException(status_code=403, detail="not your conversation") from None
+    except Exception as exc:
+        log.warning("conversation authorization failed (error=%s)", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="authorization backend unavailable") from exc
 
 
 def _reject_foreign_conversation(
@@ -1025,8 +1015,7 @@ def _reject_foreign_conversation(
     """
     if store is None:
         return
-    run = _conversation_lookup(conversation_id)
-    owner = run(store.owner_of, conversation_id)
+    owner = _conversation_lookup(store.owner_of, conversation_id)
     if owner is not None and owner != user_id:
         raise HTTPException(status_code=403, detail="not your conversation")
 
@@ -1061,15 +1050,14 @@ def _authorize_conversation(
     """
     if store is None or conversation_id is None:
         return ConversationAccess.OWNED
-    run = _conversation_lookup(conversation_id)
     if creating:
-        owner = run(store.claim_conversation, conversation_id, user_id)
+        owner = _conversation_lookup(store.claim_conversation, conversation_id, user_id)
     else:
-        owner = run(store.owner_of, conversation_id)
+        owner = _conversation_lookup(store.owner_of, conversation_id)
         if owner is None:
-            if not run(store.has_content, conversation_id):
+            if not _conversation_lookup(store.has_content, conversation_id):
                 return ConversationAccess.EMPTY
-            owner = run(store.claim_conversation, conversation_id, user_id)
+            owner = _conversation_lookup(store.claim_conversation, conversation_id, user_id)
     if owner is not None and owner != user_id:
         raise HTTPException(status_code=403, detail="not your conversation")
     return ConversationAccess.OWNED
@@ -1364,7 +1352,7 @@ def chat(
     # (pr156 M-1). A client that ignores `routing` altogether keeps being
     # answered by the successor on every turn.
     existing_binding = (
-        _routing_store(conversation_id, lambda: store.conversation_binding(conversation_id))
+        _routing_store(lambda: store.conversation_binding(conversation_id))
         if store is not None else None
     )
     strategy: Literal["auto", "manual"]
@@ -1401,7 +1389,7 @@ def chat(
         if req.model_preference == requested:
             # The client already names the successor: it has seen a healed
             # turn, so the stored binding follows it and this turn is ordinary.
-            _routing_store(conversation_id, lambda: store.rebind_conversation_strategy(
+            _routing_store(lambda: store.rebind_conversation_strategy(
                 conversation_id, strategy=strategy, manual_alias=manual_alias,
                 catalog_revision=CATALOG_REVISION,
             ))
@@ -1424,7 +1412,7 @@ def chat(
         requested_profile = None if requested == "auto" else get_profile_by_public_id(requested)
         if requested != "auto" and requested_profile is None:
             requested_profile = _routing_store(
-                conversation_id, lambda: _pre_d9_binding(store, conversation_id, requested),
+                lambda: _pre_d9_binding(store, conversation_id, requested),
             )
             if requested_profile is None:
                 raise HTTPException(
@@ -1434,7 +1422,7 @@ def chat(
         strategy = "auto" if requested == "auto" else "manual"
         manual_alias = None if requested_profile is None else requested_profile.alias
         if store is not None:
-            bound_strategy, bound_alias = _routing_store(conversation_id, lambda: store.claim_conversation_strategy(
+            bound_strategy, bound_alias = _routing_store(lambda: store.claim_conversation_strategy(
                 conversation_id, strategy=strategy, manual_alias=manual_alias,
                 catalog_revision=CATALOG_REVISION,
             ))
@@ -1676,10 +1664,12 @@ def upload_attachment(
     _authorize_conversation(store, conversation_id, session.user_id, creating=True)
     try:
         stored = store.append_attachment(conversation_id, req.filename, req.content_type, text)
+    except ConversationUnavailable:
+        raise HTTPException(status_code=403, detail="not your conversation") from None
     except AttachmentLimitReached as exc:
         raise HTTPException(status_code=409, detail="this conversation has reached its attachment limit") from exc
     except _DB_ERRORS as exc:
-        log.warning("attachment write failed (conversation_id=%s): %s", conversation_id, exc)
+        log.warning("attachment write failed (error=%s)", type(exc).__name__)
         raise HTTPException(status_code=503, detail="attachment storage unavailable") from exc
     return AttachmentResponse(conversation_id=conversation_id, attachment=stored.summary())
 

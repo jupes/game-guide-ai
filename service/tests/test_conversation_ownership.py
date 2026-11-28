@@ -6,6 +6,7 @@ cannot read its messages or attachments, nor post into it (403). The owner can.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 import config
 from service.app import app, get_auth_store, get_message_store, get_service
 from service.auth_store import InMemoryAuthStore
-from service.history import InMemoryMessageStore
+from service.history import ConversationUnavailable, InMemoryMessageStore
 from service.models import ChatMode, ChatResponse
 
 pytestmark = pytest.mark.real_auth
@@ -77,6 +78,74 @@ def test_other_user_cannot_read_your_attachments(env):
     assert up.status_code == 200
     assert bob.get("/conversations/conv-A/attachments").status_code == 403
     assert alice.get("/conversations/conv-A/attachments").status_code == 200
+
+
+def test_ownership_outage_omits_legacy_id_and_database_detail_from_logs(env, caplog):
+    private_id = "Legacy private title"
+    private_detail = "sample text from the failing driver"
+
+    class FailedLookup(InMemoryMessageStore):
+        def claim_conversation(self, conversation_id, user_id):
+            raise RuntimeError(private_detail)
+
+    alice = _signup(env, "alice@example.com")
+    app.dependency_overrides[get_message_store] = lambda: FailedLookup()
+    response = alice.post("/chat", json={"prompt": "test", "conversation_id": private_id})
+    assert response.status_code == 503
+    records = [record for record in caplog.records if record.name.startswith("service.")]
+    assert records and any(record.levelno == logging.WARNING for record in records)
+    rendered = "\n".join(logging.Formatter().format(record) for record in records) + response.text
+    assert private_id not in rendered and private_detail not in rendered
+
+
+def test_deleted_conversation_is_refused_before_dispatch_or_attachment_storage(env):
+    class Retired(InMemoryMessageStore):
+        def claim_conversation(self, conversation_id, user_id):
+            raise ConversationUnavailable
+
+        def append_attachment(self, *args, **kwargs):
+            pytest.fail("a retired conversation reached attachment storage")
+
+    class NoDispatch(_FakeService):
+        def answer(self, *args, **kwargs):
+            pytest.fail("a retired conversation reached a chat provider")
+
+    alice = _signup(env, "alice@example.com")
+    app.dependency_overrides[get_message_store] = lambda: Retired()
+    app.dependency_overrides[get_service] = lambda: NoDispatch()
+    denied = [
+        alice.post("/chat", json={"prompt": "private", "conversation_id": "retired"}),
+        alice.post(
+            "/conversations/retired/attachments",
+            json={"filename": "notes.txt", "content_type": "text/plain", "data": "aGVsbG8="},
+        ),
+    ]
+    assert [(r.status_code, r.json()) for r in denied] == [(403, {"detail": "not your conversation"})] * 2
+
+
+def test_deletion_after_claim_refuses_binding_and_attachment_without_logging_private_id(env, caplog):
+    class DeletedAfterClaim(InMemoryMessageStore):
+        def claim_conversation_strategy(self, *args, **kwargs):
+            raise ConversationUnavailable
+
+        def append_attachment(self, *args, **kwargs):
+            raise ConversationUnavailable
+
+    class NoDispatch(_FakeService):
+        def answer(self, *args, **kwargs):
+            pytest.fail("an already deleted conversation reached a provider")
+
+    alice = _signup(env, "alice@example.com")
+    app.dependency_overrides[get_message_store] = lambda: DeletedAfterClaim()
+    app.dependency_overrides[get_service] = lambda: NoDispatch()
+    conversation = "canary-private-title"
+    chat = alice.post("/chat", json={"prompt": "private", "conversation_id": conversation})
+    upload = alice.post(
+        f"/conversations/{conversation}/attachments",
+        json={"filename": "notes.txt", "content_type": "text/plain", "data": "aGVsbG8="},
+    )
+    assert [(r.status_code, r.json()) for r in [chat, upload]] == [(403, {"detail": "not your conversation"})] * 2
+    assert not any(conversation in record.message for record in caplog.records if record.name.startswith("service."))
 
 
 def test_reading_an_unowned_conversation_claims_it(env):
