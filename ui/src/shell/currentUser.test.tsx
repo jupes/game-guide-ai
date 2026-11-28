@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
   CurrentUserProvider,
   useCurrentUser,
@@ -241,6 +242,55 @@ describe('session check', () => {
     else expect(localStorage.getItem(key)).toContain('Bea')
     localStorage.removeItem(key)
   })
+
+  it.each(['same account', 'different account', 'signed out', 'unavailable'] as const)(
+    'covers browser history snapshots until current identity is verified: %s', async outcome => {
+      const ada = { email: 'ada@example.com', role: 'dm' as const }
+      const bea = { email: 'bea@example.com', role: 'player' as const }
+      let settle!: (current: api.AuthResult) => void
+      const me = vi.spyOn(api, 'getMe').mockResolvedValueOnce({ kind: 'ok', user: ada })
+        .mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
+      function AccountView() {
+        const { user, authStatus } = useCurrentUser()
+        return authStatus === 'authenticated' ? <>
+          <label>{user.id}<input key={user.id} /></label>
+          {createPortal(<aside aria-label="Identity details">{user.id}</aside>, document.body)}
+        </> : <p>{authStatus}</p>
+      }
+      const root = document.createElement('div')
+      root.id = 'root'
+      document.body.append(root)
+      const view = render(<CurrentUserProvider identityChannelFactory={() => null}><AccountView /></CurrentUserProvider>, { container: root })
+      try {
+        const draft = await view.findByRole('textbox') as HTMLInputElement
+        const portal = document.body.querySelector('aside')!
+        expect(root.contains(portal)).toBe(false)
+        draft.value = 'Unsaved private draft'
+        act(() => window.dispatchEvent(new PageTransitionEvent('pagehide')))
+        expect(root).toBeVisible()
+        act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        expect(getComputedStyle(document.documentElement).display).toBe('none')
+        act(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+        expect(root).not.toBeVisible()
+        expect(portal).not.toBeVisible()
+        expect(me).toHaveBeenCalledTimes(2)
+        await act(async () => {
+          if (outcome === 'same account' || outcome === 'different account') {
+            settle({ kind: 'ok', user: outcome === 'same account' ? ada : bea })
+          } else settle({ kind: 'error', status: outcome === 'signed out' ? 401 : 503, message: 'Session check failed' })
+        })
+        expect(root).toBeVisible()
+        if (outcome === 'same account') expect(view.getByRole('textbox')).toHaveValue('Unsaved private draft')
+        else {
+          expect(draft).not.toBeInTheDocument()
+          expect(root).not.toHaveTextContent(ada.email)
+          expect(root).toHaveTextContent(outcome === 'different account' ? bea.email : outcome === 'signed out' ? 'unauthenticated' : 'unavailable')
+        }
+      } finally { view.unmount(); root.remove() }
+    },
+  )
 })
 
 // ── swe1.7 — editable + persisted display name and avatar tone ────────────────

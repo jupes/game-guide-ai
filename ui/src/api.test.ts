@@ -728,11 +728,11 @@ describe('logout', () => {
 describe('getMe', () => {
   it('reconciles a concurrent sign-in with verified identity or the canonical JSON 401', async () => {
     const user = { email: 'bea@example.com', role: 'player' }
-    await expect(getMe(fakeFetch(200, user), { afterLogout: true })).resolves.toEqual({ kind: 'ok', user })
-    await expect(getMe(fakeFetch(401, { detail: 'not signed in' }), { afterLogout: true })).resolves.toMatchObject({ kind: 'error', status: 401 })
+    await expect(getMe(fakeFetch(200, user), { verifyIdentity: true })).resolves.toEqual({ kind: 'ok', user })
+    await expect(getMe(fakeFetch(401, { detail: 'not signed in' }), { verifyIdentity: true })).resolves.toMatchObject({ kind: 'error', status: 401 })
     for (const response of [fakeFetch(401, {}), fakeFetchWithHeaders(401, { 'Content-Type': 'text/html' }, { detail: 'not signed in' }),
       fakeFetch(200, {}), fakeFetch(200, { email: 'bea@example.com', role: 'unknown' })]) {
-      const result = await getMe(response, { afterLogout: true })
+      const result = await getMe(response, { verifyIdentity: true })
       expect(result).toMatchObject({ kind: 'error' })
       expect(result).not.toHaveProperty('status', 401)
     }

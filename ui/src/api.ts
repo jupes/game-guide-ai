@@ -722,11 +722,11 @@ export async function logout(fetchImpl: typeof fetch = fetch): Promise<boolean> 
  * 503 or a network failure means the question went unanswered, and `status` is
  * absent for the latter — see currentUser.tsx, which maps anything that is not
  * a 401 to `unavailable` rather than logging the user out. */
-export async function getMe(fetchImpl: typeof fetch = fetch, { afterLogout = false } = {}): Promise<AuthResult> {
+export async function getMe(fetchImpl: typeof fetch = fetch, { verifyIdentity = false } = {}): Promise<AuthResult> {
   let res: Response
   try {
-    res = await fetchImpl('/auth/me', afterLogout ? { ...sessionRequest, signal: AbortSignal.timeout(8000) } : { credentials: 'include' })
-    if (afterLogout && (!authResponseFrom(res, '/auth/me') || (res.status === 401 && !(await isSignedOutResponse(res))))) {
+    res = await fetchImpl('/auth/me', verifyIdentity ? { ...sessionRequest, signal: AbortSignal.timeout(8000) } : { credentials: 'include' })
+    if (verifyIdentity && (!authResponseFrom(res, '/auth/me') || (res.status === 401 && !(await isSignedOutResponse(res))))) {
       return { kind: 'error', message: UNREADABLE }
     }
   } catch {
@@ -744,7 +744,7 @@ export async function getMe(fetchImpl: typeof fetch = fetch, { afterLogout = fal
     }
   }
   const parsed = await parseJson<AuthUser>(res)
-  if (parsed === null || (afterLogout && (res.status !== 200 || typeof parsed.email !== 'string'
+  if (parsed === null || (verifyIdentity && (res.status !== 200 || typeof parsed.email !== 'string'
     || !parsed.email || (parsed.role !== 'player' && parsed.role !== 'dm')))) return { kind: 'error', message: UNREADABLE }
   return { kind: 'ok', user: parsed }
 }

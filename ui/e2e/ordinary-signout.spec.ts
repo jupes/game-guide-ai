@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, signIn, test, type TesterAccount } from './fixtures'
 import { BASE_URL } from './stack'
+import { CAMPAIGN_ID, installWorkbenchRoutes } from './workbenchStubs'
 
 const title = 'Lantern at Grey Quay'
 const handout = 'The Grey Quay contact'
@@ -135,4 +136,42 @@ test('a refused sign-out preserves the account; a confirmed headerless retry cle
   await expect(peer.getByRole('link', { name: 'Sign in', exact: true })).toBeVisible()
   expect(await hasConversation(peer)).toBe(false)
   expect(await peer.evaluate(keys => keys.filter(key => sessionStorage.getItem(key) !== null), peerAppKeys)).toEqual([])
+})
+
+test('a retained workspace conceals its portalled seat offer until restore verifies the current account', async ({ page, accounts }) => {
+  await page.goto('/')
+  await signIn(page, accounts[0])
+  await installWorkbenchRoutes(page)
+  await page.route(`**/campaigns/${CAMPAIGN_ID}/participants`, route =>
+    route.fulfill({ json: { schema_version: 1, items: [], next_cursor: null } }))
+  await page.goto(`/workspace#campaign=${CAMPAIGN_ID}`)
+  await openNavigation(page)
+  await page.getByRole('button', { name: 'Participants', exact: true }).click()
+  await page.getByRole('button', { name: 'Offer a seat', exact: true }).click()
+  const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Offer a seat' })
+  await dialog.getByRole('textbox', { name: 'Display name' }).fill('Private draft alias')
+  expect(await dialog.evaluate(element => document.body.contains(element) && !element.closest('#root'))).toBe(true)
+
+  // Model a retained history entry whose frozen tab missed the account change.
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+  await expect(page.locator('#root')).toBeHidden()
+  await expect(dialog).toHaveCount(1)
+  await expect(dialog).toBeHidden()
+  const logout = await page.request.post('/auth/logout', { headers: { Origin: new URL(BASE_URL).origin } })
+  expect(logout.status()).toBe(200)
+  let release!: () => void
+  const hold = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/auth/me', async route => { await hold; await route.continue() })
+  await Promise.all([
+    page.waitForRequest('**/auth/me'),
+    page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))),
+  ])
+  await expect(page.locator('#root')).toBeHidden()
+  await expect(dialog).toHaveCount(1)
+  await expect(dialog).toBeHidden()
+  const verified = page.waitForResponse('**/auth/me')
+  release()
+  expect((await verified).status()).toBe(401)
+  await expect(page.getByText('Sign in to continue')).toBeVisible()
+  await expect(dialog).toHaveCount(0)
 })

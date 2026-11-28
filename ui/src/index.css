@@ -30,6 +30,9 @@ body {
   padding: 0;
 }
 
+/* The account check on a cached-page restore covers the app and body portals. */
+html[hidden] { display: none !important; }
+
 body {
   background:
     radial-gradient(ellipse at top, #1d1710 0%, var(--page-bg) 55%);

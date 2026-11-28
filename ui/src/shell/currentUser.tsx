@@ -27,6 +27,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as React from 'react'
+import { flushSync } from 'react-dom'
 import { clearGoogleOutcome } from './googleOutcome'
 import { cueStops } from './cueStopCourier'
 import { revealSignOutNotice } from './revealSignOut'
@@ -189,6 +190,8 @@ interface LiveAuth {
   user: AuthUser | null
   /** Bumped by every auth transition: an answer requested before one is dropped. */
   generation: number
+  peerRevision: number
+  cached: boolean
   /** A signal during this read means its cookie may already be obsolete. */
   read: { dirty: boolean } | null
   broadcast: IdentityBroadcast | null
@@ -204,7 +207,7 @@ export function CurrentUserProvider(
   // identity rather than mirrored into state, so switching accounts can't leave
   // the previous user's name/avatar on screen (and needs no syncing effect).
   const [edits, setEdits] = useState<Record<string, StoredProfile>>({})
-  const live = useRef<LiveAuth>({ status: 'checking', user: null, generation: 0, read: null, broadcast: null })
+  const live = useRef<LiveAuth>({ status: 'checking', user: null, generation: 0, peerRevision: 0, cached: false, read: null, broadcast: null })
 
   const transition = useCallback((user: AuthUser | null, status: AuthStatus) => {
     const state = live.current
@@ -212,8 +215,8 @@ export function CurrentUserProvider(
     if (user !== null) revealSignOutNotice.clear()
     if (state.user !== null && (status === 'unauthenticated' || (user !== null && state.user.email !== user.email))) {
       clearGoogleOutcome()
-      setEdits({})
     }
+    if (status === 'unauthenticated' || (user && state.user && state.user.email !== user.email)) setEdits({})
     state.generation += 1
     state.read = null
     state.status = status
@@ -222,14 +225,14 @@ export function CurrentUserProvider(
     setAuthStatus(status)
   }, [])
 
-  const readSession = useCallback(async (afterLogout = false): Promise<AuthResult | null> => {
+  const readSession = useCallback(async (verifyIdentity = false): Promise<AuthResult | null> => {
     const state = live.current
     const read = { dirty: false }
     state.read = read
     let result: AuthResult
     do {
       read.dirty = false
-      result = afterLogout ? await getMe(fetch, { afterLogout: true }) : await getMe()
+      result = verifyIdentity ? await getMe(fetch, { verifyIdentity: true }) : await getMe()
       if (state.read !== read) return null
       // A burst of notifications needs one read after its last changed cookie.
     } while (read.dirty)
@@ -237,17 +240,22 @@ export function CurrentUserProvider(
     return result
   }, [])
 
-  const checkSession = useCallback((foreground: boolean) => {
+  const checkSession = useCallback((foreground: boolean, restoring = false) => {
     const state = live.current
     const generation = state.generation
-    void readSession().then(result => {
-      if (!result || generation !== state.generation) return
-      if (result.kind === 'ok') {
-        const known = state.status === 'authenticated' ? state.user : null
-        if (known?.email !== result.user.email || known.role !== result.user.role) transition(result.user, 'authenticated')
-      } else if (result.status === UNAUTHORIZED) {
-        if (state.status !== 'unauthenticated') transition(null, 'unauthenticated')
-      } else if (foreground) transition(null, 'unavailable')
+    return readSession(restoring).then(result => {
+      if (!result || generation !== state.generation) return false
+      const settle = () => {
+        if (result.kind === 'ok') {
+          const known = state.status === 'authenticated' ? state.user : null
+          if (known?.email !== result.user.email || known.role !== result.user.role) transition(result.user, 'authenticated')
+        } else if (result.status === UNAUTHORIZED) {
+          if (state.status !== 'unauthenticated') transition(null, 'unauthenticated')
+        } else if (foreground) transition(null, 'unavailable')
+      }
+      if (restoring) flushSync(settle)
+      else settle()
+      return true
     })
   }, [transition, readSession])
 
@@ -256,9 +264,57 @@ export function CurrentUserProvider(
   const [checkNonce, setCheckNonce] = useState(0)
   useEffect(() => {
     const state = live.current
-    checkSession(true)
+    void checkSession(true)
     return () => { state.read = null }
   }, [checkNonce, checkSession])
+
+  // The back/forward cache can freeze a tab before a sign-out notification
+  // arrives. Hide the document and its portals before capture, preserving
+  // the account's unsubmitted fields until its cookie can be checked.
+  useEffect(() => {
+    const state = live.current
+    let visit = 0
+    let covered = false
+    function cover(): void {
+      if (!document.documentElement.hidden) {
+        document.documentElement.hidden = true
+        covered = true
+      }
+    }
+    function uncover(): void {
+      if (covered) document.documentElement.hidden = false
+      covered = false
+    }
+    function hide(event: PageTransitionEvent): void {
+      if (!event.persisted) return
+      visit++
+      state.cached = true
+      state.read = null
+      cover()
+    }
+    async function show(event: PageTransitionEvent): Promise<void> {
+      if (!event.persisted) return
+      const latest = ++visit
+      state.cached = false
+      cover()
+      // A local identity change may overtake the restore's own read.
+      while (latest === visit) {
+        if (await checkSession(true, true)) {
+          if (latest === visit) uncover()
+          return
+        }
+      }
+    }
+    window.addEventListener('pagehide', hide)
+    window.addEventListener('pageshow', show)
+    return () => {
+      visit++
+      state.cached = false
+      uncover()
+      window.removeEventListener('pagehide', hide)
+      window.removeEventListener('pageshow', show)
+    }
+  }, [checkSession])
 
   // Back to `checking` for the duration of the retry, so App shows the loading
   // gate rather than leaving the error screen up with a dead button. Set here
@@ -294,8 +350,10 @@ export function CurrentUserProvider(
   useEffect(() => {
     const state = live.current
     const recheck = (): void => {
+      state.peerRevision += 1
+      if (state.cached) return
       if (state.read) state.read.dirty = true
-      else checkSession(state.status === 'checking')
+      else void checkSession(state.status === 'checking')
     }
     const broadcast = openIdentityBroadcast(recheck, identityChannelFactory)
     state.broadcast = broadcast
@@ -314,13 +372,13 @@ export function CurrentUserProvider(
     // Only the server can clear an httpOnly cookie. If it refuses, stay signed
     // in rather than pretending — otherwise a refresh silently restores the
     // session the user believes they ended.
-    const generation = live.current.generation
+    const { generation, peerRevision } = live.current
     const ok = await apiLogout()
     if (!ok) return false
     const state = live.current
     // The older POST could have cleared a newer sign-in's cookie. Ask again
     // before removing any local data or accepting either identity as current.
-    const verifyNewSession = generation !== state.generation && state.status !== 'unauthenticated'
+    const verifyNewSession = peerRevision !== state.peerRevision || (generation !== state.generation && state.status !== 'unauthenticated')
     if (verifyNewSession) {
       const checking = state.generation
       state.broadcast?.post()
@@ -338,7 +396,6 @@ export function CurrentUserProvider(
       }
     }
     clearSignedOutStorage()
-    setEdits({})
     revealSignOutNotice.clear()
     clearGoogleOutcome()
     transition(null, 'unauthenticated')

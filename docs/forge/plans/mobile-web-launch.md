@@ -125,6 +125,12 @@ in local storage and keeps table handouts in memory. The open table tab
 discards its handout when it receives the identity change. HTTP cache
 eviction depends on the browser honoring the response header.
 
+Also navigate away from the signed-in app, sign out in the other tab, then
+use Back. If the browser restores the earlier page from memory, the workspace
+and any open dialog should stay hidden until the app verifies the session.
+Repeat with the original account still signed in and an unsent draft open.
+The draft should still be there after verification.
+
 To finish sharing with the other people at the table, use **Stop** or **End**
 and wait for confirmation before signing out of the GM account.
 

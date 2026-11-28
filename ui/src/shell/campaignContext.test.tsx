@@ -802,6 +802,36 @@ describe('the cross-tab identity signal', () => {
     expect(signal.posts()).toEqual([])
   })
 
+  it.each([[BOB, true], [ADA, false]] as const)(
+    'revalidates a late sign-out after a peer signs in as %s (peer check pending: %s)',
+    async (email, peerPending) => {
+      const { signal } = await mount()
+      const acknowledgement = deferred<boolean>()
+      const peer = deferred<api.AuthResult>()
+      const current: api.AuthResult = { kind: 'ok', user: { email, role: 'dm' } }
+      const me = vi.mocked(api.getMe).mockClear().mockReturnValueOnce(peer.promise).mockResolvedValue(current)
+      vi.spyOn(api, 'logout').mockReturnValue(acknowledgement.promise)
+      const signingOut = live.user.user.signOut()
+      // Logout's headers expired the old cookie, then another tab signed in
+      // and saved its profile before this tab finished reading the logout body.
+      const profileKey = `game-guide-ai:profile:${email}`
+      const profile = JSON.stringify({ displayName: 'New profile' })
+      localStorage.setItem(profileKey, profile)
+      try {
+        await signal.receive(MESSAGE)
+        if (!peerPending) await act(async () => { peer.resolve(current) })
+        await act(async () => { acknowledgement.resolve(true) })
+        if (peerPending) await act(async () => { peer.resolve(current) })
+        expect(await signingOut).toBe(false)
+        expect(me).toHaveBeenCalledTimes(2)
+        expect(live.user.user.id).toBe(email)
+        expect(localStorage.getItem(profileKey)).toBe(profile)
+      } finally {
+        localStorage.removeItem(profileKey)
+      }
+    },
+  )
+
   it('drops a pending peer check when a local sign-out settles first (critic 12b, 12c)', async () => {
     const { signal } = await mount()
     const me = vi.mocked(api.getMe)
