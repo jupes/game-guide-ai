@@ -8,16 +8,21 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from threading import Barrier, Event
+from unittest.mock import Mock
 
+import httpx
+import openai
 import pytest
 from _pg import connect, needs_db, throwaway_database
 from fastapi import HTTPException
+from langchain_core.messages import AIMessage
 from test_tool_invocation_db import PATIENT, _someone_waits_on_a_lock
 
 import config
 from service import (
     document_edits,
     document_lifecycle_api,
+    generate,
     migrations,
     ratelimit,
     tool_invocations,
@@ -29,6 +34,7 @@ from service.db import AdvisoryLock, Database, PgTransaction, PoolSettings
 from service.document_edit_store import PostgresDocumentEditStore
 from service.document_editing import EditProposal
 from service.document_store import PostgresDocumentStore
+from service.providers import ProviderClientFactory
 from service.session import SessionData
 from service.timeline_store import PostgresTimelineStore
 from service.workbench_contracts import (
@@ -454,6 +460,44 @@ def test_hard_delete_repeats_its_transaction_when_admission_inserts_after_the_fi
         selection.submit()
 
 
+@pytest.mark.parametrize("retry", [False, True], ids=["new", "retry"])
+def test_admission_waiting_on_a_hard_delete_cannot_recreate_a_selection(
+    selection: World, monkeypatch: pytest.MonkeyPatch, retry: bool,
+) -> None:
+    if retry:
+        admitted = _admit_selection(selection)
+        document_edits.complete(
+            selection.db, selection.stores, admitted,
+            ErrorInfo(code=ErrorCode.PROVIDER_FAILED, message="Try again.", retryable=True), clock=lambda: NOW,
+        )
+    _lifecycle(selection, document_lifecycle_api.archive_document)
+    stores = document_lifecycle_api.get_lifecycle_stores()
+    original_delete = stores.documents.delete
+    entered, resume = Event(), Event()
+
+    def before_delete(unit, campaign: str, document: str):
+        # The edit rows have been cleared and the live document row is held.
+        entered.set()
+        assert resume.wait(timeout=15)
+        return original_delete(unit, campaign, document)
+
+    monkeypatch.setattr(stores.documents, "delete", before_delete)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        deletion = pool.submit(_lifecycle, selection, document_lifecycle_api.delete_document, stores=stores)
+        try:
+            assert entered.wait(timeout=15)
+            contender = pool.submit(selection.submit)
+            assert _someone_waits_on_a_lock(selection.dsn)
+        finally:
+            resume.set()
+        deletion.result(timeout=15)
+        with pytest.raises(tool_invocations.NotFound):
+            contender.result(timeout=15)
+    assert _retained(selection) == ({selection.request.invocation_id: None} if retry else {})
+    with selection.db.transaction() as unit:
+        assert selection.stores.load.attempts_since(unit, NOW) == int(retry)
+
+
 @pytest.mark.parametrize("first", ["completion", "delete"])
 def test_hard_delete_and_completion_serialize_without_restoring_the_document_or_selection(
     selection: World, monkeypatch: pytest.MonkeyPatch, first: str,
@@ -499,3 +543,98 @@ def test_hard_delete_and_completion_serialize_without_restoring_the_document_or_
         assert selection.stores.documents.get(unit, request.campaign_id, request.document_id) is None
         [row] = selection.stores.timeline.entry_window(unit, request.conversation_id, before=None, limit=10)
         assert EditEntry.model_validate(row.payload).invocation == outcome
+
+
+@pytest.mark.parametrize("when", ["before_dispatch", "between_transport_attempts", "before_retried_dispatch"])
+def test_hard_delete_stops_provider_calls_for_a_previously_admitted_selection(
+    selection: World, monkeypatch: pytest.MonkeyPatch, when: str,
+) -> None:
+    admitted = _admit_selection(selection)
+    _lifecycle(selection, document_lifecycle_api.archive_document)
+    client = Mock(spec_set=["invoke"])
+    factory = ProviderClientFactory(client_builders={admitted.alias: client})
+
+    def run(admission: document_edits.EditAdmission) -> EditInvocation:
+        outcome = document_edits.execute_edit(selection.db, selection.stores, admission, factory, lambda: NOW)
+        return document_edits.complete(selection.db, selection.stores, admission, outcome, clock=lambda: NOW)
+
+    if when == "before_retried_dispatch":
+        # A malformed response ends the first attempt. The GM then explicitly retries.
+        client.invoke.return_value = AIMessage(content="invalid response")
+        invalid = run(admitted)
+        assert invalid.error is not None and (invalid.error.code, invalid.error.retryable) == (
+            ErrorCode.PROVIDER_FAILED, True,
+        )
+        assert client.invoke.call_count == 1
+        admitted = _admit_selection(selection)
+        assert admitted.row.attempt == 2
+
+    valid = AIMessage(content='{"replacement":"even"}')
+    if when == "between_transport_attempts":
+        # The first transport call fails. Permanently delete during its retry backoff.
+        client.invoke.side_effect = [openai.APIConnectionError(request=httpx.Request("POST", "https://invalid")), valid]
+
+        def delete_during_backoff(delay: float) -> None:
+            _lifecycle(selection, document_lifecycle_api.delete_document)
+
+        monkeypatch.setattr(generate, "generate_result", partial(generate.generate_result, sleep=delete_during_backoff))
+    else:
+        _lifecycle(selection, document_lifecycle_api.delete_document)
+        client.invoke.return_value = valid
+
+    result = run(admitted)
+    assert result.status.value == "failed" and result.error is not None
+    assert (result.error.code, result.error.retryable) == (ErrorCode.NOT_FOUND, False)
+    assert client.invoke.call_count == (0 if when == "before_dispatch" else 1)
+    assert _retained(selection) == {selection.request.invocation_id: None}
+    with selection.db.transaction() as unit:
+        rows = selection.stores.timeline.entry_window(unit, selection.request.conversation_id, before=None, limit=10)
+        [entry] = [EditEntry.model_validate(row.payload) for row in rows]
+        assert entry.invocation == result
+        assert "honest" not in entry.model_dump_json()
+
+
+@pytest.mark.parametrize("during_call", ["no_change", "transport_timeout", "cancel", "expire"])
+def test_selection_deleted_while_the_provider_call_is_in_flight_keeps_the_terminal_outcome(
+    selection: World, during_call: str,
+) -> None:
+    admitted = _admit_selection(selection)
+    _lifecycle(selection, document_lifecycle_api.archive_document)
+    request = selection.request
+    now = NOW
+
+    def clock() -> datetime:
+        return now
+
+    def invoke(*args, **kwargs) -> AIMessage:
+        nonlocal now
+        _lifecycle(selection, document_lifecycle_api.delete_document)
+        if during_call == "cancel":
+            document_edits.read(
+                selection.db, selection.stores, selection.user.user_id, request.campaign_id,
+                request.document_id, request.invocation_id, clock=clock, cancel=True,
+            )
+        if during_call == "expire":
+            now = admitted.row.attempt_deadline
+        if during_call == "transport_timeout":
+            raise openai.APITimeoutError(request=httpx.Request("POST", "https://provider.invalid"))
+        return AIMessage(content='{"replacement":"honest"}')
+
+    client = Mock(spec_set=["invoke"])
+    client.invoke.side_effect = invoke
+    factory = ProviderClientFactory(client_builders={admitted.alias: client})
+    outcome = document_edits.execute_edit(selection.db, selection.stores, admitted, factory, clock)
+    result = document_edits.complete(selection.db, selection.stores, admitted, outcome, clock=clock)
+    assert client.invoke.call_count == 1 and result.result is None
+    if during_call == "cancel":
+        assert result.status.value == "cancelled" and result.cancel_requested and result.error is None
+    elif during_call == "expire":
+        assert result.status.value == "failed" and result.error is not None
+        assert result.error.code is ErrorCode.ATTEMPT_EXPIRED
+    else:
+        assert result.status.value == "failed" and result.error is not None
+        assert (result.error.code, result.error.retryable) == (ErrorCode.NOT_FOUND, False)
+    assert _retained(selection) == {request.invocation_id: None}
+    with selection.db.transaction() as unit:
+        [entry] = selection.stores.timeline.entry_window(unit, request.conversation_id, before=None, limit=10)
+        assert EditEntry.model_validate(entry.payload).invocation == result

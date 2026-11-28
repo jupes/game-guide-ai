@@ -380,6 +380,15 @@ def submit(
 type EditOutcome = EditProposal | NoChange | ErrorInfo | None
 
 
+def _document_gone() -> ErrorInfo:
+    return ErrorInfo(code=ErrorCode.NOT_FOUND, message="This document isn't available.", retryable=False)
+
+
+def _selection_was_deleted(working: EditRow) -> bool:
+    # Only a permanent delete clears a selection while its edit is still working.
+    return working.scope_kind == "selection" and working.selection_text is None
+
+
 def execute_edit(
     db: TransactionalDatabase, stores: EditStores, admission: EditAdmission,
     factory: ProviderClientFactory, clock: Clock,
@@ -395,6 +404,8 @@ def execute_edit(
                                         attempt=row.attempt, now=clock())
         if active is None or active.cancel_requested:
             raise InvocationCancelled()
+        if _selection_was_deleted(active):
+            raise NotFound()
 
     try:
         probe()
@@ -407,6 +418,8 @@ def execute_edit(
         )
     except InvocationCancelled:
         return None
+    except NotFound:
+        return _document_gone()
     except InvalidEdit:
         return ErrorInfo(code=ErrorCode.PROVIDER_FAILED, message=INVALID_OUTPUT, retryable=True)
     except EditRefused as exc:
@@ -428,7 +441,7 @@ def _apply(
 ) -> EditChanged | ErrorInfo:
     record = stores.documents.hold(unit, row.campaign_id, row.document_id)
     if record is None:
-        return ErrorInfo(code=ErrorCode.NOT_FOUND, message="This document isn't available.", retryable=False)
+        return _document_gone()
     try:
         data = writable(record)
         kind = DocumentTypeId(record.type)
@@ -476,7 +489,9 @@ def _apply(
 def _finish(
     unit: UnitOfWork, stores: EditStores, row: EditRow, outcome: EditOutcome, now: datetime,
 ) -> EditInvocation:
-    if isinstance(outcome, EditProposal):
+    if _selection_was_deleted(row):
+        outcome = _document_gone()
+    elif isinstance(outcome, EditProposal):
         change = _apply(unit, stores, row, outcome, now)
         if isinstance(change, EditChanged):
             return to_wire(_settle(unit, stores, row, result=change, now=now))

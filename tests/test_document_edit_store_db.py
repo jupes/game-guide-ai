@@ -782,6 +782,17 @@ def test_the_store_writes_only_its_own_tables_and_holds_rows_the_rq3_way() -> No
 # ── PostgreSQL only: the deletion edges (S-10) ───────────────────────────────
 
 
+@needs_db
+def test_retained_selection_index_contains_only_the_document_scope(dsn: str) -> None:
+    with connect(dsn) as conn:
+        row = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'campaign' AND tablename = 'document_edits' "
+            "AND indexname = 'document_edits_retained_selection_idx'"
+        ).fetchone()
+    assert row is not None
+    assert row[0].endswith("USING btree (owner_id, campaign_id, document_id) WHERE (selection_text IS NOT NULL)")
+
+
 def count(dsn: str, sql: str, params: tuple[Any, ...] = ()) -> int:
     with connect(dsn) as conn:
         return int(conn.execute(sql, params).fetchone()[0])

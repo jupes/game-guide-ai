@@ -1635,7 +1635,11 @@ edits keep the current revision. Final outcomes clear the stored selection
 text. A retryable attempt keeps a copy so the next attempt can validate the
 original span. When the GM permanently deletes the document, the same
 transaction clears every retained selection for that document. The timeline
-continues to show the edit's instruction and outcome.
+continues to show the edit's instruction and outcome. Before the first model
+request and between transport attempts, the worker checks the stored edit.
+If deletion has cleared the selection, the worker ends the edit as `not_found`.
+An already dispatched request can finish, but applying its result still
+requires the document to exist.
 
 Deletion clears existing selection copies before locking the document. Once
 it holds the document, it checks whether a concurrent edit admission added a
