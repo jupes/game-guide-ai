@@ -293,7 +293,7 @@ def test_definitive_denial_overtaken_by_a_wakeup_terminates_without_needing_anot
     async def scenario():
         reads = _ControlledReads()
         fan = TableFanout(reads, reads.listen, poll_s=60, heartbeat_s=10)
-        lease = StreamLease(uuid4(), WATCH)
+        lease = StreamLease(uuid4(), WATCH, session_expires_at=datetime.now(UTC) + timedelta(hours=1))
         released = []
 
         class Admission:
@@ -324,7 +324,7 @@ def test_a_revocation_during_lease_renewal_can_still_retract_the_next_frame(monk
     async def scenario():
         reads = _ControlledReads()
         fan = TableFanout(reads, reads.listen, poll_s=60, heartbeat_s=10)
-        lease = StreamLease(uuid4(), WATCH)
+        lease = StreamLease(uuid4(), WATCH, session_expires_at=datetime.now(UTC) + timedelta(hours=1))
         renewing, continue_renewal = asyncio.Event(), asyncio.Event()
         released = []
 
@@ -367,7 +367,7 @@ def test_stalled_screen_renewal_returns_only_the_known_terminal_and_releases_the
 
     async def scenario():
         watch = TableStreamWatch(WATCH.campaign_id, WATCH.session_id, 1, grant_id="screen")
-        lease = StreamLease(uuid4(), watch)
+        lease = StreamLease(uuid4(), watch, session_expires_at=datetime.now(UTC) + timedelta(hours=1))
         reads = _ControlledReads(watch)
         fan = TableFanout(reads, reads.listen, poll_s=60, heartbeat_s=10)
         renewing = asyncio.Event()
@@ -434,7 +434,7 @@ def test_replacement_subscription_keeps_the_shared_listener_after_the_first_clos
 
 def test_the_http_stream_releases_its_lease_if_renewal_fails_or_client_leaves(monkeypatch) -> None:
     monkeypatch.setattr(table_streams, "LEASE_HEARTBEAT_S", 0)
-    lease = StreamLease(uuid4(), WATCH)
+    lease = StreamLease(uuid4(), WATCH, session_expires_at=datetime.now(UTC) + timedelta(hours=1))
 
     class Admission:
         available = True
@@ -474,7 +474,18 @@ def test_the_http_stream_releases_its_lease_if_renewal_fails_or_client_leaves(mo
     asyncio.run(scenario())
 
 
-def test_account_stream_checks_the_signed_cookie_deadline_before_each_frame(monkeypatch):
+def _lease_at_cutoff(expiry, deadline):
+    later = deadline + timedelta(hours=1)
+    if expiry == "screen":
+        watch = TableStreamWatch(WATCH.campaign_id, WATCH.session_id, 1, grant_id="screen")
+        return StreamLease(uuid4(), watch, session_expires_at=deadline), None
+    if expiry == "session":
+        return StreamLease(uuid4(), WATCH, session_expires_at=deadline), later
+    return StreamLease(uuid4(), WATCH, session_expires_at=later), deadline
+
+
+@pytest.mark.parametrize("expiry", ["cookie", "session", "screen"])
+def test_stream_checks_the_earliest_admitted_deadline_before_sending_any_more_frames(monkeypatch, expiry):
     issued = datetime.now(UTC)
     deadline = issued + timedelta(seconds=1)
     moment = [issued]
@@ -490,6 +501,7 @@ def test_account_stream_checks_the_signed_cookie_deadline_before_each_frame(monk
         async def stream(self, watch):
             self.opens += 1
             yield b"first authorized frame"
+            moment[0] = deadline  # The frame read crosses the cutoff.
             yield b"private contents of the next frame"
 
     class Admission:
@@ -501,29 +513,25 @@ def test_account_stream_checks_the_signed_cookie_deadline_before_each_frame(monk
     async def scenario():
         admission, fan = Admission(), Fanout()
         hub = TableStreams(admission, fan)
-        account = StreamLease(uuid4(), WATCH)
-        stream = hub.bytes(account, auth_expires_at=deadline)
+        lease, cookie = _lease_at_cutoff(expiry, deadline)
+        stream = hub.bytes(lease, auth_expires_at=cookie)
         assert await anext(stream) == b"first authorized frame"
-        moment[0] = deadline
         assert [frame async for frame in stream] == [table_fanout.INACTIVE_FRAME]
-        assert [frame async for frame in hub.bytes(account, auth_expires_at=deadline)] == [table_fanout.INACTIVE_FRAME]
+        assert [frame async for frame in hub.bytes(lease, auth_expires_at=cookie)] == [table_fanout.INACTIVE_FRAME]
         assert fan.opens == 1 and admission.releases == 2
-        screen = StreamLease(uuid4(), TableStreamWatch(WATCH.campaign_id, WATCH.session_id, 1, grant_id="screen"))
-        assert [frame async for frame in hub.bytes(screen)] == [
-            b"first authorized frame", b"private contents of the next frame",
-        ]
-        assert admission.releases == 3
 
     monkeypatch.setattr(table_streams, "datetime", Clock)
     asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("blocked", ["renew", "frame"])
-def test_cookie_expiry_closes_a_stalled_stream_with_one_inactive_and_releases_its_exact_lease(monkeypatch, blocked):
+@pytest.mark.parametrize("expiry", ["cookie", "session", "screen"])
+def test_expiry_closes_a_stalled_stream_with_one_inactive_and_releases_its_exact_lease(monkeypatch, blocked, expiry):
     monkeypatch.setattr(table_streams, "LEASE_HEARTBEAT_S", 0)
 
     async def scenario():
-        lease = StreamLease(uuid4(), WATCH)
+        deadline = datetime.now(UTC) + timedelta(milliseconds=70)
+        lease, cookie = _lease_at_cutoff(expiry, deadline)
         events = []
 
         class Admission:
@@ -546,8 +554,7 @@ def test_cookie_expiry_closes_a_stalled_stream_with_one_inactive_and_releases_it
 
         hub = TableStreams(Admission(), Fanout())
         async with asyncio.timeout(2):
-            deadline = datetime.now(UTC) + timedelta(milliseconds=50)
-            received = [frame async for frame in hub.bytes(lease, auth_expires_at=deadline)]
+            received = [frame async for frame in hub.bytes(lease, auth_expires_at=cookie)]
             assert received == [table_fanout.INACTIVE_FRAME]
         assert events == (["renew", "release"] if blocked == "renew" else ["renew", "frame", "release"])
 

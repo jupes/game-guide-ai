@@ -792,13 +792,17 @@ Seat confirmation and removal publish the campaign ID. A screen revoke or
 departure publishes the grant ID. Listeners use these opaque wakeups to
 re-read current state. Each active `TableFanout` owns one dedicated
 PostgreSQL listener and also batches authorized reads every two seconds.
-While the read is pending, the bounded queue holds back document and audio
-frames. Rotate sends a content-free reconnect to the owner and still-entitled
-seats. Revoked screens, removed seats, ended sessions and expired sign-ins
-receive inactive. Both frames close the stream. A viewer can receive heartbeat
-comments during the first five seconds of opening. Once open, heartbeats
-require a recent successful read. Admission uses one of 16 shared
-PostgreSQL permits. Each session allows 12 streams and each account or screen
+After the opening snapshot, the server sends changed slots. The bounded queue
+holds document and audio frames during a recheck. If queued content would
+delay a Stop, the server sends a reconnect. Rotate also sends a content-free
+reconnect to the owner and still-entitled seats. Revoked screens, removed
+seats and ended sessions receive inactive.
+Each stream also ends with inactive at the table session's expiration, or
+earlier if the account sign-in expires. Both reconnect and inactive close
+the stream. A viewer can receive heartbeat comments during the first five
+seconds of opening. Once open, heartbeats require a recent successful read.
+Admission uses one of 16 shared PostgreSQL permits. Each session allows
+12 streams and each account or screen
 allows three. A 15-second renewal keeps an open stream's permit live for up to
 45 seconds. The HTTP route and listener default to off. Local testing can set
 `WORKBENCH_TABLE_STREAMS_ENABLED=1`. Production activation depends on fitting

@@ -39,11 +39,14 @@ class TableStreams:
     async def bytes(self, lease: StreamLease, *, auth_expires_at: datetime | None = None) -> AsyncGenerator[bytes]:
         loop = asyncio.get_running_loop()
         next_renewal = loop.time() + LEASE_HEARTBEAT_S
+        expires_at = lease.session_expires_at
+        if auth_expires_at is not None:
+            expires_at = min(expires_at, auth_expires_at)
         async with aclosing(self._fanout.stream(lease.watch)) as frames:
             try:
                 while True:
-                    remaining = (auth_expires_at - datetime.now(UTC)).total_seconds() if auth_expires_at else None
-                    if remaining is not None and remaining <= 0:
+                    remaining = (expires_at - datetime.now(UTC)).total_seconds()
+                    if remaining <= 0:
                         yield INACTIVE_FRAME
                         return
                     deadline = asyncio.timeout(remaining)
@@ -64,7 +67,7 @@ class TableStreams:
                             raise
                         yield INACTIVE_FRAME
                         return
-                    if auth_expires_at is not None and datetime.now(UTC) >= auth_expires_at:
+                    if datetime.now(UTC) >= expires_at:
                         yield INACTIVE_FRAME
                         return
                     if frame is None:

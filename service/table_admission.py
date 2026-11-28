@@ -29,6 +29,7 @@ class StreamLease:
     watch: TableStreamWatch
     audio_enabled: bool = False
     audio_generation: int = 0
+    session_expires_at: datetime = field(kw_only=True)
 
     def audio_context(self) -> str | None:
         if not self.audio_enabled:
@@ -41,7 +42,7 @@ class StreamLease:
 
 _STANDING_SQL: Final = """
 SELECT s.id, s.link_generation, (s.table_audio AND c.archived_at IS NULL), s.audio_presence_generation,
-       CASE WHEN c.owner_id <> %(account)s THEN p.id END
+       CASE WHEN c.owner_id <> %(account)s THEN p.id END, s.expires_at
 FROM campaign.table_sessions s JOIN campaign.campaigns c ON c.id = s.campaign_id
 LEFT JOIN campaign.participants p ON p.campaign_id = s.campaign_id AND p.user_id = %(account)s
     AND p.accepted_at IS NOT NULL AND p.removed_at IS NULL
@@ -108,9 +109,11 @@ class TableAdmission:
             standing = await (await conn.execute(_STANDING_SQL, params)).fetchone()
             if standing is None or standing[0] != session_id:
                 return None
-            watch = TableStreamWatch(campaign_id, session_id, standing[1], account_id=account_id, grant_id=grant_id,
-                                     participant_id=standing[4])
-            lease = StreamLease(uuid4(), watch, audio_enabled=standing[2], audio_generation=standing[3])
+            _, generation, audio_enabled, audio_generation, seat, expires_at = standing
+            watch = TableStreamWatch(campaign_id, session_id, generation, account_id=account_id, grant_id=grant_id,
+                                     participant_id=seat)
+            lease = StreamLease(uuid4(), watch, audio_enabled=audio_enabled, audio_generation=audio_generation,
+                                session_expires_at=expires_at)
             capacity = params | {
                 "session": session_id, "cutoff": now - LEASE_EXPIRY, "limit": TABLE_STREAM_LIMIT,
                 "lease": lease.id, "instance": self._instance,

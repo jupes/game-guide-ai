@@ -775,14 +775,16 @@ def test_admission_rechecks_identity_and_enforces_principal_session_and_lease_li
             assert await admission.open(foreign, account_id=None, grant_id=screens[0], now=now) is None
             owner = await admit(account=world.owner)
             assert owner is not None and owner.watch.session_id == session.id
+            assert owner.session_expires_at == session.expires_at
             accepted = await admit(account=world.players[0])
-            assert accepted is not None
+            assert accepted is not None and accepted.session_expires_at == session.expires_at
             for _ in range(2):
                 assert await admit(account=world.players[0]) is not None
             with pytest.raises(TableFull):
                 await admit(account=world.players[0])
             for screen_id in (*screens, screens[0], screens[0], screens[1], screens[1]):
-                assert await admit(grant=screen_id) is not None
+                screen = await admit(grant=screen_id)
+                assert screen is not None and screen.session_expires_at == session.expires_at
             with pytest.raises(TableFull):
                 await admit(grant=screens[2])
             assert await admission.renew(owner, now=now + timedelta(seconds=15))
