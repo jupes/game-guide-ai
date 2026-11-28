@@ -185,6 +185,44 @@ function streamFixture() {
 const connection = () => document.querySelector('#table-connection')!
 
 describe('player table streams and reconnects', () => {
+  it.each([
+    { refusal: 401, reopen: 401, transport: 'stream' },
+    { refusal: 403, reopen: 403, transport: 'stream' },
+    { refusal: 404, reopen: 401, transport: 'snapshot' },
+    { refusal: 403, reopen: 403, transport: 'snapshot' },
+    { refusal: 404, reopen: 200, transport: 'snapshot' },
+  ])('reauthorizes a previously live page after presence returns $refusal ($transport $reopen)', async ({ refusal, reopen, transport }) => {
+    const live = streamFixture()
+    live.response.headers.set('X-Table-Audio-Context', 'c'.repeat(64))
+    const streams = vi.fn<typeof fetch>().mockResolvedValueOnce(live.response)
+      .mockResolvedValue(new Response(null, { status: transport === 'stream' ? reopen : 404 }))
+    let refuse!: (response: Response) => void
+    const request = vi.fn<typeof fetch>().mockImplementation(async input => {
+      if (String(input).startsWith('/table/presence?')) return new Promise(resolve => { refuse = resolve })
+      return reopen === 200 ? picture('participant', slot('table', 'Fresh handout'), slot('mine', null))
+        : new Response(null, { status: reopen })
+    })
+    await start(request, undefined, streams)
+    live.frame('session', { role: 'guest', audio: true })
+    live.frame('snapshot', { slots: [slot('table', 'Old handout')] })
+    live.frame('ready')
+    await vi.advanceTimersByTimeAsync(2)
+    expect(content()).toHaveTextContent('Old handout')
+
+    refuse(new Response(null, { status: refusal }))
+    await vi.advanceTimersByTimeAsync(2)
+    expect(live.cancel).toHaveBeenCalledOnce()
+    expect(content()).not.toHaveTextContent('Old handout')
+    expect(document.querySelector('#table-sign-in')).toHaveProperty('hidden', true)
+    if (reopen === 200) expect(content()).toHaveTextContent('Fresh handout')
+    else {
+      expect(status()).toBe('This table isn’t active or available to you.')
+      expect(document.querySelector('#table-sound section')).toHaveProperty('hidden', true)
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(streams).toHaveBeenCalledTimes(2)
+    }
+  })
+
   it('waits for ready and applies Stop per slot while rejecting stale or duplicate frames', async () => {
     const stream = streamFixture()
     const request = vi.fn()

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountTableAudio } from './audioControls'
 import { createAudioMixer, cuePosition, emptyAudioSlots, type MixerCue, type MixerState } from './audioMixer'
+import tableHtml from '../../table.html?raw'
+import { mountTable } from './table'
 
 const T0 = Date.parse('2026-01-01T12:00:00Z')
 function cue(char: string, extra: Partial<MixerCue> = {}): MixerCue {
@@ -61,6 +63,105 @@ function setup() {
   const mixer = createAudioMixer(document, state => { last = state }, () => now)
   return { mixer, state: () => last!, setTime: (ms: number) => { now = ms } }
 }
+
+it('cuts buffered audio on a terminal or changed poll context and carries the player’s mute into authorized playback', async () => {
+  vi.setSystemTime(T0)
+  document.body.innerHTML = new DOMParser().parseFromString(tableHtml, 'text/html').body.innerHTML
+  const contexts = ['a', 'b', 'c'].map(c => c.repeat(64))
+  const handles = ['x', 'y', 'z'].map(c => c.repeat(32))
+  const reports: { action: string; context?: string; registration?: string; state?: string }[] = []
+  const snapshot = (stage: number) => {
+    const frames = [
+      { event: 'session', role: 'guest', audio: true },
+      { event: 'snapshot', slots: [{ slot: 'table', seq: 1, content: { content_kind: 'document', type: 'npc',
+        fields: [{ key: 'name', value: `Handout ${stage}` }] } }] },
+      ...(['ambience', 'one_shot'] as const).map(slot => ({ event: 'audio', slot, seq: 1, playing: {
+        asset: { kind: 'audio', handle: handles[stage], media_type: 'audio/mpeg', duration_ms: 20_000, width: null, height: null },
+        started_at: new Date(T0 - 2000).toISOString(), start_offset_ms: 0, loop: slot === 'ambience', duration_ms: 20_000,
+      } })), { event: 'ready' },
+    ]
+    return frames.map(f => ({ ...f, schema_version: 1 }))
+  }
+  let writer!: ReadableStreamDefaultController<Uint8Array>
+  const stream = new ReadableStream<Uint8Array>({ start(c) { writer = c } })
+  function send(frame: { event: string; schema_version: number }): void {
+    writer.enqueue(new TextEncoder().encode(`event: ${frame.event}\ndata: ${JSON.stringify(frame)}\n\n`))
+  }
+  let resume!: (response: Response) => void
+  const streams = vi.fn<() => Promise<Response>>()
+    .mockResolvedValueOnce(new Response(stream, { headers: { 'Content-Type': 'text/event-stream', 'X-Table-Audio-Context': contexts[0] } }))
+    .mockImplementationOnce(() => new Promise(resolve => { resume = resolve }))
+    .mockImplementation(async () => new Response(null, { status: 404 }))
+  let stage = 1
+  let stall = false
+  let freshAt = T0
+  const stop = mountTable(document, 'cmp_table', async (input, init) => {
+    if (String(input).startsWith('/table/stream?')) return streams()
+    if (String(input).startsWith('/table/snapshot?')) {
+      if (stall) return new Promise(() => {})
+      freshAt = Date.now()
+      return Response.json({ schema_version: 1, frames: snapshot(stage) },
+        { headers: { 'X-Table-Audio-Context': contexts[stage] } })
+    }
+    const body = JSON.parse(String(init?.body))
+    reports.push(body)
+    if (body.action === 'open') return Response.json({ schema_version: 1, registration: body.context.slice(0, 32) })
+    return new Response(null, { status: 204 })
+  }, () => null)
+
+  try {
+    for (const frame of snapshot(0)) send(frame)
+    await vi.advanceTimersByTimeAsync(2)
+    const [accept, mute] = document.querySelectorAll<HTMLButtonElement>('#table-sound button')
+    accept.click()
+    await next()
+    const context = Context.latest
+    for (const media of context.elements.filter(el => el.hasAttribute('src'))) sounding(media)
+    mute.click()
+    await vi.advanceTimersByTimeAsync(2)
+    expect(reports.at(-1)).toMatchObject({ action: 'report', state: 'muted', registration: 'a'.repeat(32) })
+    const mediaAt = (n: number) => context.elements.filter(media => media.src.endsWith(`/table/assets/${handles[n]}`))
+    expect(mediaAt(0)).toHaveLength(2)
+
+    send({ event: 'reconnect', schema_version: 1 })
+    await vi.advanceTimersByTimeAsync(2)
+    expect(document.querySelector('#table-projections')).toBeEmptyDOMElement()
+    expect(context.elements.every(media => media.paused && !media.hasAttribute('src'))).toBe(true)
+    expect(reports.filter(r => r.action === 'close')).toEqual([{ schema_version: 1, action: 'close', registration: 'a'.repeat(32) }])
+    resume(new Response(null, { status: 404 }))
+    await vi.advanceTimersByTimeAsync(3)
+    expect(document.querySelector('#table-projections')).toHaveTextContent('Handout 1')
+    expect(accept.hidden).toBe(true)
+    expect(mute).toHaveAttribute('aria-pressed', 'true')
+    expect(Context.latest).toBe(context)
+    expect(mediaAt(1)).toHaveLength(2)
+    for (const media of mediaAt(1)) sounding(media)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(played.filter(url => url.endsWith(handles[1]))).toHaveLength(2)
+
+    stage = 2 // Rotate again while only polling is available.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(document.querySelector('#table-projections')).toHaveTextContent('Handout 2')
+    expect(mediaAt(1)).toHaveLength(0)
+    expect(mediaAt(2)).toHaveLength(2)
+    expect(reports.filter(r => r.action === 'close').map(r => r.registration)).toEqual(['a'.repeat(32), 'b'.repeat(32)])
+    expect(reports.at(-1)).toMatchObject({ state: 'muted', registration: 'c'.repeat(32) })
+    stall = true
+    mute.click()
+    const ambience = mediaAt(2).find(media => media.loop)!
+    sounding(ambience)
+    await vi.advanceTimersByTimeAsync(freshAt + 9999 - Date.now())
+    expect(ambience.paused).toBe(false)
+    expect(document.querySelector('#table-projections')).toHaveTextContent('Handout 2')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(document.querySelector('#table-projections')).toBeEmptyDOMElement()
+    const gain = context.gains[2 + context.elements.indexOf(ambience)].gain
+    expect(gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(0, 0.3)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(ambience.paused).toBe(true)
+    expect(ambience.hasAttribute('src')).toBe(false)
+  } finally { stop() }
+})
 
 describe('the two-slot Web Audio mixer', () => {
   it('calculates from the supplied server clock and applies the late join threshold to one-shots only', () => {
@@ -258,6 +359,22 @@ describe('the two-slot Web Audio mixer', () => {
     expect(state()).toMatchObject({ playing: [], needsGesture: true, presence: 'pending' })
     mixer.clear()
     expect(Context.latest.elements.every(el => !el.hasAttribute('src'))).toBe(true)
+    mixer.dispose()
+  })
+
+  it('retains the page volume and mute across cleared playback and a new authorized cue', async () => {
+    const { mixer, state } = setup()
+    await mixer.unlock()
+    const [master] = Context.latest.gains
+    mixer.setVolume(0.4)
+    mixer.setMuted(true)
+    mixer.apply({ ...emptyAudioSlots, ambience: cue('a') })
+    mixer.clear()
+    mixer.apply({ ...emptyAudioSlots, ambience: cue('b') })
+    expect(state()).toMatchObject({ accepted: true, presence: 'muted' })
+    mixer.setMuted(false)
+    expect(master.gain.setValueAtTime).toHaveBeenLastCalledWith(0.4, 0)
+    expect(played.filter(url => url.includes('audio-unlock'))).toHaveLength(3)
     mixer.dispose()
   })
 })

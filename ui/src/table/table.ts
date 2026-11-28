@@ -16,15 +16,18 @@ async function readTable(id: string, signal: AbortSignal, request: typeof fetch)
   try {
     const sentAt = Date.now()
     const response = await request(`/table/snapshot?campaign_id=${encodeURIComponent(id)}`, { cache: 'no-store', signal })
+    signal.throwIfAborted()
     if (response.status === 401) return { kind: 'signed-out' }
-    if (response.status === 404) return { kind: 'inactive' }
+    if (response.status === 403 || response.status === 404) return { kind: 'inactive' }
     if (response.status === 429) {
       const seconds = Number(response.headers.get('Retry-After'))
       return { kind: 'limited', delay: Number.isFinite(seconds) ? Math.max(POLL_MS, Math.min(seconds, 300) * 1000) : POLL_MS }
     }
     if (!response.ok) return { kind: 'retry' }
     const offset = responseClock(response, sentAt)
-    return tablePicture(await response.json(), offset, response.headers.get('X-Table-Audio-Context'))
+    const snapshot = await response.json()
+    signal.throwIfAborted()
+    return tablePicture(snapshot, offset, response.headers.get('X-Table-Audio-Context'))
   } catch {
     return { kind: 'retry' }
   }
@@ -58,7 +61,12 @@ export function mountTable(
   const leave = document.querySelector<HTMLButtonElement>('#table-leave')!
   const browser = document.defaultView!
   let clockOffsetMs = 0
-  const presence = tablePresence(campaignId, request, recheck)
+  let presenceRefused = false
+  const presence = tablePresence(campaignId, request, () => {
+    presenceRefused = true
+    clearSound()
+    recheck()
+  })
   const audio = mountTableAudio(document.querySelector<HTMLElement>('#table-sound')!, presence.update,
     () => Date.now() + clockOffsetMs)
 
@@ -67,6 +75,7 @@ export function mountTable(
   let blankTimer: number | undefined
   let soundTimer: number | undefined
   let resync = true
+  let audioContext: string | null = null
   let pictureKey: string | null = null
   let streamRetryAt = 0
   let streamFailures = 0
@@ -104,6 +113,15 @@ export function mountTable(
   }
 
   function showPicture(result: TablePicture): void {
+    presenceRefused = false
+    const nextContext = result.audioEnabled ? result.audioContext : null
+    if (audioContext !== null && nextContext !== audioContext) {
+      // A poll can be the first observation of a Rotate, reseat or new session.
+      // Old media must stop before the first cue or listener report in the new scope.
+      redact()
+      clearSound()
+    }
+    audioContext = nextContext
     clockOffsetMs = result.clockOffsetMs
     const slots: { ambience: MixerCue | null; one_shot: MixerCue | null } = { ambience: null, one_shot: null }
     for (const frame of result.audio) {
@@ -114,8 +132,8 @@ export function mountTable(
         duration_ms: playing.duration_ms, loop: playing.loop,
       }
     }
-    audio.show(result.audioEnabled && result.audioContext !== null, slots, resync)
-    presence.authorize(result.audioEnabled ? result.audioContext : null)
+    audio.show(audioContext !== null, slots, resync)
+    presence.authorize(audioContext)
     resync = false
     if (document.visibilityState === 'hidden') return
     signOut.hidden = !result.participant
@@ -150,6 +168,7 @@ export function mountTable(
 
   function clearSound(): void {
     browser.clearTimeout(soundTimer)
+    audioContext = null
     audio.hide()
     presence.reset()
     resync = true
@@ -160,12 +179,15 @@ export function mountTable(
     redact()
     clearSound()
     showDegraded(false)
-    signIn.hidden = kind !== 'signed-out'
+    // A revoked screen can lose its only credential when a presence response
+    // reaches it before the stream's inactive frame. Both orders look alike.
+    const offerSignIn = kind === 'signed-out' && !presenceRefused
+    signIn.hidden = !offerSignIn
     if (!signIn.hidden) {
       signOut.hidden = true
       leave.hidden = true
     }
-    announce(kind === 'signed-out' ? COPY.signedOut : COPY.inactive)
+    announce(offerSignIn ? COPY.signedOut : COPY.inactive)
   }
 
   async function openStream(id: string, controller: AbortController): Promise<void> {
@@ -188,19 +210,22 @@ export function mountTable(
       picture(picture) {
         ready = true
         browser.clearTimeout(deadline)
-        hearFromTable()
         streamFailures = 0
         showDegraded(false)
         showPicture(picture)
+        hearFromTable()
       },
     })
     browser.clearTimeout(deadline)
     if (activeRead !== controller) return
     activeRead = null
     if (opened) redact()
+    // A content-free terminal can mean Rotate, even during the opening
+    // snapshot. Drop buffered media before either form of reauthorization.
+    if (end.kind === 'reconnect') clearSound()
     if (end.kind === 'signed-out' || end.kind === 'inactive') {
       finish(end.kind)
-    } else if (end.kind === 'reconnect') {
+    } else if (end.kind === 'reconnect' && ready) {
       queue(0)
     } else if (end.kind === 'full') {
       redact()
@@ -232,8 +257,8 @@ export function mountTable(
     if (activeRead !== controller) return
     activeRead = null
     if (result.kind === 'live') {
-      hearFromTable()
       showPicture(result)
+      hearFromTable()
       armSilenceTimer()
       queue(POLL_MS)
       return
@@ -289,6 +314,7 @@ export function mountTable(
   }
 
   const identity = openIdentityBroadcast(() => {
+    presenceRefused = false
     clearSound()
     audio.reset()
     signOut.hidden = true

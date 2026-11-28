@@ -29,7 +29,7 @@ from service.gm_streams import GmStreams
 from service.reveal_scope import DocumentCopies, EndReason, TableTarget
 from service.table_admission import LEASE_EXPIRY, TABLE_STREAM_LIMIT, StreamLease, TableAdmission, TableFull
 from service.table_fanout import TableFanout, listen_table_wakeups
-from service.table_reads import TableReads, TableStreamReads, TableStreamWatch
+from service.table_reads import TableReads, TableStreamReads, TableStreamSignal, TableStreamWatch
 from service.table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 from service.table_streams import TableStreams
 from service.workbench_contracts import (
@@ -57,14 +57,15 @@ def test_one_batch_matches_the_snapshot_gate_and_private_changes_are_invisible_t
     session = _session(world, campaign)
     other_session = _session(world, other_campaign, owner=world.other_owner)
     confirmed = _seat(world, campaign, "confirmed", world.players[0])
-    _seat(world, campaign, "accepted", world.players[1])
+    accepted = _seat(world, campaign, "accepted", world.players[1])
     _seat(world, campaign, "removed", world.players[2])
     _seat(world, other_campaign, "confirmed", world.players[3])
     with world.db.transaction() as unit:
         screen, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
 
     def viewer(account: int) -> TableStreamWatch:
-        return TableStreamWatch(campaign, session.id, session.link_generation, account_id=account)
+        seat = {world.players[0]: confirmed, world.players[1]: accepted}.get(account)
+        return TableStreamWatch(campaign, session.id, session.link_generation, account_id=account, participant_id=seat)
 
     watched_screen = TableStreamWatch(campaign, session.id, session.link_generation, grant_id=screen.id)
     watches = [
@@ -125,9 +126,10 @@ def test_reads_stop_confirmation_removal_revoke_rotation_and_expiry_from_current
     _write(world, campaign, session.id, private, _parts(seat), mask=("qualifier",))
     with world.db.transaction() as unit:
         screen, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
-    confirmed = TableStreamWatch(campaign, session.id, session.link_generation, account_id=world.players[0])
+    confirmed = TableStreamWatch(campaign, session.id, session.link_generation,
+                                 account_id=world.players[0], participant_id=seat)
     guest = TableStreamWatch(campaign, session.id, session.link_generation, grant_id=screen.id)
-    owner = replace(confirmed, account_id=world.owner)
+    owner = replace(confirmed, account_id=world.owner, participant_id=None)
 
     async def scenario() -> None:
         db = Database(dsn, PoolSettings(sync_max=0, async_max=1))
@@ -162,12 +164,14 @@ def test_reads_stop_confirmation_removal_revoke_rotation_and_expiry_from_current
                 rotated = world.sessions.rotate(unit, campaign, session.id, owner_id=world.owner, command_id=_command())
             assert rotated is not None
             fresh = replace(owner, generation=session.link_generation + 1)
-            assert (await read())[2] is None
+            assert await read() == [None, None, TableStreamSignal.ROTATED]
             assert (await reader.snapshots([fresh], now=datetime.now(UTC)))[0] is not None
-            assert await reader.snapshots([fresh], now=session.expires_at) == [None]
+            assert await reader.snapshots([owner, fresh], now=session.expires_at) == [None, None]
             with world.db.transaction() as unit:
                 assert world.sessions.end(unit, campaign, session.id, owner_id=world.owner)
-            assert await reader.snapshots([fresh], now=datetime.now(UTC)) == [None]
+            later = _session(world, campaign)
+            assert later.id != session.id
+            assert await reader.snapshots([owner, fresh], now=datetime.now(UTC)) == [None, None]
         finally:
             await db.aclose()
 
@@ -186,12 +190,19 @@ def test_one_async_statement_reads_sealed_values_without_waiting_for_row_locks(d
     async def scenario() -> None:
         async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as reader:
             statements = 0
+            raw_rows = []
 
             class CountingConnection:
                 async def execute(self, *arguments):
                     nonlocal statements
                     statements += 1
-                    return await reader.execute(*arguments)
+                    self.cursor = await reader.execute(*arguments)
+                    return self
+
+                async def fetchall(self):
+                    nonlocal raw_rows
+                    raw_rows = await self.cursor.fetchall()
+                    return raw_rows
 
             class Db:
                 @asynccontextmanager
@@ -218,6 +229,15 @@ def test_one_async_statement_reads_sealed_values_without_waiting_for_row_locks(d
             (unsealed,) = await TableStreamReads(Db()).snapshots([owner], now=datetime.now(UTC))
             assert _slots(unsealed)["table"].content is None
             assert statements == 2
+            with world.db.transaction() as unit:
+                assert world.sessions.rotate(unit, campaign, session.id, owner_id=world.owner, command_id=_command())
+            fresh = replace(owner, generation=owner.generation + 1)
+            rotated, current = await TableStreamReads(Db()).snapshots([owner, fresh], now=datetime.now(UTC))
+            assert rotated is TableStreamSignal.ROTATED and current is not None
+            assert statements == 3 and [row[0] for row in raw_rows] == [1, 2]
+            # PostgreSQL returned only the watch's ordinal. No slot, sequence, document
+            # metadata, audio flag or handle for the rotated account crossed the DB boundary.
+            assert all(value is None for value in raw_rows[0][1:])
 
     asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
 
@@ -382,7 +402,8 @@ def test_two_instances_deliver_reveals_audio_stops_and_end_without_leaking_a_pri
         # came from notifications, even though the two hubs share no process state.
         a = TableFanout(TableStreamReads(db_a), listen, poll_s=8, heartbeat_s=0.2)
         b = TableFanout(TableStreamReads(db_b), listen, poll_s=8, heartbeat_s=0.2)
-        player = a.stream(TableStreamWatch(campaign, session.id, session.link_generation, account_id=world.players[0]))
+        player = a.stream(TableStreamWatch(campaign, session.id, session.link_generation,
+                                           account_id=world.players[0], participant_id=seat))
         guest = b.stream(TableStreamWatch(campaign, session.id, session.link_generation, grant_id=screen.id))
 
         async def next_event(stream):
@@ -457,6 +478,108 @@ def test_two_instances_deliver_reveals_audio_stops_and_end_without_leaking_a_pri
             await b.close()
             await db_a.aclose()
             await db_b.aclose()
+
+    asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
+
+
+@needs_db
+def test_rotation_only_reconnects_the_original_live_account_standing_across_instances(dsn: str) -> None:
+    world = _pg_world(dsn, fill=True)
+    campaign = _campaign(world)
+    session = _session(world, campaign)
+    confirmed, accepted, removed, replaced = world.players[:4]
+    seats = {user: _seat(world, campaign, "accepted" if user == accepted else "confirmed", user)
+             for user in (confirmed, accepted, removed, replaced)}
+    doc, private = _document(world, campaign), _document(world, campaign)
+    _write(world, campaign, session.id, doc, TableTarget())
+    _, cue = _ready_ambience(dsn, campaign, world.owner)
+    with world.db.transaction() as unit:
+        screen, _ = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+        cue_playback.play(pg(unit), campaign, session.id, world.owner, CuePlayRequest(
+            schema_version=1, command_id=_command(), cue_id=cue, audio_epoch=session.audio_epoch, loop=True,
+        ), datetime.now(UTC))
+
+    async def event(stream):
+        async with asyncio.timeout(3):
+            while (frame := await anext(stream)).startswith(b":"):
+                pass
+        return json.loads(frame.splitlines()[1][6:])
+
+    async def picture(stream):
+        frames = [await event(stream) for _ in range(5)]
+        assert [f["event"] for f in frames] == ["session", "snapshot", "audio", "audio", "ready"]
+        return frames
+
+    async def scenario() -> None:
+        async with AsyncExitStack() as cleanup:
+            hubs = []
+            for _ in range(2):
+                db = Database(dsn, PoolSettings(sync_max=0, async_max=2))
+                cleanup.push_async_callback(db.aclose)
+                fan = TableFanout(TableStreamReads(db), partial(listen_table_wakeups, dsn), poll_s=20, heartbeat_s=.2)
+                hub = TableStreams(TableAdmission(db), fan)
+                hubs.append(hub)
+                cleanup.push_async_callback(hub.close)
+
+            async def admit(instance, account, grant=None):
+                lease = await hubs[instance].admission.open(
+                    campaign, account_id=account, grant_id=grant, now=datetime.now(UTC),
+                )
+                assert lease is not None
+                return await cleanup.enter_async_context(aclosing(hubs[instance].bytes(lease)))
+
+            users = (world.owner, confirmed, accepted, removed, replaced, None)
+            tabs = [await admit(i % 2, user, screen.id if user is None else None) for i, user in enumerate(users)]
+            initial = await asyncio.gather(*(picture(tab) for tab in tabs))
+            old_handle = initial[0][2]["playing"]["asset"]["handle"]
+            assert all(pic[2]["playing"]["asset"]["handle"] == old_handle for pic in initial)
+            assert all("Vashti" in json.dumps(pic[1]) for pic in initial)
+
+            # Commit the removals, the replacement for the very same account, Rotate, and a new
+            # reveal and cue together: neither listener can observe an intermediate standing.
+            with world.db.transaction() as unit:
+                for user in (removed, replaced):
+                    world.participants.remove(unit, campaign, seats[user])
+                new_seat = world.participants.add(unit, campaign, alias="Replacement").id
+                world.participants.offer(unit, campaign, new_seat, user_id=replaced)
+                world.participants.accept(unit, campaign, new_seat, user_id=replaced)
+                world.participants.confirm(unit, campaign, new_seat)
+                rotated = world.sessions.rotate(unit, campaign, session.id, owner_id=world.owner, command_id=_command())
+                assert rotated is not None
+                for document, target, mask in (
+                    (doc, TableTarget(), ("qualifier",)), (private, _parts(seats[confirmed]), ("voice",)),
+                ):
+                    world.reveals.write(
+                        unit, campaign_id=campaign, session_id=session.id, document_id=document, version=1,
+                        command_id=_command(), targets=target, mask=mask, now=datetime.now(UTC),
+                    )
+                cue_playback.play(pg(unit), campaign, session.id, world.owner, CuePlayRequest(
+                    schema_version=1, command_id=_command(), cue_id=cue, audio_epoch=rotated.session.audio_epoch,
+                    loop=True,
+                ), datetime.now(UTC))
+
+            expected = ["reconnect"] * 3 + ["inactive"] * 3
+            terminals = await asyncio.gather(*(event(tab) for tab in tabs))
+            assert terminals == [{"schema_version": 1, "event": disposition} for disposition in expected]
+            for tab in tabs:
+                with pytest.raises(StopAsyncIteration):
+                    await anext(tab)
+            with connect(dsn) as conn:
+                assert conn.execute("SELECT count(*) FROM campaign.table_stream_connections").fetchone() == (0,)
+
+            # Reopen each continuing account on the other service. A polling client gets
+            # exactly the same fresh, audience-scoped frames as a new stream.
+            reader = TableReads(world.db, world.reveals, world.documents)
+            for i, user in enumerate(users[:3]):
+                fresh = await picture(await admit(1 - i % 2, user))
+                polled = reader.snapshot(campaign, account_id=user, now=datetime.now(UTC))
+                assert polled is not None and fresh == [f.model_dump(mode="json") for f in polled.frames]
+                assert "Harbourmistress" in json.dumps(fresh[1])
+                assert ("voice" in json.dumps(fresh[1])) == (user == confirmed)
+                assert "Vashti" not in json.dumps(fresh)
+                assert fresh[2]["playing"]["asset"]["handle"] != old_handle
+            assert reader.snapshot(campaign, grant_id=screen.id, now=datetime.now(UTC)) is None
+            assert reader.snapshot(campaign, account_id=removed, now=datetime.now(UTC)) is None
 
     asyncio.run(scenario(), loop_factory=asyncio.SelectorEventLoop)
 

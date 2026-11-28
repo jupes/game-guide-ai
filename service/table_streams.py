@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, aclosing
 from datetime import UTC, datetime
 from functools import partial
+from typing import Final
 
 import anyio
 import psycopg
@@ -15,10 +16,11 @@ import psycopg
 from .db import Database, default_dsn
 from .gm_stream_reads import GM_STREAM_LIMIT
 from .table_admission import LEASE_HEARTBEAT_S, TABLE_STREAM_LIMIT, StreamLease, TableAdmission
-from .table_fanout import RECONNECT_FRAME, TableFanout, listen_table_wakeups
+from .table_fanout import INACTIVE_FRAME, RECONNECT_FRAME, TableFanout, listen_table_wakeups
 from .table_reads import TableStreamReads
 
 _log = logging.getLogger(__name__)
+_RENEWAL_TIMEOUT_S: Final = 2.0
 
 
 class TableStreams:
@@ -26,29 +28,50 @@ class TableStreams:
         self.admission = admission
         self._fanout = fanout
 
+    async def _renew(self, lease: StreamLease) -> bool:
+        try:
+            async with asyncio.timeout(_RENEWAL_TIMEOUT_S):
+                return await self.admission.renew(lease, now=datetime.now(UTC))
+        except (TimeoutError, psycopg.Error):
+            _log.warning("table_stream_renewal_failed")
+            return False
+
     async def bytes(self, lease: StreamLease, *, auth_expires_at: datetime | None = None) -> AsyncGenerator[bytes]:
         loop = asyncio.get_running_loop()
         next_renewal = loop.time() + LEASE_HEARTBEAT_S
         async with aclosing(self._fanout.stream(lease.watch)) as frames:
             try:
-                if auth_expires_at is not None and datetime.now(UTC) >= auth_expires_at:
-                    yield RECONNECT_FRAME
-                    return
-                async for frame in frames:
-                    if loop.time() >= next_renewal:
-                        try:
-                            renewed = await self.admission.renew(lease, now=datetime.now(UTC))
-                        except psycopg.Error:
-                            _log.warning("table_stream_renewal_failed")
-                            renewed = False
-                        if not renewed:
-                            yield RECONNECT_FRAME
-                            return
-                        next_renewal = loop.time() + LEASE_HEARTBEAT_S
+                while True:
+                    remaining = (auth_expires_at - datetime.now(UTC)).total_seconds() if auth_expires_at else None
+                    if remaining is not None and remaining <= 0:
+                        yield INACTIVE_FRAME
+                        return
+                    deadline = asyncio.timeout(remaining)
+                    try:
+                        async with deadline:
+                            renewed = True
+                            if loop.time() >= next_renewal:
+                                renewed = await self._renew(lease)
+                                next_renewal = loop.time() + LEASE_HEARTBEAT_S
+                            # Renew before asking the fanout for a frame. Content
+                            # stays retractable while the database call is in flight.
+                            if renewed:
+                                frame = await anext(frames, None)
+                            else:
+                                frame = INACTIVE_FRAME if self._fanout.known_inactive(lease.watch) else RECONNECT_FRAME
+                    except TimeoutError:
+                        if not deadline.expired():
+                            raise
+                        yield INACTIVE_FRAME
+                        return
                     if auth_expires_at is not None and datetime.now(UTC) >= auth_expires_at:
-                        yield RECONNECT_FRAME
+                        yield INACTIVE_FRAME
+                        return
+                    if frame is None:
                         return
                     yield frame
+                    if frame == RECONNECT_FRAME or frame == INACTIVE_FRAME:
+                        return
             finally:
                 with anyio.CancelScope(shield=True), anyio.move_on_after(2):
                     try:

@@ -16,7 +16,7 @@ from psycopg import sql
 
 from .db import CONNECT_TIMEOUT_S
 from .table_audio_projection import ended, opening_audio
-from .table_reads import TABLE_STREAM_BATCH_MAX, WIRE_VERSION, TableStreamReads, TableStreamWatch
+from .table_reads import TABLE_STREAM_BATCH_MAX, WIRE_VERSION, TableStreamReads, TableStreamSignal, TableStreamWatch
 from .table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 from .workbench_contracts import (
     TableAudioEvent,
@@ -61,6 +61,7 @@ def _encode(frame: TableEvent) -> bytes:
 
 
 RECONNECT_FRAME: Final = _encode(_reconnect())
+INACTIVE_FRAME: Final = _encode(TableInactiveEvent(schema_version=WIRE_VERSION, event="inactive"))
 
 
 def _picture(snapshot: TableSnapshot) -> tuple[TableSessionEvent, TableRevealSnapshotEvent]:
@@ -73,25 +74,33 @@ def _picture(snapshot: TableSnapshot) -> tuple[TableSessionEvent, TableRevealSna
 class _Viewer:
     watch: TableStreamWatch
     queue: asyncio.Queue[TableEvent] = field(default_factory=lambda: asyncio.Queue(maxsize=_QUEUE_MAX))
+    changed: asyncio.Event = field(default_factory=asyncio.Event)
+    checking: bool = True
     current: TableSnapshot | None = None
-    closed: bool = False
+    closed: TableInactiveEvent | TableReconnectEvent | None = None
     checked_at: float | None = None
 
     def terminal(self, frame: TableInactiveEvent | TableReconnectEvent) -> None:
         if self.closed:
             return
-        self.closed = True
+        self.closed = frame
         self.current = None
         while not self.queue.empty():
             self.queue.get_nowait()
         self.queue.put_nowait(frame)
+        self.changed.set()
 
-    def apply(self, snapshot: TableSnapshot | None, checked_at: float) -> None:
+    def apply(self, snapshot: TableSnapshot | TableStreamSignal | None, checked_at: float) -> None:
         if self.closed:
+            return
+        if snapshot is TableStreamSignal.ROTATED:
+            self.terminal(_reconnect())
             return
         if snapshot is None:
             self.terminal(TableInactiveEvent(schema_version=WIRE_VERSION, event="inactive"))
             return
+        self.checking = False
+        self.changed.set()
         self.checked_at = checked_at
         if self.current is None:
             self.current = snapshot
@@ -111,7 +120,7 @@ class _Viewer:
             old = previous[slot.slot]
             if slot == old:
                 continue
-            if slot.seq != old.seq + 1 or (slot.content is None and not self.queue.empty()):
+            if slot.seq != old.seq + 1 or not self.queue.empty():
                 self.terminal(_reconnect())
                 return
             frames.append(TableSlotEvent(
@@ -174,6 +183,10 @@ class TableFanout:
     def stream_count(self) -> int:
         return sum(not viewer.closed for viewer in self._viewers)
 
+    def known_inactive(self, watch: TableStreamWatch) -> bool:
+        # Each admission creates a distinct watch, including two tabs at one seat.
+        return any(viewer.watch is watch and isinstance(viewer.closed, TableInactiveEvent) for viewer in self._viewers)
+
     def _start_workers(self) -> None:
         if not self._workers:
             self._listener_ready.clear()
@@ -208,26 +221,36 @@ class TableFanout:
         loop = asyncio.get_running_loop()
         viewer = _Viewer(watch)
         expires = loop.time() + self._lifetime_s()
+        heartbeat = loop.time() + self._heartbeat_s
+        opening_deadline = loop.time() + _FRESH_FOR_S
         self._viewers.add(viewer)
         self._dirty.add(viewer)
         self._wakeup.set()
         self._start_workers()
         try:
-            while (remaining := expires - loop.time()) > 0:
-                try:
-                    frame = await asyncio.wait_for(viewer.queue.get(), min(remaining, self._heartbeat_s))
-                except TimeoutError:
-                    checked = viewer.checked_at
-                    if checked is None or loop.time() - checked >= _FRESH_FOR_S or loop.time() >= expires:
-                        break
+            while True:
+                now = loop.time()
+                if viewer.closed:
+                    yield _encode(viewer.queue.get_nowait())
+                    return
+                fresh_until = opening_deadline if viewer.checked_at is None else viewer.checked_at + _FRESH_FOR_S
+                if now >= min(expires, fresh_until):
+                    break
+                # Keep the frame in the queue until the latest check completes.
+                # A terminal decision can still withdraw the entire queue.
+                if not viewer.checking and not viewer.queue.empty():
+                    heartbeat = now + self._heartbeat_s
+                    yield _encode(viewer.queue.get_nowait())
+                    continue
+                if now >= heartbeat:
+                    heartbeat = now + self._heartbeat_s
                     yield b": heartbeat\n\n"
                     continue
-                if isinstance(frame, TableInactiveEvent | TableReconnectEvent):
-                    yield _encode(frame)
-                    return
-                if viewer.checked_at is None or loop.time() - viewer.checked_at >= _FRESH_FOR_S:
-                    break
-                yield _encode(frame)
+                viewer.changed.clear()
+                try:
+                    await asyncio.wait_for(viewer.changed.wait(), min(expires, heartbeat, fresh_until) - now)
+                except TimeoutError:
+                    pass
             yield RECONNECT_FRAME
         finally:
             self._viewers.discard(viewer)
@@ -271,10 +294,15 @@ class TableFanout:
             self._dirty.clear()
             if not viewers:
                 continue
+            for viewer in viewers:
+                viewer.checking = True
             try:
                 snapshots = await self._reads.snapshots([viewer.watch for viewer in viewers], now=datetime.now(UTC))
                 for viewer, picture in zip(viewers, snapshots, strict=True):
-                    viewer.apply(picture, checked_at)
+                    # A definitive loss closes this exact watch. A positive
+                    # grant or eligible Rotate still needs the latest recheck.
+                    if picture is None or viewer not in self._dirty:
+                        viewer.apply(picture, checked_at)
             except Exception:
                 _log.warning("table_stream_read_failed")
                 for viewer in viewers:
@@ -297,6 +325,7 @@ class TableFanout:
                                 CREDENTIAL_WAKEUP_CHANNEL: watch.grant_id,
                             }
                             if not viewer.closed and expected.get(channel) == payload:
+                                viewer.checking = True
                                 self._dirty.add(viewer)
                         if self._dirty:
                             self._wakeup.set()

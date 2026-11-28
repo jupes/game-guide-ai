@@ -23,14 +23,20 @@ export function tablePresence(campaign: string | null, request: typeof fetch, re
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ schema_version: CONTRACT_VERSION, ...body }) }
   }
 
+  function close(id: string): void {
+    void request(path, { ...options({ action: 'close', registration: id }), keepalive: true }).catch(() => {})
+  }
+
   function reset(): void {
     clearTimeout(timer)
-    busy?.abort()
+    // A pending open may have committed. Retire it locally now and let its
+    // bounded response supply the registration needed to close that row.
+    if (registration) busy?.abort()
     busy = null
     const previous = registration
     registration = context = pageId = null
     retryAt = revision = 0
-    if (previous) void request(path, { ...options({ action: 'close', registration: previous }), keepalive: true }).catch(() => {})
+    if (previous) close(previous)
   }
 
   function schedule(delay: number): void {
@@ -50,7 +56,19 @@ export function tablePresence(campaign: string | null, request: typeof fetch, re
     let delay = HEARTBEAT_MS
     try {
       const response = await request(path, { ...options(body), signal })
-      if (controller.signal.aborted) return
+      if (opening && response.ok) {
+        const answer = await response.json()
+        if (answer?.schema_version === CONTRACT_VERSION && typeof answer.registration === 'string' &&
+            /^[A-Za-z0-9_-]{32}$/.test(answer.registration)) {
+          if (busy !== controller) close(answer.registration)
+          else {
+            registration = answer.registration
+            delay = 0
+          }
+        }
+        return
+      }
+      if (busy !== controller) return
       if (response.status === 401 || response.status === 403 || response.status === 404) {
         refusedContext = context
         retryOpenAt = Date.now() + HEARTBEAT_MS
@@ -61,14 +79,6 @@ export function tablePresence(campaign: string | null, request: typeof fetch, re
       if (!response.ok) {
         const seconds = Number(response.headers.get('Retry-After'))
         retryAt = Date.now() + Math.max(HEARTBEAT_MS, Number.isFinite(seconds) ? Math.min(300, seconds) * 1000 : 0)
-      } else if (opening) {
-        const answer = await response.json()
-        if (controller.signal.aborted) return
-        if (answer?.schema_version === CONTRACT_VERSION && typeof answer.registration === 'string' &&
-            /^[A-Za-z0-9_-]{32}$/.test(answer.registration)) {
-          registration = answer.registration
-          delay = 0
-        }
       }
     } catch { /* Rejoin on the next heartbeat. Table playback has its own transport. */ }
     finally {

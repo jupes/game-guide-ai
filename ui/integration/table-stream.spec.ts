@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { expect, test, type Page } from '@playwright/test'
+import { TableSessionAnswerSchema } from '../src/gm/contracts'
 
 const PUBLIC = 'Vashti'
 const PRIVATE = 'Harbourmistress'
@@ -35,7 +36,7 @@ test('a phone shows only the slots allowed by acceptance and confirmation', asyn
   }
 })
 
-test('two mobile clients reconnect, receive Stop, and blank on End across two services', async ({ browser }) => {
+test('two mobile clients handle Stop, Rotate, and End across two services', async ({ browser }) => {
   const play = fixture('PLAYER_URL')
   const screen = fixture('SCREEN_URL')
   const path = `/table?campaign_id=${fixture('CAMPAIGN')}`
@@ -52,15 +53,17 @@ test('two mobile clients reconnect, receive Stop, and blank on End across two se
   // the background page of a second context in the same browser process.
   const displayBrowser = await browser.browserType().launch()
 
-  async function command(suffix: string, body: object): Promise<void> {
-    const response = await fetch(`${play}/campaigns/${fixture('CAMPAIGN')}${suffix}`, {
+  async function command(suffix: string, body: object, origin = play): Promise<unknown> {
+    const response = await fetch(`${origin}/campaigns/${fixture('CAMPAIGN')}${suffix}`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json', Origin: play, Cookie: `gga_session=${fixture('OWNER_COOKIE')}`,
+        'Content-Type': 'application/json', Origin: origin, Cookie: `gga_session=${fixture('OWNER_COOKIE')}`,
       },
       body: JSON.stringify({ schema_version: 1, command_id: randomBytes(16).toString('base64url'), ...body }),
     })
-    expect(response.status, await response.text()).toBe(200)
+    const result = await response.text()
+    expect(response.status, result).toBe(200)
+    return JSON.parse(result)
   }
 
   const connections = async (origin: string) => {
@@ -103,6 +106,28 @@ test('two mobile clients reconnect, receive Stop, and blank on End across two se
     await expect(projections(shared)).toBeEmpty({ timeout: LIVE_UPDATE_TIMEOUT })
     await expect(projections(player)).toContainText(PRIVATE)
     await expect(projections(player)).not.toContainText(PUBLIC, { timeout: LIVE_UPDATE_TIMEOUT })
+
+    const reopened = player.waitForRequest((req) => new URL(req.url()).pathname === '/table/stream')
+    const { session } = TableSessionAnswerSchema.parse(await command('/table-session', {
+      action: 'rotate', session_id: fixture('SESSION'),
+    }, screen))
+    if (!session) throw new Error('Rotate returned no live session')
+    await reopened
+    await expect(player.locator('#table-status')).toHaveText('Nothing to see yet. Your GM hasn’t shared anything.')
+    await expect(projections(player)).toBeEmpty()
+    await expect(shared.locator('#table-status')).toHaveText(INACTIVE)
+    await expect(projections(shared)).toBeEmpty()
+    await expect.poll(() => Promise.all([connections(play), connections(screen)])).toEqual([1, 0])
+    const revoked = await screenContext.request.get(`${screen}/table/snapshot?campaign_id=${fixture('CAMPAIGN')}`)
+    expect(revoked.status()).toBe(401)
+
+    await command('/reveals', {
+      session_id: session.session_id, reveal_epoch: session.reveal_epoch,
+      document_id: fixture('PUBLIC_DOCUMENT'), version: 1, mask: ['name'], audience: { kind: 'table' },
+    }, screen)
+    await expect(projections(player)).toContainText(PUBLIC, { timeout: LIVE_UPDATE_TIMEOUT })
+    await expect(projections(player)).not.toContainText(PRIVATE)
+    await expect(projections(shared)).toBeEmpty()
 
     await command('/table-session', { action: 'end', session_id: fixture('SESSION') })
     for (const page of [player, shared]) {
