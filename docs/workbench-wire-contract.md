@@ -159,17 +159,13 @@ a generic failure.
 | `link_taken` | 409 | no | a character-sheet link to a seat when the sheet is linked to another seat, or the seat already has a sheet (`q156`, AUD-15, AUD-13). Never a re-point: unlink, then link. Names neither id; only the campaign's owner can reach it |
 | `account_limit_reached` | 409 | no | the account's campaign count or stored document bytes is at its limit (`agent-forge-harness-531x`, PR-B). Names no number; only the account itself can reach it |
 
-**Every state-changing Workbench route EXCEPT two** may additionally answer
-`429 throttled_user` — a per-account write budget (`agent-forge-harness-531x`),
-shared across every campaign, tab and route the account touches, guarding
-against a script that writes without bound. It carries `retry_after_s` and a
-matching `Retry-After` header, exactly as the existing per-user throttles do.
-No UI change: `throttled_user` is already a known code. The two exemptions:
-the library search (`POST /campaigns/{campaign_id}/library` reads only, and
-answers no body a write would) and `POST /table/leave` (the screen principal's
-own revoke, SEC-49) — `service/tests/test_workbench_write_throttle.py`'s pin
-asserts this exempt set is exactly what a walk of every non-GET Workbench
-route finds unthrottled, so a stale exemption fails CI too.
+**Workbench writes share a per-account budget** across campaigns, tabs and routes
+(`agent-forge-harness-531x`). Exhaustion returns `429 throttled_user` with
+`retry_after_s` and a matching `Retry-After` header. Library and cue searches
+use POST for reads. The immediate audio Stop, screen Leave and table account
+sign-out are exempt from the write budget. Audio settings charge the budget
+when enabling sound, after parsing the requested change. The route inventory
+in `service/tests/test_workbench_write_throttle.py` checks these exceptions.
 
 **Two per-account STORAGE caps sit on top of the write throttle**
 (`agent-forge-harness-531x`, PR-B): `POST /campaigns` (the account's campaign
@@ -293,7 +289,7 @@ on both sides.
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | **done** — reopened by threat model §15.11's TA-5 row (`everyone_seated`) and marked done by `1kg.7.2` PR-2, which serves and parses every reveal shape; no build had served or parsed one, so no bump was owed (DV-3's precedent) | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealAnswer`, `RevealLive`, `RevealState`, `TableProjection`, `TableSnapshotQuery`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
 | Media assets and cues | **done** | `AssetCreateRequest`, `Asset`, `TableAssetRef`, `Cue`, `CueCreateRequest`, `CueRenameRequest`, `CueListQuery`, `CuePage`, `CuePlayRequest`, `CueStopRequest`. Storage, processing and serving are the media ADR's (`1kg.1.4`) |
-| Table sessions | **open** — reopened by threat model §15.11; not bound by the bump table until marked done again (see *Versioning and forward compatibility*) | `TableSession`, `TableSessionRequest`, `TableSessionAnswer`, `ScreenMintRequest`, `ScreenMintAnswer`, `TableLeaveRequest`, and `inactive`, `cross_site`, `screen_limit` and `live_elsewhere` on the error envelope. `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired (`1kg.2.3`). See *The table-session family* below |
+| Table sessions | **open** — reopened by threat model §15.11; not bound by the bump table until marked done again (see *Versioning and forward compatibility*) | `TableSession`, `TableSessionRequest`, `TableSessionAnswer`, `ScreenMintRequest`, `ScreenMintAnswer`, `TableLeaveRequest`, `TableIdentity`, and `inactive`, `cross_site`, `screen_limit` and `live_elsewhere` on the error envelope. `TableJoinRequest`, `TableJoinResponse`, `EnrolRequest` and `EnrolResponse` are retired (`1kg.2.3`). See *The table-session family* below |
 | Realtime events | **done** | `GmEvent` (`tool_lane`, `edit_lane`, `session`, `audio`, `slot`, `snapshot`, `presence`, `asset`, `ready`, `reconnect`), `TableEvent` (`session`, `inactive`, `audio`, `slot`, `snapshot`, `ready`, `reconnect`), and the two snapshot resources `GmSnapshot` and `TableSnapshot`. `slot` and `snapshot` are the reveal family's; the transport is the media ADR's |
 | Tool and document-type registry | `1kg.3.1` | extends `registry.json` |
 | Conversations | **done** | `Conversation`, `ConversationPage`, `ConversationCreateRequest`, `ConversationPatchRequest`, and `already_linked` on the error envelope. See *The conversation family* below |
@@ -1384,6 +1380,18 @@ of the answer that mints it, and is in no body, no URL and no list.
 | `DELETE /campaigns/{campaign_id}/table-session/screens/{screen_id}` | — | `204`, a repeat too. Another GM's screen, or none, is the one `404` |
 | `POST /table/screen` | `ScreenMintRequest` names the campaign | `ScreenMintAnswer` gives the expiry, sets the grant cookie, deletes the account cookie and sends `Clear-Site-Data: "cache", "storage"` (D-13). Only the owner of a live campaign session can mint. `409 screen_limit` keeps the account signed in. An exhausted lookup budget returns `429 throttled_user` with `retry_after_s`. |
 | `POST /table/leave` | `TableLeaveRequest` | `204` revokes the current screen grant and deletes its cookie. A dead grant cookie is cleared. An exhausted lookup budget returns `429 throttled_user` with `retry_after_s` (SEC-49). |
+| `GET /table/identity` | No campaign or other identifier | `TableIdentity` gives `schema_version` and the effective credential `kind`, either `account` or `screen`. A browser with neither receives the usual `401`. The read uses the table read budget and sends `Cache-Control: no-store`. |
+| `POST /table/sign-out` | Empty body | `204` clears the current account cookie and sends `Clear-Site-Data: "cache", "storage"`. A live screen receives `409 conflict` and keeps both credentials. A browser with neither receives the usual `401`. |
+
+The player table uses this read to offer **Sign out** for an account or **Leave table**
+for a shared screen, including when the address is unavailable or the table is full.
+A live screen grant takes precedence when the browser also has an account cookie.
+Leaving the screen preserves that account. The `guest` role in a snapshot describes
+the slots the viewer may see. Both credentials can receive it. When a service returns
+an unrecognized identity response, the client can retry without choosing an exit action.
+The account exit lives under `/table/` so its POST receives the screen cookie. If another
+tab established a screen between the identity check and the click, the server refuses
+the account exit and the page refreshes its controls.
 
 `TableSession` is the GM's view: state, **admission generation** (`gen`, which
 §15.11 keeps), when it started and ends, whether table audio is on, and
@@ -1391,7 +1399,7 @@ of the answer that mints it, and is in no body, no URL and no list.
 last_seen_at}`, never the grant or its digest; an ended session lists none. The
 list carries up to 16, above SEC-48's per-session bound of four (*suggested*), so
 tuning the bound is not a contract change. The GM routes are Workbench GM routes
-(the `dm` gate, SEC-2, SEC-3); the two `/table/` routes are the table router's
+(the `dm` gate, SEC-2, SEC-3); the `/table/` routes are the table router's
 (SEC-44 to SEC-46): Fetch Metadata first, then SEC-7, then one principal — a
 live screen grant alone, else the account session. Each digest lookup spends
 a budget before it reaches the database. An unfamiliar grant uses the auth

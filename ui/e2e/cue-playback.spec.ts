@@ -21,6 +21,7 @@ test('a player enables sound once per page, mutes it, and releases playback on r
   let active = true
   let mediaReads = 0
   const headers = { 'X-Table-Audio-Context': 'a'.repeat(64) }
+  await page.route('**/table/identity', route => route.fulfill({ json: { schema_version: 1, kind: 'account' } }))
   await page.route('**/table/stream?*', route => route.fulfill({ status: 404 }))
   await page.route('**/table/snapshot?*', route => route.fulfill({ headers, json: {
     schema_version: 1,
@@ -86,7 +87,7 @@ test('a player enables sound once per page, mutes it, and releases playback on r
   await expect.poll(() => postures.at(-1)?.state).toBe('listening')
   active = false
   await page.getByRole('button', { name: 'Reload table' }).click()
-  await expect(page.getByText('This table isn’t active or available to you.')).toBeVisible()
+  await expect(page.getByText('This table is unavailable.')).toBeVisible()
   await expect(sound).toBeHidden()
   await expect(page.getByText('The harbour keeper')).toHaveCount(0)
 })

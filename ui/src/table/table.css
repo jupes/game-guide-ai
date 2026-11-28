@@ -51,6 +51,7 @@ article {
 article p { white-space: pre-wrap; }
 
 nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+#table-identity-notice { flex-basis: 100%; margin: 0; }
 
 .table-action {
   box-sizing: border-box;

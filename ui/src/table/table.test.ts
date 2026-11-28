@@ -41,10 +41,16 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
-function start(request: typeof fetch, channel?: IdentityChannelLike, stream?: typeof fetch) {
-  stop = mountTable(document, 'cmp_table', (input, init) => String(input).startsWith('/table/stream?')
-    ? (stream?.(input, init) ?? Promise.resolve(new Response(null, { status: 404 })))
-    : request(input, init), () => channel ?? null)
+const identityOf = (kind: 'account' | 'screen') => Response.json({ ...event, kind })
+const noIdentity = () => Response.json({ detail: 'not signed in' }, { status: 401 })
+
+function start(request: typeof fetch, channel?: IdentityChannelLike, stream?: typeof fetch,
+  identify: typeof fetch = async () => identityOf('account'), campaign: string | null = 'cmp_table') {
+  stop = mountTable(document, campaign, (input, init) => {
+    if (input === '/table/identity') return identify(input, init)
+    if (String(input).startsWith('/table/stream?')) return stream?.(input, init) ?? Promise.resolve(new Response(null, { status: 404 }))
+    return request(input, init)
+  }, () => channel ?? null)
   return vi.advanceTimersByTimeAsync(0)
 }
 
@@ -76,9 +82,11 @@ describe('account-authorized player table', () => {
 
   it.each([401, 404])('shows the generic %s state and never displays the body of a refusal', async (code) => {
     const request = vi.fn(async () => Response.json({ secret: 'Refused data' }, { status: code }))
-    await start(request)
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('account'))
+      .mockImplementation(async () => code === 401 ? noIdentity() : identityOf('account'))
+    await start(request, undefined, undefined, identify)
     expect(content()).toBeEmptyDOMElement()
-    expect(status()).toBe(code === 401 ? 'Sign in to open this table.' : 'This table isn’t active or available to you.')
+    expect(status()).toBe(code === 401 ? 'Sign in to open this table.' : 'This table is unavailable.')
     expect(document.querySelector('#table-sign-in')).toHaveProperty('hidden', code !== 401)
     await vi.advanceTimersByTimeAsync(15_000)
     expect(request).toHaveBeenCalledTimes(1)
@@ -102,7 +110,7 @@ describe('account-authorized player table', () => {
     expect(content()).toHaveTextContent('Shared handout')
     await vi.advanceTimersByTimeAsync(5000)
     expect(content()).toBeEmptyDOMElement()
-    expect(status()).toMatch(/isn’t active/)
+    expect(status()).toBe('This table is unavailable.')
   })
 
   it('blanks after ten seconds without a confirmed refresh, even if the next request hangs', async () => {
@@ -159,9 +167,376 @@ describe('account-authorized player table', () => {
     signOut.click()
     expect(content()).toBeEmptyDOMElement()
     await vi.advanceTimersByTimeAsync(0)
-    expect(request).toHaveBeenLastCalledWith('/auth/logout', { method: 'POST', cache: 'no-store' })
+    expect(request).toHaveBeenLastCalledWith('/table/sign-out', {
+      method: 'POST', cache: 'no-store', redirect: 'error', signal: expect.any(AbortSignal),
+    })
     expect(channel.postMessage).toHaveBeenCalledWith({ v: 1, kind: 'identity-changed' })
     expect(document.querySelector('#table-sign-in')).toHaveFocus()
+  })
+})
+
+const exit = (id: 'sign-in' | 'sign-out' | 'leave' | 'reload') =>
+  document.querySelector<HTMLElement>(`#table-${id}`)!
+
+describe('effective account or screen credential', () => {
+  it.each([
+    ['account', 'guest'], ['account', 'participant'], ['screen', 'guest'],
+  ] as const)('shows the %s exit regardless of a %s authorization picture', async (actor, role) => {
+    const slots = [slot('table', 'Handout'), ...(role === 'participant' ? [slot('mine', null)] : [])]
+    await start(async () => picture(role, ...slots), undefined, undefined, async () => identityOf(actor))
+    expect(content()).toHaveTextContent('Handout')
+    expect(exit('sign-out').hidden).toBe(actor !== 'account')
+    expect(exit('leave').hidden).toBe(actor !== 'screen')
+    expect(exit('sign-in')).not.toBeVisible()
+    expect(document.querySelector('#table-return')).toHaveTextContent(actor === 'account' ? 'Back to your seats' : 'Back to the Tavern')
+  })
+
+  it.each(['account', 'screen'] as const)('keeps the %s exit on a cold full table or missing address', async actor => {
+    const identify = vi.fn(async () => identityOf(actor))
+    const requests = vi.fn<typeof fetch>()
+    const full = vi.fn(async () => new Response(null, { status: 503, headers: { 'Retry-After': '5' } }))
+    await start(requests, undefined, full, identify, null)
+    expect(status()).toBe('This table is unavailable.')
+    expect(identify).toHaveBeenCalledOnce()
+    expect(full).not.toHaveBeenCalled()
+    expect(exit(actor === 'account' ? 'sign-out' : 'leave')).toBeVisible()
+    stop!()
+    await start(requests, undefined, full, identify)
+    expect(status()).toBe('This table is full. Ask your GM to make room.')
+    expect(exit(actor === 'account' ? 'sign-out' : 'leave')).toBeVisible()
+    expect(requests).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    () => new Response(null, { status: 404 }),
+    () => new Response('<html>Earlier application</html>'),
+    () => Response.json({ kind: 'participant', ...event }),
+    () => Response.json({ detail: 'unknown proxy reply' }, { status: 401 }),
+    () => { throw new TypeError('offline') },
+  ])('keeps authorized content while a delayed or incompatible identity read can offer no destructive exit', async refuse => {
+    let complete!: () => void
+    const identify = vi.fn<typeof fetch>().mockImplementationOnce(() => new Promise((resolve, reject) => {
+      complete = () => { try { resolve(refuse()) } catch (error) { reject(error) } }
+    })).mockImplementation(async () => identityOf('account'))
+    const request = vi.fn(async () => picture('guest', slot('table', 'A real public handout')))
+    await start(request, undefined, undefined, identify)
+    expect(content()).toHaveTextContent('A real public handout')
+    expect(exit('sign-out')).not.toBeVisible()
+    expect(exit('leave')).not.toBeVisible()
+    complete()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit('reload')).toHaveTextContent('Retry')
+    expect(status()).not.toMatch(/signed in|check/i)
+    expect(content()).toHaveTextContent('A real public handout')
+    exit('sign-out').click()
+    exit('leave').click()
+    expect(identify).toHaveBeenCalledOnce()
+    expect(request).toHaveBeenCalledOnce()
+    exit('reload').click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit('sign-out')).toBeVisible()
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(content()).toHaveTextContent('A real public handout')
+  })
+
+  it('respects identity Retry-After through manual reload and visibility changes without delaying fresh table data', async () => {
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, {
+      status: 429, headers: { 'Retry-After': '15' },
+    })).mockImplementation(async () => identityOf('screen'))
+    const request = vi.fn(async () => picture('guest', slot('table', 'Live handout')))
+    await start(request, undefined, undefined, identify)
+    expect(exit('reload')).toHaveAttribute('aria-disabled', 'true')
+    exit('reload').click()
+    document.dispatchEvent(new Event('freeze'))
+    document.dispatchEvent(new Event('resume'))
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(identify).toHaveBeenCalledOnce()
+    expect(content()).toHaveTextContent('Live handout')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(identify).toHaveBeenCalledTimes(2)
+    expect(exit('leave')).toBeVisible()
+    expect(exit('reload')).not.toHaveAttribute('aria-disabled')
+  })
+
+  it('keeps an oversized identity Retry-After from overflowing the browser timer', async () => {
+    const identify = vi.fn(async () => new Response(null, { status: 429, headers: { 'Retry-After': '9'.repeat(400) } }))
+    await start(vi.fn(), undefined, undefined, identify, null)
+    exit('reload').click()
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(identify).toHaveBeenCalledOnce()
+    expect(exit('reload')).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('a screen Leave preflight reopens the account table when the screen grant has gone', async () => {
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('screen'))
+      .mockImplementation(async () => identityOf('account'))
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(picture('guest', slot('table', 'Screen handout')))
+      .mockImplementation(async () => picture('participant', slot('table', 'Public'), slot('mine', 'Current private note')))
+    await start(request, undefined, undefined, identify)
+    exit('leave').focus()
+    exit('leave').click()
+    expect(content()).toBeEmptyDOMElement()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit('sign-out')).toBeVisible()
+    expect(exit('leave')).not.toBeVisible()
+    expect(document.querySelector('h1')).toHaveFocus()
+    expect(content()).toHaveTextContent('Current private note')
+    expect(content()).not.toHaveTextContent('Screen handout')
+    expect(request.mock.calls.map(([path]) => path)).toEqual(Array(2).fill('/table/snapshot?campaign_id=cmp_table'))
+  })
+
+  it('an observed screen revocation stays neutral until an explicit identity change', async () => {
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() } as IdentityChannelLike
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('screen')).mockImplementation(async () => noIdentity())
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(picture('guest', slot('table', 'Screen handout')))
+      .mockImplementation(async () => new Response(null, { status: 401 }))
+    await start(request, channel, undefined, identify)
+    expect(exit('leave')).toBeVisible()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(status()).toBe('This table is unavailable.')
+    expect(exit('leave')).not.toBeVisible()
+    expect(exit('sign-in')).not.toBeVisible()
+    expect(content()).toBeEmptyDOMElement()
+    channel.onmessage?.(new MessageEvent('message', { data: { v: 1, kind: 'identity-changed' } }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit('sign-in')).toBeVisible()
+  })
+
+  it('a screen winning at POST time refreshes the page without a second mutation or a sign-out notice', async () => {
+    let finishIdentity!: (response: Response) => void
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('account'))
+      .mockImplementationOnce(() => new Promise(resolve => { finishIdentity = resolve }))
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() } as IdentityChannelLike
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(picture('participant', slot('table', null), slot('mine', 'Private note')))
+      .mockResolvedValueOnce(new Response(null, { status: 409 }))
+      .mockResolvedValueOnce(picture('guest', slot('table', 'Public handout')))
+    await start(request, channel, undefined, identify)
+    exit('sign-out').click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toBeEmptyDOMElement()
+    expect(exit('sign-out')).not.toBeVisible()
+    expect(exit('leave')).not.toBeVisible()
+    finishIdentity(identityOf('screen'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit('leave')).toBeVisible()
+    expect(content()).toHaveTextContent('Public handout')
+    expect(status()).not.toMatch(/signed out/i)
+    expect(channel.postMessage).not.toHaveBeenCalled()
+    expect(request.mock.calls.filter(([, init]) => init?.method === 'POST').map(([path]) => path)).toEqual(['/table/sign-out'])
+  })
+
+  it.each(['account', 'screen'] as const)('keeps the %s exit available after an old shell or proxy answers the POST', async actor => {
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() } as IdentityChannelLike
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('<html>Old route</html>'))
+      .mockResolvedValueOnce(new Response('<html>Sign in to proxy</html>', { status: 401 }))
+      .mockResolvedValueOnce(actor === 'account' ? noIdentity() : new Response(null, { status: 204 }))
+    await start(request, channel, undefined, async () => identityOf(actor), null)
+    const action = exit(actor === 'account' ? 'sign-out' : 'leave')
+    action.focus()
+    for (let attempt = 0; attempt < 2; attempt++) {
+      action.click()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(status()).toContain('Try again')
+      expect(action).toHaveFocus()
+      expect(exit('sign-in')).not.toBeVisible()
+      expect(channel.postMessage).not.toHaveBeenCalled()
+    }
+    action.click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(status()).toBe(actor === 'account' ? 'You signed out.' : 'You left the table.')
+    expect(channel.postMessage).toHaveBeenCalledTimes(actor === 'account' ? 1 : 0)
+    expect(request.mock.calls.every(([, init]) => init?.redirect === 'error')).toBe(true)
+  })
+
+  it('discards a slow identity response superseded by an explicit cross-tab switch', async () => {
+    let first!: (response: Response) => void
+    const identify = vi.fn<typeof fetch>().mockImplementationOnce(() => new Promise(resolve => { first = resolve }))
+      .mockImplementation(async () => identityOf('screen'))
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() } as IdentityChannelLike
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(picture('participant', slot('table', null), slot('mine', 'Old note')))
+      .mockImplementation(async () => picture('guest', slot('table', 'Current screen handout')))
+    await start(request, channel, undefined, identify)
+    expect(content()).toHaveTextContent('Old note')
+    channel.onmessage?.(new MessageEvent('message', { data: { v: 1, kind: 'identity-changed' } }))
+    expect(content()).toBeEmptyDOMElement()
+    await vi.advanceTimersByTimeAsync(0)
+    first(identityOf('account'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit('leave')).toBeVisible()
+    expect(exit('sign-out')).not.toBeVisible()
+    expect(content()).toHaveTextContent('Current screen handout')
+    expect(content()).not.toHaveTextContent('Old note')
+  })
+
+  it.each(['screen', 'account'] as const)('reopens an unverified live stream and its audio registration for the first verified %s', async actor => {
+    const provisional = streamFixture()
+    provisional.response.headers.set('X-Table-Audio-Context', 'c'.repeat(64))
+    const fresh = streamFixture()
+    const open = vi.fn<typeof fetch>().mockResolvedValueOnce(provisional.response).mockResolvedValueOnce(fresh.response)
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockImplementation(async () => identityOf(actor))
+    const request = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body))
+      return body.action === 'open' ? Response.json({ ...event, registration: 'r'.repeat(32) }) : new Response(null, { status: 204 })
+    })
+    await start(request, undefined, open, identify)
+    provisional.frame('session', { role: 'participant', audio: true })
+    provisional.frame('snapshot', { slots: [slot('table', null), slot('mine', 'Previous private note')] })
+    provisional.frame('ready')
+    await vi.advanceTimersByTimeAsync(3)
+    expect(content()).toHaveTextContent('Previous private note')
+    expect(document.querySelector('#table-sound section')).toBeVisible()
+    exit('reload').click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(provisional.cancel).toHaveBeenCalledOnce()
+    expect(content()).toBeEmptyDOMElement()
+    expect(document.querySelector('#table-sound section')).not.toBeVisible()
+    expect(request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toContainEqual({
+      ...event, action: 'close', registration: 'r'.repeat(32),
+    })
+    expect(exit(actor === 'screen' ? 'leave' : 'sign-out')).toBeVisible()
+    fresh.snapshot('guest', [slot('table', 'Fresh public view')])
+    fresh.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Fresh public view')
+    expect(content()).not.toHaveTextContent('Previous private note')
+  })
+
+  it('discards a delayed provisional private snapshot that arrives after the verified screen view', async () => {
+    let oldPicture!: (response: Response) => void
+    const request = vi.fn<typeof fetch>().mockImplementationOnce(() => new Promise(resolve => { oldPicture = resolve }))
+      .mockImplementation(async () => picture('guest', slot('table', 'Fresh public view')))
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockImplementation(async () => identityOf('screen'))
+    await start(request, undefined, undefined, identify)
+    exit('reload').click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(exit('leave')).toBeVisible()
+    expect(content()).toHaveTextContent('Fresh public view')
+    expect(request.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    oldPicture(picture('participant', slot('table', 'Previous public note'), slot('mine', 'Previous private note')))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Fresh public view')
+    expect(content()).not.toHaveTextContent('Previous')
+  })
+
+  it.each(['broadcast', 'freeze', 'dispose'])('a late first-account recheck cannot restore private data after %s', async interrupt => {
+    let late!: (response: Response) => void
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(picture('guest', slot('table', 'Provisional')))
+      .mockImplementationOnce(() => new Promise(resolve => { late = resolve }))
+      .mockImplementation(async () => picture('guest', slot('table', 'Current screen')))
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(identityOf('account')).mockImplementation(async () => identityOf('screen'))
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() } as IdentityChannelLike
+    await start(request, channel, undefined, identify)
+    exit('reload').click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toBeEmptyDOMElement()
+    if (interrupt === 'broadcast') channel.onmessage?.(new MessageEvent('message', { data: { v: 1, kind: 'identity-changed' } }))
+    else if (interrupt === 'freeze') document.dispatchEvent(new Event('freeze'))
+    else { stop!(); stop = undefined }
+    expect(request.mock.calls[1][1]?.signal?.aborted).toBe(true)
+    late(picture('participant', slot('table', null), slot('mine', 'Private previous view')))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(content()).not.toHaveTextContent('Private previous view')
+    if (interrupt === 'broadcast') expect(content()).toHaveTextContent('Current screen')
+    else expect(content()).toBeEmptyDOMElement()
+  })
+
+  it('blocks contradictory participant data on a verified screen and retries at a bounded rate through an identity outage', async () => {
+    const wrong = () => picture('participant', slot('table', 'Wrong public scope'), slot('mine', 'Private note'))
+    const request = vi.fn<typeof fetch>().mockImplementationOnce(async () => wrong()).mockImplementationOnce(async () => wrong())
+      .mockImplementation(async () => picture('guest', slot('table', 'Fresh public view')))
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('screen'))
+      .mockResolvedValueOnce(new Response(null, { status: 429, headers: { 'Retry-After': '30' } }))
+      .mockImplementation(async () => identityOf('screen'))
+    await start(request, undefined, undefined, identify)
+    expect(content()).toBeEmptyDOMElement()
+    expect(exit('leave')).not.toBeVisible()
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(request).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(identify).toHaveBeenCalledTimes(2)
+    expect(content()).toBeEmptyDOMElement()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(content()).toHaveTextContent('Fresh public view')
+    expect(exit('sign-out')).not.toBeVisible()
+  })
+
+  it('a verified account can sign out even if the next credential read would be throttled', async () => {
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('account'))
+      .mockImplementation(async () => new Response(null, { status: 429 }))
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await start(request, undefined, undefined, identify, null)
+    exit('sign-out').click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(request.mock.calls[0][0]).toBe('/table/sign-out')
+    expect(identify).toHaveBeenCalledOnce()
+    expect(status()).toBe('You signed out.')
+  })
+
+  it.each(['account', 'screen'] as const)('returns focusable retry to the %s exit when its POST stalls', async actor => {
+    let late!: (response: Response) => void
+    const request = vi.fn<typeof fetch>().mockResolvedValueOnce(picture('guest', slot('table', 'Live handout')))
+      .mockImplementationOnce(() => new Promise(resolve => { late = resolve }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() } as IdentityChannelLike
+    await start(request, channel, undefined, async () => identityOf(actor))
+    const action = exit(actor === 'screen' ? 'leave' : 'sign-out')
+    action.focus()
+    action.click()
+    await vi.advanceTimersByTimeAsync(7999)
+    expect(action).toHaveAttribute('aria-disabled', 'true')
+    await vi.advanceTimersByTimeAsync(1)
+    expect(action).not.toHaveAttribute('aria-disabled')
+    expect(action).toHaveFocus()
+    expect(request.mock.calls[1][1]?.signal?.aborted).toBe(true)
+    expect(content()).toBeEmptyDOMElement()
+    expect(status()).toContain('Try again')
+    late(new Response(null, { status: 204 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.postMessage).not.toHaveBeenCalled()
+    expect(status()).toContain('Try again')
+    action.click()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(status()).toBe(actor === 'screen' ? 'You left the table.' : 'You signed out.')
+  })
+
+  it.each(['pagehide', 'dispose'])('a stalled exit interrupted by %s never announces a timeout', async interrupt => {
+    const request = vi.fn<typeof fetch>().mockImplementation(() => new Promise(() => {}))
+    await start(request, undefined, undefined, async () => identityOf('account'), null)
+    exit('sign-out').click()
+    if (interrupt === 'pagehide') window.dispatchEvent(new Event('pagehide'))
+    else { stop!(); stop = undefined }
+    await vi.advanceTimersByTimeAsync(9000)
+    expect(request.mock.calls[0][1]?.signal?.aborted).toBe(true)
+    expect(status()).not.toMatch(/Try again|signed out/)
+  })
+
+  it.each(['broadcast', 'freeze', 'dispose'])('discards a pending screen Leave preflight after %s', async transition => {
+    let answer!: (response: Response) => void
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('screen'))
+      .mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+      .mockImplementation(async () => identityOf('account'))
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() } as IdentityChannelLike
+    const request = vi.fn<typeof fetch>().mockImplementation(async () => picture('guest', slot('table', 'Current table')))
+    await start(request, channel, undefined, identify)
+    exit('leave').click()
+    if (transition === 'broadcast') channel.onmessage?.(new MessageEvent('message', { data: { v: 1, kind: 'identity-changed' } }))
+    else if (transition === 'freeze') {
+      document.dispatchEvent(new Event('freeze'))
+      document.dispatchEvent(new Event('resume'))
+    } else {
+      stop!()
+      stop = undefined
+    }
+    answer(identityOf('screen'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(channel.postMessage).not.toHaveBeenCalled()
+    expect(request.mock.calls.every(args => String(args[0]).startsWith('/table/snapshot?'))).toBe(true)
+    if (transition !== 'dispose') expect(exit('sign-out')).toBeVisible()
   })
 })
 
@@ -286,7 +661,7 @@ describe('player table announcements and focus', () => {
       await vi.advanceTimersByTimeAsync(600)
       expect(live.messages).not.toContain(sharedNotice)
       expect(content()).toBeEmptyDOMElement()
-      if (transition === 'inactive') expect(status()).toMatch(/isn’t active/)
+      if (transition === 'inactive') expect(status()).toBe('This table is unavailable.')
     } finally {
       live.disconnect()
     }
@@ -313,7 +688,8 @@ describe('player table announcements and focus', () => {
     const request = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(picture('participant', slot('table', null), slot('mine', null)))
       .mockResolvedValueOnce(new Response(null, { status: 401 }))
-    await start(request)
+    const identify = vi.fn<typeof fetch>().mockResolvedValueOnce(identityOf('account')).mockImplementation(async () => noIdentity())
+    await start(request, undefined, undefined, identify)
     document.querySelector<HTMLButtonElement>('#table-sign-out')!.focus()
     await vi.advanceTimersByTimeAsync(5000)
     expect(document.querySelector('#table-sign-out')).not.toBeVisible()
@@ -334,9 +710,10 @@ describe('player table announcements and focus', () => {
     expect(signOut).toHaveAttribute('aria-disabled', 'true')
     signOut.click()
     tavern.focus()
+    await vi.advanceTimersByTimeAsync(0)
     finishSignOut(new Response(null, { status: 204 }))
     await vi.advanceTimersByTimeAsync(0)
-    expect(request.mock.calls.filter(([url]) => url === '/auth/logout')).toHaveLength(1)
+    expect(request.mock.calls.filter(([url]) => url === '/table/sign-out')).toHaveLength(1)
     expect(status()).toBe('You signed out.')
     expect(tavern).toHaveFocus()
   })
@@ -374,7 +751,7 @@ describe('player table streams and reconnects', () => {
     expect(document.querySelector('#table-sign-in')).toHaveProperty('hidden', true)
     if (reopen === 200) expect(content()).toHaveTextContent('Fresh handout')
     else {
-      expect(status()).toBe('This table isn’t active or available to you.')
+      expect(status()).toBe('This table is unavailable.')
       expect(document.querySelector('#table-sound section')).toHaveProperty('hidden', true)
       await vi.advanceTimersByTimeAsync(15_000)
       expect(streams).toHaveBeenCalledTimes(2)
@@ -411,7 +788,7 @@ describe('player table streams and reconnects', () => {
     stream.frame('inactive')
     await vi.advanceTimersByTimeAsync(0)
     expect(content()).toBeEmptyDOMElement()
-    expect(status()).toMatch(/isn’t active/)
+    expect(status()).toBe('This table is unavailable.')
     expect(request).not.toHaveBeenCalled()
   })
 
@@ -516,7 +893,7 @@ describe('player table streams and reconnects', () => {
       .mockResolvedValueOnce(new Response(null, { status: 503, headers: { 'Retry-After': '2' } }))
       .mockResolvedValueOnce(retry.response)
     await start(request, undefined, open)
-    expect(status()).toBe('This table is full.')
+    expect(status()).toBe('This table is full. Ask your GM to make room.')
     await vi.advanceTimersByTimeAsync(1999)
     expect(open).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)

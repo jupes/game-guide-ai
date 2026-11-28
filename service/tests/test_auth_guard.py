@@ -224,6 +224,8 @@ PROTECTED_ROUTES: list[Route] = [
     # 1kg.7.2 PR-2: the table's snapshot read. It calls `require_session` through
     # the table principal too, so it is listed for the same reason.
     ("GET", "/table/snapshot", "/table/snapshot?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
+    ("GET", "/table/identity", "/table/identity", None),
+    ("POST", "/table/sign-out", "/table/sign-out", None),
     ("GET", "/table/assets/{handle}", "/table/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", None),
     ("POST", "/table/presence", "/table/presence?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", {}),
     ("GET", "/campaigns/{campaign_id}/sessions/{session_id}/audio/presence",

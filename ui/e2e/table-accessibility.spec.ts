@@ -17,7 +17,7 @@ function reveal(slot: TableSlot['slot'], seq: number, name: string | null, wants
 }
 
 /** The fixture serves a public picture and, only for a confirmed player, their own slot. */
-async function openTable(page: Page, role: 'participant' | 'guest' = 'participant') {
+async function openTable(page: Page, role: 'participant' | 'guest' = 'participant', kind: 'account' | 'screen' = 'account') {
   const state = {
     table: reveal('table', 1, 'Maren the Ferrymaster', 'Find a safe crossing before nightfall.'),
     mine: reveal('mine', 1, 'The Lantern Keeper', 'Meet me on the east bank after sunset.'),
@@ -34,6 +34,7 @@ async function openTable(page: Page, role: 'participant' | 'guest' = 'participan
       if (region && records.some(({ target }) => region.contains(target))) messages.push(region.textContent ?? '')
     }).observe(document, { subtree: true, childList: true, characterData: true })
   })
+  await page.route('**/table/identity', route => route.fulfill({ json: { schema_version: 1, kind } }))
   await page.route(`**/table/stream${query}`, route => route.fulfill({ status: 404 }))
   await page.route(`**/table/presence${query}`, route => route.request().postDataJSON().action === 'open'
     ? route.fulfill({ json: { schema_version: 1, registration: 'r'.repeat(32) } })
@@ -162,10 +163,10 @@ for (const focused of ['sound', 'navigation'] as const) {
   })
 }
 
-for (const role of ['participant', 'guest'] as const) {
-  test(`a ${role} can retry a failed exit using the keyboard`, async ({ page }) => {
-    const state = await openTable(page, role)
-    const account = role === 'participant'
+for (const kind of ['account', 'screen'] as const) {
+  test(`a table-only ${kind} can retry a failed exit using the keyboard`, async ({ page }) => {
+    const state = await openTable(page, 'guest', kind)
+    const account = kind === 'account'
     const action = page.getByRole('button', { name: account ? 'Sign out' : 'Leave table' })
     const tavern = page.getByRole('link', { name: /Tavern|your seats/i })
     const signIn = page.getByRole('link', { name: 'Sign in' })
@@ -176,7 +177,7 @@ for (const role of ['participant', 'guest'] as const) {
       await expect(page.getByRole('heading', { name: 'For you' })).toHaveCount(0)
       expect((await messages(page)).join(' ')).not.toMatch(/Another player|Your GM shared|stopped sharing/)
     }
-    await page.route(account ? '**/auth/logout' : '**/table/leave', route => { requests.push(route) })
+    await page.route(account ? '**/table/sign-out' : '**/table/leave', route => { requests.push(route) })
     await action.focus()
     await page.keyboard.press('Enter')
     await expect.poll(() => requests.length).toBe(1)
@@ -197,7 +198,7 @@ for (const role of ['participant', 'guest'] as const) {
 test('finishing sign-out preserves focus moved to another link while the request was pending', async ({ page }) => {
   await openTable(page)
   let response: Route | undefined
-  await page.route('**/auth/logout', route => { response = route })
+  await page.route('**/table/sign-out', route => { response = route })
   await page.getByRole('button', { name: 'Sign out' }).focus()
   await page.keyboard.press('Enter')
   await expect.poll(() => Boolean(response)).toBe(true)

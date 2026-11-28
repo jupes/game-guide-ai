@@ -1720,6 +1720,13 @@ export const TableLeaveRequestSchema = refusingProtoKeys(
 )
 export type TableLeaveRequest = z.infer<typeof TableLeaveRequestSchema>
 
+/** GET /table/identity identifies the exit available to this browser. */
+export const TableIdentitySchema = z.object({
+  schema_version: z.literal(CONTRACT_VERSION),
+  kind: z.enum(['account', 'screen']),
+})
+export type TableIdentity = z.infer<typeof TableIdentitySchema>
+
 /** GET /table/snapshot?campaign_id= (1kg.7.2): the campaign is in the query (SEC-43); the principal is the cookie. */
 export const TableSnapshotQuerySchema = refusingProtoKeys(z.strictObject({ campaign_id: OpaqueIdSchema }))
 export type TableSnapshotQuery = z.infer<typeof TableSnapshotQuerySchema>
@@ -2912,6 +2919,7 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   ScreenMintRequest: ScreenMintRequestSchema,
   ScreenMintAnswer: ScreenMintAnswerSchema,
   TableLeaveRequest: TableLeaveRequestSchema,
+  TableIdentity: TableIdentitySchema,
   TableSnapshotQuery: TableSnapshotQuerySchema,
   Capabilities: CapabilitiesSchema,
   RevealAudience: RevealAudienceSchema,

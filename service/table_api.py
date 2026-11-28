@@ -16,6 +16,10 @@ the imports).
   (SEC-48).
 - `POST /table/leave`: `204`, and never a 401: it never reads or ends an
   account session (SEC-49).
+- `GET /table/identity` identifies which exit action applies to this browser,
+  even if it has no current table.
+- `POST /table/sign-out` clears the account cookie when the effective principal
+  on that request is an account (SEC-49).
 - `GET /table/snapshot?campaign_id=` (1kg.7.2 PR-2): the principal's
   `TableSnapshot`, the table slot and, for a confirmed seat, its own. In order:
   Fetch Metadata, origin, the principal, the campaign id's shape (else
@@ -125,6 +129,7 @@ from .workbench_contracts import (
     SchemaVersion,
     ScreenMintAnswer,
     ScreenMintRequest,
+    TableIdentity,
     TableLeaveRequest,
     TableSnapshot,
 )
@@ -475,6 +480,19 @@ def build_router(
             screen_budgets.forget(ident.digest(secret))
             _forget(request)
             response.headers["clear-site-data"] = CLEAR_SITE_DATA
+        return response
+
+    @router.get("/table/identity", response_model=TableIdentity)
+    def identity(principal: Principal = Depends(table_principal)) -> TableIdentity:
+        _spend_read(principal)
+        return TableIdentity(schema_version=WIRE_VERSION, kind="screen" if principal.screen is not None else "account")
+
+    @router.post("/table/sign-out", status_code=204)
+    def sign_out(principal: Principal = Depends(table_principal)) -> Response:
+        if principal.account is None:
+            raise _refusal(409, ErrorCode.CONFLICT, "The table access changed. Refresh the table.", retryable=False)
+        response = Response(status_code=204, headers={"Clear-Site-Data": CLEAR_SITE_DATA})
+        clear_session_cookie(response)
         return response
 
     @router.get("/table/snapshot", response_model=TableSnapshot)

@@ -3,7 +3,7 @@ import { readEventStream } from '../gm/readEventStream'
 
 export type AudioFrame = Extract<TableEvent, { event: 'audio' }>
 export type TablePicture = {
-  kind: 'live'; participant: boolean; slots: TableSlot[]
+  kind: 'live'; slots: TableSlot[]
   audioEnabled: boolean; audio: AudioFrame[]; clockOffsetMs: number; audioContext: string | null
 }
 type Snapshot = TablePicture | { kind: 'inactive' | 'retry' }
@@ -29,7 +29,7 @@ export function tablePicture(raw: unknown, clockOffsetMs = 0, audioContext: stri
   if (new Set(audio.map((frame) => frame.slot)).size !== audio.length || (!session.audio && audio.some((f) => f.playing))) {
     return { kind: 'retry' }
   }
-  return { kind: 'live', participant: session.role === 'participant', slots: picture.slots,
+  return { kind: 'live', slots: picture.slots,
     audioEnabled: session.audio, audio, clockOffsetMs,
     audioContext: audioContext !== null && /^[a-f0-9]{64}$/.test(audioContext) ? audioContext : null }
 }

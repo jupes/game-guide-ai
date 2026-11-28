@@ -1,0 +1,38 @@
+{
+  "schema": "TableIdentity",
+  "direction": "response",
+  "channel": "table",
+  "note": "A campaign-independent read gives the browser its effective exit action under SEC-49.",
+  "valid": [
+    {"name": "signed-in account", "value": {"schema_version": 1, "kind": "account"}},
+    {"name": "shared screen", "value": {"schema_version": 1, "kind": "screen"}},
+    {
+      "name": "a newer response adds a field",
+      "applies_to": ["client"],
+      "value": {"schema_version": 1, "kind": "account", "future_field": true}
+    }
+  ],
+  "invalid": [
+    {
+      "name": "projection role in the credential field",
+      "why": "A table-only projection can belong to either credential.",
+      "value": {"schema_version": 1, "kind": "guest"}
+    },
+    {
+      "name": "missing credential kind",
+      "why": "The client needs a known credential to select an exit action.",
+      "value": {"schema_version": 1}
+    },
+    {
+      "name": "unrecognized schema version",
+      "why": "The client accepts its supported version.",
+      "value": {"schema_version": 2, "kind": "screen"}
+    },
+    {
+      "name": "account identifier on the public table wire",
+      "why": "The response reveals only the effective credential kind.",
+      "applies_to": ["server"],
+      "value": {"schema_version": 1, "kind": "account", "account_id": 42}
+    }
+  ]
+}

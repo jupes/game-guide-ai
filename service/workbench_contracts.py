@@ -2480,6 +2480,13 @@ class TableLeaveRequest(_Contract):
     schema_version: SchemaVersion
 
 
+class TableIdentity(_Contract):
+    """The effective browser credential used to choose the table exit (SEC-49)."""
+
+    schema_version: SchemaVersion
+    kind: Literal["account", "screen"]
+
+
 class TableSnapshotQuery(_Contract):
     """``GET /table/snapshot?campaign_id=`` (1kg.7.2, ID-15): which campaign's
     table this principal reads. The campaign is in the URL's query because it is
@@ -4125,6 +4132,7 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "ScreenMintRequest": TypeAdapter(ScreenMintRequest),
     "ScreenMintAnswer": TypeAdapter(ScreenMintAnswer),
     "TableLeaveRequest": TypeAdapter(TableLeaveRequest),
+    "TableIdentity": TypeAdapter(TableIdentity),
     "TableSnapshotQuery": TypeAdapter(TableSnapshotQuery),
     "Capabilities": TypeAdapter(Capabilities),
     "RevealAudience": TypeAdapter(RevealAudience, config=_HIDE_INPUT),
