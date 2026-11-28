@@ -1520,6 +1520,20 @@ field-key shaped are refused by the body, before ownership, and carry no `keys`.
 | --- | --- | --- |
 | `GET /table/snapshot` | `TableSnapshotQuery` — `campaign_id`, in the URL because a campaign is not a secret (SEC-43) | `TableSnapshot` opens with `session` and the reveal `snapshot`, carries both `audio` slots when table audio is on, and closes with `ready`. `404 inactive` for **every** caller who is not entitled; `403 cross_site` for a cross-site fetch; `429 throttled_user` with `Retry-After` past the principal's read budget (120 a minute, keyed by account or grant id) or, for a refusal, the source's; `503 backend_unavailable`, retryable |
 
+A player opening `GET /table/stream` handles a typed `404 inactive` as
+the end of table access. The browser clears the handout, stops playback,
+closes its listener registration and shows the generic unavailable message.
+A proxy 404 or an unregistered stream route can still fall back to a fresh
+snapshot. The browser hides the previous picture while it checks a JSON 404
+carrying the table route's `no-store` and `same-origin` privacy headers.
+
+A 429 on either the stream or the snapshot clears the same player state.
+Both routes draw on the table-read budget. The browser waits for
+`Retry-After` before another read, including when the player presses
+**Reload table** or returns to a suspended tab. Recovery starts with a new
+authorized read. A 503 reporting a full table keeps its separate capacity
+message and retry behavior.
+
 The principal is the cookie (a live screen grant alone, else the account
 session), never a field of the query. `role` is `participant` exactly when the
 principal has its own slot (a GM-confirmed seat), else `guest`: the owner's

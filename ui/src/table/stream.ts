@@ -1,5 +1,6 @@
-import { CONTRACT_VERSION, TableEventSchema, TableSnapshotSchema, type TableEvent, type TableSlot } from '../gm/contracts'
+import { CONTRACT_VERSION, ErrorBodySchema, TableEventSchema, TableSnapshotSchema, type TableEvent, type TableSlot } from '../gm/contracts'
 import { readEventStream } from '../gm/readEventStream'
+import { tableReadRetryAt } from './readResponse'
 
 export type AudioFrame = Extract<TableEvent, { event: 'audio' }>
 export type TablePicture = {
@@ -7,7 +8,8 @@ export type TablePicture = {
   audioEnabled: boolean; audio: AudioFrame[]; clockOffsetMs: number; audioContext: string | null
 }
 type Snapshot = TablePicture | { kind: 'inactive' | 'retry' }
-type StreamEnd = { kind: 'inactive' | 'signed-out' | 'reconnect' | 'retry' } | { kind: 'full'; delay: number }
+type StreamEnd = { kind: 'inactive' | 'signed-out' | 'reconnect' | 'retry' }
+  | { kind: 'full'; delay: number } | { kind: 'limited'; retryAt: number }
 
 const SNAPSHOT_FRAME_LIMIT = 50
 
@@ -38,6 +40,7 @@ type StreamUpdates = {
   opened(): void
   bytes(): void
   picture(picture: TablePicture): void
+  checkingAccess?(): void
   hidden?(): boolean
 }
 
@@ -57,12 +60,26 @@ export async function streamTable(
     if (signal.aborted) return { kind: 'retry' }
     if (response.status === 401) return { kind: 'signed-out' }
     if (response.status === 403) return { kind: 'inactive' }
+    if (response.status === 429) return { kind: 'limited', retryAt: tableReadRetryAt(response) }
+    const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase()
+    if (response.status === 404 && contentType === 'application/json') {
+      // The registered TableRoute marks every refusal with its privacy headers.
+      // FastAPI's unregistered-route 404 omits them. A normal probe on a
+      // snapshot-only deployment should keep the authorized ambience playing.
+      const noStore = response.headers.get('Cache-Control')?.toLowerCase().split(',').some(value => value.trim() === 'no-store')
+      const sameOrigin = response.headers.get('Cross-Origin-Resource-Policy')?.toLowerCase() === 'same-origin'
+      if (noStore && sameOrigin) updates.checkingAccess?.()
+      const refusal = ErrorBodySchema.safeParse(await response.json())
+      if (!signal.aborted && refusal.success && refusal.data.detail.code === 'inactive') {
+        return { kind: 'inactive' }
+      }
+      return { kind: 'retry' }
+    }
     const retryAfter = response.headers.get('Retry-After')
     if (response.status === 503 && retryAfter !== null) {
       const seconds = Number(retryAfter)
       return { kind: 'full', delay: Number.isFinite(seconds) ? Math.max(1000, Math.min(seconds * 1000, 300_000)) : 5000 }
     }
-    const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase()
     if (!response.ok || response.body === null || contentType !== 'text/event-stream') return { kind: 'retry' }
     const clockOffsetMs = responseClock(response, sentAt)
     updates.opened()
