@@ -175,7 +175,8 @@ test.describe('native phone gestures', () => {
     const reveals = await prepareGM(page, accounts[1])
     await page.goto(workspace)
     const expected = new URL(`/table?campaign_id=${CAMPAIGN_ID}`, page.url()).href
-    for (const viewport of [{ width: 844, height: 390 }, { width: 320, height: 568 }]) {
+    // 667px uses the narrow shell in landscape. 844px uses the medium shell.
+    for (const viewport of [{ width: 844, height: 390 }, { width: 667, height: 375 }, { width: 320, height: 568 }]) {
       reveals.confirm({ document_id: DOCUMENT_ID, version: 1, mask: ['name'] })
       await page.setViewportSize(viewport)
       await page.reload()

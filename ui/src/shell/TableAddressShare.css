@@ -5,13 +5,7 @@
   color: var(--md-sys-color-on-surface);
 }
 
-@media (width >= 600px) {
-  .session-control__group > .table-address-share:has(.table-address-share__contents) { flex-basis: 100%; }
-}
-
-@media (width < 600px) {
-  .workspace-shell__session .table-address-share { display: flex; flex-direction: column; }
-}
+.session-control__group > .table-address-share:has(.table-address-share__contents) { flex-basis: 100%; }
 
 /* The workspace chrome sits above a separately scrolling document. Give an
    open session its own touch-scroll region, leaving the header Stop in view. */
@@ -33,16 +27,9 @@
   inline-size: min(256px, 100%, calc(var(--table-share-height) - var(--aether-touch-min) - 2rem));
 }
 
-/* A live Stop occupies another header row on a short portrait phone. */
-@media (width < 600px) and (height <= 700px) {
-  .workspace-shell__chrome:has(.reveal-indicator) .workspace-shell__session:has(.table-address-share__contents) {
-    --table-share-height: 42dvh;
-  }
-}
-
 /* The short landscape layout already gives the session its own column. Keep
    End and Share on one line and let the other chrome use the adjacent column. */
-@media (height <= 460px) and (width >= 600px) {
+@media (height <= 460px) and (orientation: landscape) {
   .workspace-shell__session .session-control__group:has(.table-address-share) {
     display: grid;
     grid-template-columns: max-content minmax(0, 1fr);
@@ -55,9 +42,28 @@
     grid-column: 1 / -1;
   }
 
-  .workspace-shell:is([data-layout='medium'], [data-layout='wide']) .workspace-shell__chrome:has(.workspace-shell__session .table-address-share__contents) {
+  .workspace-shell[data-layout='narrow'] .workspace-shell__chrome:has(.workspace-shell__session .table-address-share) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 44%);
+    > .workspace-shell__session { grid-area: 1 / 2 / span 3; align-self: start; }
+    > .app-header, .workbench-switch { grid-column: 1; }
+  }
+
+  .workspace-shell[data-layout] .workspace-shell__chrome:has(.workspace-shell__session .table-address-share__contents) {
     > .workspace-shell__session { --table-share-height: 68dvh; grid-row: 1 / span 3; align-self: start; }
     > .app-header, .workbench-switch { grid-column: 1; }
+  }
+}
+
+@media (width < 600px) {
+  .workspace-shell__session .table-address-share { display: flex; flex-direction: column; }
+  .session-control__group > .table-address-share:has(.table-address-share__contents) { flex-basis: auto; }
+
+  /* A live Stop occupies another header row on a short portrait phone. */
+  @media (height <= 700px) and (orientation: portrait) {
+    .workspace-shell__chrome:has(.reveal-indicator) .workspace-shell__session:has(.table-address-share__contents) {
+      --table-share-height: 42dvh;
+    }
   }
 }
 
