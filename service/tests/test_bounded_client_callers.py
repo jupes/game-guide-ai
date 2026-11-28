@@ -20,7 +20,9 @@ import pytest
 SERVICE = Path(__file__).resolve().parents[1]
 
 #: `(module, enclosing function)` of every allowed call of `bounded_client`.
-ALLOWED_CALLERS = {("service/tool_invocations.py", "ExecutionContext.client")}
+ALLOWED_CALLERS = {
+    ("service/tool_invocations.py", "ExecutionContext.client"), ("service/document_edits.py", "execute_edit"),
+}
 #: ... and of every allowed construction of `_BoundedClient`.
 ALLOWED_CONSTRUCTIONS = {("service/tool_invocations.py", "bounded_client")}
 

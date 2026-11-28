@@ -136,7 +136,7 @@ export const EDIT_INSTRUCTION_KINDS = ['text', 'action'] as const
 /** The codes this client knows. A newer server may send others; see `isKnownErrorCode`. */
 export const KNOWN_ERROR_CODES = [
   'validation_failed', 'unsupported_schema_version', 'brief_required', 'brief_too_long', 'unknown_tool',
-  'tool_disabled', 'campaign_required', 'nothing_to_recap', 'not_found', 'forbidden', 'conflict',
+  'tool_disabled', 'edit_disabled', 'campaign_required', 'nothing_to_recap', 'not_found', 'forbidden', 'conflict',
   'cap_reached', 'throttled_user', 'throttled_daily', 'provider_failed', 'provider_timeout',
   'attempt_expired', 'backend_unavailable', 'already_linked', 'alias_taken', 'seat_not_open',
   'seat_not_accepted', 'seat_cap_reached', 'campaign_archived', 'reauth_failed', 'document_unsupported',

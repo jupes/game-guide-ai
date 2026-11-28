@@ -129,11 +129,12 @@ a generic failure.
 | `brief_required`, `brief_too_long` | 422 | no | RAIL-5, RAIL-6 |
 | `unknown_tool` | 422 | no | the tool id is not in the registry |
 | `tool_disabled` | 409 | no | the tool's capability is off (RAIL-10) |
+| `edit_disabled` | 409 | no | AI editing is disabled or the account has no allowed model |
 | `campaign_required` | 409 | no | RAIL-13 |
 | `nothing_to_recap` | 409 | no | the conversation holds nothing to recap |
 | `not_found`, `forbidden` | 404, 403 | no | clients show one generic unavailable state for both (CANVAS-31) |
 | `conflict` | 409 | per case | a field, a reveal epoch or an audio epoch moved on. Not retryable for a field patch, which needs *Keep mine* or *Use latest*; retryable for an AI edit, whose *Try again* runs on a fresh base (CANVAS-25) |
-| `cap_reached` | 409 | yes | X-5: two tool invocations or AI edits are already in flight |
+| `cap_reached` | 409 | yes | X-5: two tool invocations or AI edits are already in flight, or the document already has an AI edit in flight |
 | `throttled_user` | 429 | yes | the per-user window; carries `retry_after_s` |
 | `throttled_daily` | 429 | no | the pilot's daily cap |
 | `provider_failed`, `provider_timeout` | 502, 504 | per case | the model provider. On the tool-invocation routes both are carried on the invocation, answered 200 (`1kg.4.1`). `provider_timeout` is retryable; `provider_failed` is final only when the request itself cannot succeed — `/chat`'s 422 categories, a content refusal or an invalid request — and retryable otherwise |
@@ -899,6 +900,22 @@ nothing and writes no row.
 
 ### AI edits
 
+| Route | Successful response |
+| --- | --- |
+| `POST /campaigns/{campaign_id}/documents/{document_id}/edits` | `200 EditInvocation` for a new attempt, a replay, or a retry |
+| `GET /campaigns/{campaign_id}/documents/{document_id}/edits/{invocation_id}` | `200 EditInvocation` |
+| `POST /campaigns/{campaign_id}/documents/{document_id}/edits/{invocation_id}/cancel` | `200 EditInvocation` |
+
+The create body is limited to 294,912 bytes. The route checks origin, account,
+role, body and path agreement, and ownership before it checks the edit switch
+or document state. A refusal before admission creates no attempt. Once admitted,
+provider failures, conflicts, cancellation, and expiry appear on the invocation.
+Retries use the stored scope and instruction with the new base revision from the
+request. A working or final invocation replays without a new provider call.
+If the proposed revision would exceed the owner's document storage limit,
+the attempt fails with `account_limit_reached` and the saved document keeps
+its previous revision.
+
 An `EditRequest` has an invocation id, the same lifecycle as a tool and the same
 cap (X-5). Its **scope is a server-side guarantee, not a prompt suggestion**
 (`1kg.5.5`):
@@ -909,7 +926,11 @@ cap (X-5). Its **scope is a server-side guarantee, not a prompt suggestion**
 
 A selection names one field, a span in **code points** — not UTF-16 units, so a
 client converts before sending — and the exact text the GM saw. The server refuses
-a span that no longer matches before any provider work. An instruction is the
+a span that no longer matches before any provider work. The offsets count every
+code point returned by the document endpoint, including carriage returns. The
+v1 selection scope covers prose fields. Selection inside structured entries,
+such as a single monster action, is pending owner decision O-C. The scope
+and context limits also apply to whole-document and field edits. An instruction is the
 GM's words (1 to 2,000 characters, sharing the brief's bound, RAIL-6) or one of
 the `SelectionBar`'s complete requests — `rewrite`, `shorter`, `darker` — which
 are valid only on a selection (CANVAS-23).
@@ -920,6 +941,12 @@ An `EditInvocation` finishes as `changed` (a version number for the lane's
 invocation, not an outcome.** The result never carries the document: documents
 travel through the document endpoints only, so neither the thread nor its export
 can hold a body (EXPORT-12).
+
+An in-scope revision change refuses admission or fails the active invocation.
+Changes to other fields can be preserved in the final merge. An archived document
+can still receive content edits from its owner. Cancel stops additional provider
+attempts. A valid result that was already produced may commit with the cancel
+flag set.
 
 ## The conversation family
 

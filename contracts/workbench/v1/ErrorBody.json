@@ -130,6 +130,16 @@
       }
     },
     {
+      "name": "the GM requests an assistant edit while editing is disabled",
+      "value": {
+        "detail": {
+          "code": "edit_disabled",
+          "message": "Editing with the assistant isn't available yet.",
+          "retryable": false
+        }
+      }
+    },
+    {
       "name": "an alias another seat of the campaign answers to (1kg.2.2)",
       "value": {
         "detail": {

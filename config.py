@@ -461,6 +461,8 @@ WORKBENCH_MEDIA_ASSETS_PER_ACCOUNT_MAX: int = _limit("WORKBENCH_MEDIA_ASSETS_PER
 # and the SEC-39 terms record first. An id the registry does not know fails
 # startup (service/tool_invocations.py parses both variables).
 WORKBENCH_ENABLED_TOOLS: str = _str("WORKBENCH_ENABLED_TOOLS", "")
+# AI document edits are enabled independently of Workbench tools.
+WORKBENCH_AI_EDITS_ENABLED: bool = _bool("WORKBENCH_AI_EDITS_ENABLED", False)
 # The registry capabilities switched on ("image_generation"). Empty by default;
 # portrait and map are paid under D-3, so image_generation stays unset in
 # production until yje.4.1's entitlement gate covers them.

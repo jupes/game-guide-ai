@@ -1665,6 +1665,7 @@ describe('readErrorBody — one reader for every error shape', () => {
     expect(read.kind).toBe('workbench')
     if (read.kind === 'workbench') expect(isKnownErrorCode(read.info.code)).toBe(false)
     expect(isKnownErrorCode('cap_reached')).toBe(true)
+    expect(isKnownErrorCode('edit_disabled')).toBe(true)
   })
 
   it("reads a legacy route's string detail", () => {

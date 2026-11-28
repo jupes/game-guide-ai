@@ -1612,6 +1612,29 @@ service manages the attempt.
   between admission and `run`, is `backend_unavailable`. None of them leaves a
   document.
 
+### AI document edits (1kg.5.5)
+
+The edit routes are disabled by default through `WORKBENCH_AI_EDITS_ENABLED`.
+Production enablement depends on paid-edit entitlements (D-3) and the
+provider terms record (SEC-39). Local route tests use a synthetic provider.
+The admission transaction checks the GM's campaign, conversation, document,
+scope, and base revision before spending against the shared assistant limits.
+For a new attempt it reads the pilot day's usage on the same connection,
+seals the GM's open version, and records the attempt and its timeline entry.
+The provider receives the validated snapshot after that transaction closes.
+A replay returns the stored invocation without spending a slot or consulting
+the daily ledger.
+
+Completion checks the attempt and its deadline, holds the current document
+and enforces the owner's storage quota for the proposed version. Changes
+to the proposed fields since the admitted base produce a conflict. Changes to
+other fields are preserved. Selection edits recheck the original span and
+require the proposed text to preserve the surrounding prefix and suffix. The
+new assistant revision and its lane result commit together. Successful no-op
+edits keep the current revision. Final outcomes clear the stored selection
+text. Retryable attempts retain it to validate the original selection.
+Clearing those retained copies on document deletion is tracked in `1kg.5.9`.
+
 ### Card tools (1kg.4.3)
 
 Five tools land as a card instead of a document: `monster` (the `/chat`

@@ -1044,7 +1044,28 @@ def test_the_openapi_of_the_document_routes_names_no_owner() -> None:
         path: item for path, item in app.openapi()["paths"].items()
         if "/documents" in path or "/library" in path or path.endswith("/promote")
     }
-    assert len(paths) == 14
+    campaign = "/campaigns/{campaign_id}"
+    document = campaign + "/documents/{document_id}"
+    edits = document + "/edits"
+    assert {path: set(item) for path, item in paths.items()} == {
+        campaign + "/library": {"post"},
+        campaign + "/documents": {"post"},
+        campaign + "/conversations/{conversation_id}/timeline/{entry_id}/promote": {"post"},
+        document: {"get", "patch"},
+        document + "/versions": {"get"},
+        document + "/versions/{number}": {"get"},
+        document + "/restore": {"post"},
+        document + "/seal": {"post"},
+        document + "/archive": {"post"},
+        document + "/unarchive": {"post"},
+        document + "/delete": {"post"},
+        document + "/link/{participant_id}": {"post"},
+        document + "/unlink": {"post"},
+        document + "/link": {"get"},
+        edits: {"post"},
+        edits + "/{invocation_id}": {"get"},
+        edits + "/{invocation_id}/cancel": {"post"},
+    }
     text = json.dumps(paths)
     assert "owner_id" not in text and "password" not in text
 

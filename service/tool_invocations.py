@@ -707,7 +707,8 @@ def _target_of(row: InvocationRow) -> InvocationTarget:
 
 
 def admit_attempt(
-    unit: UnitOfWork, load: WorkbenchLoad, owner_id: int, *, now: datetime, chat_turns_today: int,
+    unit: UnitOfWork, load: WorkbenchLoad, owner_id: int, *, now: datetime,
+    chat_turns_today: int | Callable[[UnitOfWork, datetime], int],
 ) -> None:
     """The admission seam (§5.8): the X-5 cap, the pilot day, the per-user
     window, in that order — for a tool and an AI edit alike (`1kg.5.5`, I-3),
@@ -722,7 +723,8 @@ def admit_attempt(
         raise Refused(409, ErrorCode.CAP_REACHED, message, retryable=True,
                       in_flight=[invocation_id for invocation_id, _ in running][:IN_FLIGHT_LISTED])
     midnight = _utc(now).replace(hour=0, minute=0, second=0, microsecond=0)
-    if chat_turns_today + load.attempts_since(unit, midnight) >= config.CHAT_DAILY_CAP:
+    turns = chat_turns_today(unit, now) if callable(chat_turns_today) else chat_turns_today
+    if turns + load.attempts_since(unit, midnight) >= config.CHAT_DAILY_CAP:
         raise Refused(429, ErrorCode.THROTTLED_DAILY, THROTTLED_DAILY_MESSAGE)
     wait: int | None = None
     try:
