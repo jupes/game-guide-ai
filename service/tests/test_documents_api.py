@@ -39,13 +39,14 @@ from pydantic import ValidationError
 
 import config
 from service import app as appmod
-from service import document_lifecycle_api, documents_api
+from service import document_edits, document_lifecycle_api, documents_api
 from service.app import app, get_auth_store, get_timeline_database, require_session
 from service.audit_log import AuditEvent, InMemoryAuditLog
 from service.auth_store import InMemoryAuthStore, User
 from service.campaign_store import InMemoryCampaignStore, MissingParent, shared_rows
 from service.conversation_store import InMemoryConversationStore
 from service.db import InMemoryDatabase, InMemoryTransaction
+from service.document_edit_store import InMemoryDocumentEditStore
 from service.document_store import (
     SEAL_IDLE_S,
     DocumentRecord,
@@ -76,10 +77,12 @@ from service.workbench_contracts import (
     DocumentHistoryPage,
     DocumentTypeId,
     DocumentVersionSnapshot,
+    EditRequest,
     ErrorBody,
     ErrorCode,
     LibraryPage,
 )
+from service.workbench_load import InMemoryWorkbenchLoad
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GM_A, GM_B, PLAYER = 1, 2, 3
@@ -1295,7 +1298,7 @@ class _Life:
         inner = self.stores
         self.stores = document_lifecycle_api.LifecycleStores(*(
             cast(Any, _Traced(getattr(inner, kind), kind, self.calls, overrides.get(kind)))
-            for kind in ("campaigns", "documents", "sessions", "audit")
+            for kind in ("campaigns", "documents", "sessions", "audit", "edits")
         ))
 
 
@@ -1319,7 +1322,7 @@ def life(world: _World) -> Iterator[_Life]:
         auth._hashes[user_id] = _hash(user_id)
     made = _Life(world, document_lifecycle_api.LifecycleStores(
         world.stores.campaigns, world.stores.documents, InMemoryTableSessionStore(world.db, slot_clear=no_slots),
-        InMemoryAuditLog(),
+        InMemoryAuditLog(), InMemoryDocumentEditStore(world.db),
     ), auth)
     app.dependency_overrides[document_lifecycle_api.get_lifecycle_stores] = lambda: made.stores
     app.dependency_overrides[get_auth_store] = lambda: made.auth
@@ -1517,6 +1520,90 @@ def test_delete_asks_for_the_password_first_and_takes_only_an_archived_document(
     life.archive(theirs, foreign)
     assert _delete(client, theirs, foreign).json() == NOT_FOUND, "the caller's right password, another GM's document"
     assert world.record(theirs, foreign).is_archived
+
+
+def test_only_a_committed_owner_delete_erases_an_edits_selection(
+    client: TestClient, world: _World, life: _Life,
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign, data={"name": "Courier", "wants": CANARY})
+    conversations = InMemoryConversationStore(world.db)
+    with world.db.transaction() as unit:
+        thread = conversations.create(unit, owner_id=GM_A, campaign_id=campaign, title=None, started_mode=None).id
+    messages = InMemoryMessageStore()
+    messages.claim_conversation(thread, GM_A)
+    stores = document_edits.EditStores(
+        life.stores.edits, life.stores.campaigns, conversations, life.stores.documents,
+        InMemoryTimelineStore(world.db, messages=messages), InMemoryWorkbenchLoad(world.db),
+    )
+    request = EditRequest.model_validate({
+        "schema_version": 1, "invocation_id": "inv_delete_selection_01", "campaign_id": campaign,
+        "document_id": document, "conversation_id": thread, "base_write_revision": 1,
+        "scope": {"kind": "selection", "field": "wants", "start": 0, "end": len(CANARY), "text": CANARY},
+        "instruction": {"kind": "action", "action": "shorter"},
+    })
+    admitted = document_edits.submit(world.db, stores, SessionData(user_id=GM_A, role="dm"), request,
+                                     enabled=True, clock=lambda: T0, chat_turns_today=0)
+    assert isinstance(admitted, document_edits.EditAdmission)
+
+    def selection() -> str | None:
+        with world.db.transaction() as unit:
+            row = life.stores.edits.get_for_update(unit, GM_A, campaign, request.invocation_id)
+        assert row is not None
+        return row.selection_text
+
+    assert selection() == CANARY
+    assert _delete(client, campaign, document).status_code == 409 and selection() == CANARY
+    assert _archive(client, campaign, document).status_code == 204 and selection() == CANARY
+    assert _unarchive(client, campaign, document).status_code == 204 and selection() == CANARY
+    assert _archive(client, campaign, document).status_code == 204
+    assert _delete(client, campaign, document, password="incorrect").status_code == 403 and selection() == CANARY
+    _account(GM_B)
+    assert _delete(client, campaign, document, password=PASSWORD[GM_B]).status_code == 404 and selection() == CANARY
+    _account(GM_A)
+    response = _delete(client, campaign, document)
+    assert (response.status_code, response.content) == (204, b"")
+    assert selection() is None
+
+
+@pytest.mark.parametrize("phantoms, expected", [(1, 204), (3, 503)])
+def test_a_late_edit_selection_retries_only_the_locked_delete(
+    client: TestClient, world: _World, life: _Life, phantoms: int, expected: int,
+) -> None:
+    campaign = world.campaign()
+    document = world.document(campaign)
+    life.archive(campaign, document)
+    session = life.session(campaign)
+    checks = 0
+
+    def appeared(real: Callable[..., bool], *args: Any) -> bool:
+        nonlocal checks
+        assert not real(*args)
+        checks += 1
+        return checks <= phantoms
+
+    life.spy(edits={"has_retained_selection": appeared})
+    response = _delete(client, campaign, document)
+    assert response.status_code == expected
+    names_by_unit: dict[int, list[str]] = {}
+    for unit, name, _, _ in life.calls:
+        names_by_unit.setdefault(unit, []).append(name)
+    first_step, *locked_attempts = names_by_unit.values()
+    assert first_step.count("sessions.narrow") == 1
+    assert len(locked_attempts) == checks == (2 if expected == 204 else 3)
+    reads = ["campaigns.get", "edits.clear_selections_for_document", "documents.hold", "edits.has_retained_selection"]
+    for attempt in locked_attempts:
+        assert attempt[:4] == reads
+    if expected == 204:
+        assert life.epoch(session.id) == session.reveal_epoch + 2
+        assert world.revision(campaign) == 1
+        assert _trail(life.ledger(campaign)) == [("document.deleted", document, {"document_id": document}, 1)]
+    else:
+        detail = response.json()["detail"]
+        assert (detail["message"], detail["retryable"]) == (document_lifecycle_api.NOT_APPLIED_MESSAGE, True)
+        assert life.archived(campaign, document)
+        assert life.epoch(session.id) == session.reveal_epoch + 1
+        assert world.revision(campaign) == 0 and life.ledger(campaign) == []
 
 
 def test_step_two_decides_again_under_the_lock(client: TestClient, world: _World, life: _Life) -> None:

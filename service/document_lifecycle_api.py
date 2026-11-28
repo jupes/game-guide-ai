@@ -149,6 +149,7 @@ from .audit_log import ActorKind, AuditAction, AuditLog, Decision, ObjectKind, P
 from .campaign_store import CampaignStore, MissingParent, PostgresCampaignStore
 from .conversations_api import read_body
 from .db import CampaignAuthzMissing, TransactionalDatabase, UnitOfWork
+from .document_edit_store import DocumentEditStore, PostgresDocumentEditStore
 from .document_store import DocumentStore, NotLinkable, PostgresDocumentStore, SheetAlreadyLinked
 from .documents_api import UNAVAILABLE_MESSAGE, get_clock
 from .reveal_scope import DocumentCopies, EndReason
@@ -165,6 +166,7 @@ log = logging.getLogger(__name__)
 NOT_APPLIED_MESSAGE = "That change isn't applied yet. Try again."
 NOT_ARCHIVED_MESSAGE = "Archive this document before deleting it."
 LINK_TAKEN_MESSAGE = "That sheet or seat is already linked. Unlink it first."
+_DELETE_ATTEMPTS = 3
 
 #: The two SQLSTATEs a locked write answers as "busy, try again" (RQ-8):
 #: `lock_not_available` and `deadlock_detected`.
@@ -187,6 +189,7 @@ class LifecycleStores:
     documents: DocumentStore
     sessions: TableSessionStore
     audit: AuditLog
+    edits: DocumentEditStore
 
 
 def get_lifecycle_stores() -> LifecycleStores:
@@ -199,6 +202,7 @@ def get_lifecycle_stores() -> LifecycleStores:
         PostgresDocumentStore(),
         PostgresTableSessionStore(slot_clear=slot_clear_for(PostgresRevealStore())),
         PostgresAuditLog(),
+        PostgresDocumentEditStore(),
     )
 
 
@@ -467,6 +471,10 @@ def delete_step_one(
         _narrow_live(stores, unit, campaign_id, clears=DocumentCopies(document_id, EndReason.DOCUMENT_DELETED), now=now)
 
 
+class _SelectionAppeared(Exception):
+    """A selection was admitted after cleanup but before deletion held the document."""
+
+
 def delete_step_two(
     db: TransactionalDatabase,
     stores: LifecycleStores,
@@ -483,19 +491,32 @@ def delete_step_two(
     a slot still showing one would refuse the delete (the slot -> disclosure
     key has no delete action) — the revision advanced and `document.deleted`
     recorded, the row that outlives the document."""
-    with db.transaction() as unit:
-        unit.lock_campaign(campaign_id, shared=False)
-        _owned(stores, unit, campaign_id, owner_id)
-        held = stores.documents.hold(unit, campaign_id, document_id)
-        if held is None:
-            not_found()
-        if not held.is_archived:
-            raise _not_archived()
-        _narrow_live(stores, unit, campaign_id, clears=DocumentCopies(document_id, EndReason.DOCUMENT_DELETED), now=now)
-        stores.documents.delete(unit, campaign_id, document_id)
-        revision = unit.advance_authz_revision(campaign_id)
-        _audit(stores, unit, campaign_id=campaign_id, document_id=document_id, owner_id=owner_id,
-               action=AuditAction.DOCUMENT_DELETED, revision=revision, now=now)
+    for _ in range(_DELETE_ATTEMPTS):
+        try:
+            with db.transaction() as unit:
+                unit.lock_campaign(campaign_id, shared=False)
+                _owned(stores, unit, campaign_id, owner_id)
+                # Completion locks the edit row before the document. Preserve that
+                # order even for edits admitted by an older service instance.
+                stores.edits.clear_selections_for_document(unit, owner_id, campaign_id, document_id)
+                held = stores.documents.hold(unit, campaign_id, document_id)
+                if held is None:
+                    not_found()
+                if not held.is_archived:
+                    raise _not_archived()
+                if stores.edits.has_retained_selection(unit, owner_id, campaign_id, document_id):
+                    raise _SelectionAppeared
+                _narrow_live(stores, unit, campaign_id,
+                             clears=DocumentCopies(document_id, EndReason.DOCUMENT_DELETED), now=now)
+                stores.documents.delete(unit, campaign_id, document_id)
+                revision = unit.advance_authz_revision(campaign_id)
+                _audit(stores, unit, campaign_id=campaign_id, document_id=document_id, owner_id=owner_id,
+                       action=AuditAction.DOCUMENT_DELETED, revision=revision, now=now)
+            return
+        except _SelectionAppeared:
+            # The document is unlocked again, so cleanup may safely lock edit rows.
+            continue
+    raise _unavailable(NOT_APPLIED_MESSAGE)
 
 
 def archive_document(

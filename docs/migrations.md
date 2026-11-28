@@ -157,6 +157,8 @@ Rules the runner or CI enforce:
 | `0028_campaign_entities.sql` | `campaign` | Adds the explicit alias registry, a campaign-scoped lookup index, and GM persona links. Aliases begin unclassified, and both tables cascade when their source document is deleted. This expansion needs no backfill. |
 | `0029_live_audio.sql` | `campaign` | Adds two independently sequenced cue slots per live session and a receipt for each accepted command. Ending a session, rotating its link, switching audio off or archiving its campaign clears playback. Older services can archive an inactive cue. A playing cue must be stopped before archive, and restoring a cue or campaign cannot restart it. Both tables start empty and cascade on session deletion. |
 | `0030_gm_stream_connections.sql` | `campaign` | Reserves four GM stream permits across all service instances. Each one is tied to its campaign and owner and can be reclaimed when its lease expires. The sixteen participant and screen permits remain available to the table. |
+| `0031_table_audio_presence.sql` | `campaign` | Adds up to 16 page registrations for reporting table sound status and a generation check that prevents old registrations from surviving revocation. |
+| `0032_retained_edit_selections.sql` | `campaign` | Indexes owner, campaign and document identifiers for edit rows that still retain a selection. Permanent deletion uses it to clear those copies efficiently. |
 
 ## 3. Roll forward, never back
 

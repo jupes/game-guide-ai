@@ -53,6 +53,7 @@ from service.campaigns_api import (
     remove_seat,
 )
 from service.db import CampaignLockOrder, CampaignLockSettings, Database, InMemoryDatabase, PoolSettings
+from service.document_edit_store import InMemoryDocumentEditStore
 from service.document_store import InMemoryDocumentStore, PostgresDocumentStore
 from service.eligibility import EligibilityMutations, EligibilityStores, narrow_step_one, remove_member_step_two
 from service.eligibility_store import InMemoryEligibilityStore, PostgresEligibilityStore
@@ -2174,7 +2175,9 @@ def _document_lifecycle_stores(s: Served) -> document_lifecycle_api.LifecycleSto
     w = s.w
     if w.kind == "postgres":
         return document_lifecycle_api.get_lifecycle_stores()
-    return document_lifecycle_api.LifecycleStores(w.campaigns, w.documents, w.sessions, s.audit)
+    return document_lifecycle_api.LifecycleStores(
+        w.campaigns, w.documents, w.sessions, s.audit, InMemoryDocumentEditStore(w.db),
+    )
 
 
 @pytest.mark.parametrize("narrowing", DOCUMENT_NARROWINGS)

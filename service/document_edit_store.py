@@ -25,15 +25,15 @@ It writes its own two tables and nothing else.
 
 **Private text** (SEC-20, ED-26). The instruction, the selected text, the title
 and the result are hidden from every `repr()`, no refusal names them, and no
-digest of any of them is computed or stored. The selected text is forgotten
-(`NULL`) by the statement that settles an edit in a final state (I-18, C-16).
+digest of any of them is computed or stored. Final settlement (I-18, C-16) or
+permanent deletion of the document clears any retained selected text.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from typing import Any, Final, Protocol
@@ -300,6 +300,18 @@ class DocumentEditStore(Protocol):
         conversation, oldest first (I-5)."""
         ...  # pragma: no cover - structural type
 
+    def clear_selections_for_document(
+        self, unit: UnitOfWork, owner_id: int, campaign_id: str, document_id: str,
+    ) -> None:
+        """Clear the selected text of every edit for this GM's document during hard deletion."""
+        ...  # pragma: no cover - structural type
+
+    def has_retained_selection(
+        self, unit: UnitOfWork, owner_id: int, campaign_id: str, document_id: str,
+    ) -> bool:
+        """Check for retained selected text without retrieving it or locking edit rows."""
+        ...  # pragma: no cover - structural type
+
     def create(
         self, unit: UnitOfWork, *, owner_id: int, campaign_id: str, invocation_id: str, new: NewEdit,
         operation_id: str, attempt_deadline: datetime, now: datetime, schema_version: int,
@@ -381,6 +393,9 @@ _FOR_DOCUMENT = (
     "AND status = 'working' AND attempt_deadline > %s "
     'ORDER BY created_at, invocation_id COLLATE "C"'
 )
+_RETAINED_SELECTION = "owner_id = %s AND campaign_id = %s AND document_id = %s AND selection_text IS NOT NULL"
+_CLEAR_SELECTIONS = f"UPDATE campaign.document_edits SET selection_text = NULL WHERE {_RETAINED_SELECTION}"
+_HAS_SELECTION = f"SELECT 1 FROM campaign.document_edits WHERE {_RETAINED_SELECTION} LIMIT 1"
 #: The fence's predicates are in the statement that takes the lock, so a row
 #: that no longer matches after a concurrent writer commits is not held.
 _FENCE = (
@@ -487,6 +502,16 @@ class PostgresDocumentEditStore:
             _FOR_DOCUMENT, (owner_id, campaign_id, document_id, aware(now, "a clock")),
         ).fetchall()
         return [str(r[0]) for r in rows]
+
+    def clear_selections_for_document(
+        self, unit: UnitOfWork, owner_id: int, campaign_id: str, document_id: str,
+    ) -> None:
+        _held(unit).conn.execute(_CLEAR_SELECTIONS, (owner_id, campaign_id, document_id))
+
+    def has_retained_selection(
+        self, unit: UnitOfWork, owner_id: int, campaign_id: str, document_id: str,
+    ) -> bool:
+        return pg(unit).conn.execute(_HAS_SELECTION, (owner_id, campaign_id, document_id)).fetchone() is not None
 
     def create(
         self, unit: UnitOfWork, *, owner_id: int, campaign_id: str, invocation_id: str, new: NewEdit,
@@ -676,6 +701,29 @@ class InMemoryDocumentEditStore:
         ]
         rows.sort(key=lambda r: (r.created_at, r.invocation_id))
         return [r.invocation_id for r in rows]
+
+    def _retained_selections(
+        self, twin: InMemoryTransaction, owner_id: int, campaign_id: str, document_id: str,
+    ) -> Iterator[tuple[str, _TwinEdit]]:
+        for key, edit in self._rows.visible(twin).items():
+            row = edit.row
+            if (row.owner_id, row.campaign_id, row.document_id) == (owner_id, campaign_id, document_id):
+                if row.selection_text is not None:
+                    yield key, edit
+
+    def clear_selections_for_document(
+        self, unit: UnitOfWork, owner_id: int, campaign_id: str, document_id: str,
+    ) -> None:
+        twin = fake(unit)
+        bound_transaction(twin)
+        twin.note_row_lock()
+        for key, edit in self._retained_selections(twin, owner_id, campaign_id, document_id):
+            self._rows.replace(twin, key, replace(edit, row=replace(edit.row, selection_text=None)))
+
+    def has_retained_selection(
+        self, unit: UnitOfWork, owner_id: int, campaign_id: str, document_id: str,
+    ) -> bool:
+        return next(self._retained_selections(fake(unit), owner_id, campaign_id, document_id), None) is not None
 
     def create(
         self, unit: UnitOfWork, *, owner_id: int, campaign_id: str, invocation_id: str, new: NewEdit,

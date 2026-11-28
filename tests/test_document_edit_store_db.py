@@ -390,6 +390,49 @@ def test_the_key_is_the_gm_the_campaign_and_the_id(world: World) -> None:
         assert world.store.get_for_update(unit, mine.owner, theirs.campaign, INV) is None
 
 
+def test_document_cleanup_forgets_only_the_scoped_selections(world: World) -> None:
+    target = a_table(world)
+    sibling = a_table(world, campaign=target.campaign)
+    elsewhere = a_table(world)
+    foreign = a_table(world, world.other)
+    working = admit(world, target, instruction_kind="text", instruction_text="Shorten this.", instruction_action=None)
+    other_conversation = replace(sibling, document=target.document)
+    admit(world, other_conversation, OTHER_INV)
+    failed = settle(world, target, invocation_id=OTHER_INV, status="failed", error=RETRYABLE)
+    original_attempts = [attempts(world, target, row.invocation_id) for row in (working, failed)]
+    unaffected = [(table, admit(world, table, "untouched_selection")) for table in (sibling, elsewhere, foreign)]
+
+    with world.db.transaction() as unit:
+        for wrong_scope in (
+            (foreign.owner, target.campaign, target.document),
+            (target.owner, elsewhere.campaign, target.document),
+            (target.owner, target.campaign, MISSING_DOCUMENT),
+        ):
+            assert not world.store.has_retained_selection(unit, *wrong_scope)
+            world.store.clear_selections_for_document(unit, *wrong_scope)
+        scope = (target.owner, target.campaign, target.document)
+        assert world.store.has_retained_selection(unit, *scope)
+        world.store.clear_selections_for_document(unit, *scope)
+        assert not world.store.has_retained_selection(unit, *scope)
+        world.store.clear_selections_for_document(unit, *scope)
+
+    for row, history in zip((working, failed), original_attempts, strict=True):
+        assert held(world, target, row.invocation_id) == replace(row, selection_text=None)
+        assert attempts(world, target, row.invocation_id) == history
+    for table, row in unaffected:
+        assert held(world, table, row.invocation_id) == row
+
+
+def test_rolled_back_document_cleanup_retains_the_selection(world: World) -> None:
+    table = a_table(world)
+    admitted = admit(world, table)
+    with pytest.raises(RuntimeError), world.db.transaction() as unit:
+        world.store.clear_selections_for_document(unit, table.owner, table.campaign, table.document)
+        assert not world.store.has_retained_selection(unit, table.owner, table.campaign, table.document)
+        raise RuntimeError("document deletion rolled back")
+    assert held(world, table) == admitted
+
+
 def test_a_unit_that_rolls_back_leaves_no_edit_and_no_attempt(world: World) -> None:
     table = a_table(world)
     with pytest.raises(RuntimeError), world.db.transaction() as unit:
@@ -733,10 +776,21 @@ def test_the_store_writes_only_its_own_tables_and_holds_rows_the_rq3_way() -> No
             assert column in {"conversation_id", "user_id", "campaign_id"}, f"{name} reads v.{column}"
         for column in re.findall(r"\bd\.(\w+)", statement):
             assert column in {"id", "campaign_id", "type"}, f"{name} reads d.{column}"
-    assert writes == 6
+    assert writes == 7
 
 
 # ── PostgreSQL only: the deletion edges (S-10) ───────────────────────────────
+
+
+@needs_db
+def test_retained_selection_index_contains_only_the_document_scope(dsn: str) -> None:
+    with connect(dsn) as conn:
+        row = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'campaign' AND tablename = 'document_edits' "
+            "AND indexname = 'document_edits_retained_selection_idx'"
+        ).fetchone()
+    assert row is not None
+    assert row[0].endswith("USING btree (owner_id, campaign_id, document_id) WHERE (selection_text IS NOT NULL)")
 
 
 def count(dsn: str, sql: str, params: tuple[Any, ...] = ()) -> int:
