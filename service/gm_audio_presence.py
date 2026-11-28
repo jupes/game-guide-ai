@@ -13,7 +13,7 @@ from .workbench_contracts import PRESENCE_MAX_PARTICIPANTS, PresenceEvent
 # sound whose handle has ended or been replaced no longer counts as listening.
 PRESENCE_ROWS = f"""
     (WITH pages AS (
-       SELECT r.account_id, r.grant_id, CASE
+       SELECT r.account_id, r.participant_id, r.grant_id, CASE
          WHEN r.state = 'listening' AND EXISTS (
            SELECT 1 FROM campaign.audio_slots sl
            JOIN campaign.audio_cues q ON q.id = sl.cue_id AND q.campaign_id = s.campaign_id AND NOT q.archived
@@ -25,10 +25,11 @@ PRESENCE_ROWS = f"""
          AND s.table_audio AND r.state IS NOT NULL
          AND r.last_seen_at > clock.moment - interval '{VISIBLE_TTL_S} seconds'
      ), principals AS (
-       SELECT account_id, grant_id, min(priority) AS priority FROM pages GROUP BY account_id, grant_id
+       SELECT account_id, participant_id, grant_id, min(priority) AS priority
+       FROM pages GROUP BY account_id, participant_id, grant_id
      ), seats AS (
        SELECT p.id, p.alias, COALESCE(x.priority,5) priority FROM campaign.participants p
-       LEFT JOIN principals x ON x.account_id = p.user_id
+       LEFT JOIN principals x ON x.participant_id = p.id AND x.account_id = p.user_id
        WHERE p.campaign_id = s.campaign_id AND p.accepted_at IS NOT NULL AND p.removed_at IS NULL
          AND p.user_id <> s.gm_user_id
        ORDER BY p.id COLLATE "C" LIMIT {PRESENCE_MAX_PARTICIPANTS + 1}

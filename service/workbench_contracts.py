@@ -2274,6 +2274,13 @@ class AudioSettingsRequest(_Contract):
             raise ValueError("only enabling audio takes the current epoch")
         return self
 
+    @model_serializer(mode="wrap")
+    def _omit_epoch_for_disable(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        emitted: dict[str, Any] = handler(self)
+        if self.audio_epoch is None:
+            emitted.pop("audio_epoch", None)
+        return emitted
+
 
 class AudioSettingsAnswer(_Contract):
     schema_version: SchemaVersion

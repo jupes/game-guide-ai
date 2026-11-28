@@ -419,8 +419,10 @@ def test_the_real_app_starts_dark_and_no_catch_all_exists(monkeypatch: pytest.Mo
     assert appmod._media_enabled() is False, "the default is off"
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert appmod._media_enabled() is True
-    media = [route for path, route in api_routes(app) if "/assets" in path]
-    assert len(media) == 6 and all(isinstance(route, assets_api.WorkbenchRoute) for route in media)
+    media = [(path, route) for path, route in api_routes(app) if "/assets" in path]
+    assert len([path for path, _ in media if path.startswith("/campaigns/")]) == 6
+    assert [path for path, _ in media if not path.startswith("/campaigns/")] == ["/table/assets/{handle}"]
+    assert all(isinstance(route, assets_api.WorkbenchRoute) for _, route in media)
     assert not [path for path, _ in api_routes(app) if ":path}" in path]
     app.openapi_schema = None
     assert not [path for path in app.openapi()["paths"] if "/assets" in path or "/cues" in path]

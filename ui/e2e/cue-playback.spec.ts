@@ -2,7 +2,7 @@ import { expect, test } from './fixtures'
 import { serveCueSound } from './cueSound'
 import { installRevealRoutes, SESSION_ID, tableSessionAnswer } from './revealStubs'
 import { CAMPAIGN_ID, DOCUMENT_ID, installWorkbenchRoutes, THREAD_PAGE } from './workbenchStubs'
-import { CuePlayRequestSchema, CueStopRequestSchema, TableSessionAnswerSchema, TOOL_IDS, type Cue } from '../src/gm/contracts'
+import { AudioSettingsRequestSchema, CuePlayRequestSchema, CueStopRequestSchema, TableSessionAnswerSchema, TOOL_IDS, type Cue } from '../src/gm/contracts'
 
 const prefix = `/campaigns/${CAMPAIGN_ID}`
 const livePath = `${prefix}/sessions/${SESSION_ID}/audio`
@@ -115,9 +115,11 @@ test('private preview stays local and the GM can stop live audio from another ch
   await page.route(`**${prefix}/tool-availability`, (route) => route.fulfill({
     json: Object.fromEntries(TOOL_IDS.map((id) => [id, null])),
   }))
+  let enabled = true
+  let epoch = 0
   await page.route(`**${prefix}/table-session`, (route) => {
     const { session } = TableSessionAnswerSchema.parse(tableSessionAnswer())
-    return route.fulfill({ json: { schema_version: 1, session: { ...session, audio: true } } })
+    return route.fulfill({ json: { schema_version: 1, session: { ...session, audio: enabled, audio_epoch: epoch } } })
   })
   await page.route(`**${prefix}/cues/capability`, (route) => route.fulfill({ status: 204 }))
   await page.route(`**${prefix}/cues/list`, (route) => route.fulfill({ json: {
@@ -128,15 +130,28 @@ test('private preview stays local and the GM can stop live audio from another ch
   } }))
   await page.route(`**${prefix}/assets/${cue.asset_id}`, serveCueSound)
   await page.route(`**${prefix}/cues/${cue.cue_id}`, route => route.fulfill({ json: cue }))
-  await page.route(`**${livePath}/presence`, route => route.fulfill({ json: {
+  await page.route(`**${livePath}/presence`, route => route.fulfill({
+    headers: { 'X-Table-Audio-Enabled': enabled ? '1' : '0', 'X-Table-Audio-Epoch': String(epoch) }, json: {
     schema_version: 1, event: 'presence', session_id: SESSION_ID, gen: 1,
     participants: [{ participant_id: 'prt_ondrey', alias: 'Ondrey', audio: 'listening' }],
     guests: { connected: 1, muted: 0, listening: 0, pending: 1 },
   } }))
 
-  let epoch = 0
   let startedAt: string | null = null
   const commands: string[] = []
+  const offAttempts: string[] = []
+  await page.route(`**${livePath}/settings`, route => {
+    const body = AudioSettingsRequestSchema.parse(route.request().postDataJSON())
+    if (body.enabled) expect(body.audio_epoch).toBe(epoch)
+    else {
+      offAttempts.push(body.command_id)
+      if (offAttempts.length === 1) return route.fulfill({ status: 503 })
+      startedAt = null
+    }
+    enabled = body.enabled
+    ++epoch
+    return route.fulfill({ json: { schema_version: 1, enabled, audio_epoch: epoch } })
+  })
   const picture = () => ['ambience', 'one_shot'].map((slot) => ({
     schema_version: 1, event: 'audio', session_id: SESSION_ID, gen: 1, audio_epoch: epoch,
     slot, seq: slot === 'ambience' ? epoch : 0,
@@ -181,9 +196,19 @@ test('private preview stays local and the GM can stop live audio from another ch
   await expect.poll(() => page.evaluate(() => Reflect.get(window, 'gmMonitorPlaying'))).toBe(true)
   await expect(live.getByText(/1 listening · 0 muted · 1 screen/)).toBeVisible()
   expect(commands).toEqual(['play'])
+  const sound = page.getByRole('switch', { name: 'Table audio' })
+  await sound.uncheck()
+  await expect.poll(() => offAttempts.length).toBe(2)
+  expect(offAttempts[0]).toBe(offAttempts[1])
+  await expect(live).toBeHidden()
+  await expect(card.getByRole('button', { name: 'Play to table' })).toBeDisabled()
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, 'gmMonitorPlaying'))).toBe(false)
+  await sound.check()
+  await expect(card.getByRole('button', { name: 'Play to table' })).toBeEnabled()
+  await card.getByRole('button', { name: 'Play to table' }).click()
   await live.getByRole('button', { name: 'Stop all' }).click()
   await expect(live).toBeHidden()
-  expect(commands).toEqual(['play', 'stop all'])
+  expect(commands).toEqual(['play', 'play', 'stop all'])
   expect(revealWrites).toEqual([])
   await card.getByRole('button', { name: 'Play to table' }).click()
   await expect(live.getByText(cue.title)).toBeVisible()
@@ -214,7 +239,7 @@ test('private preview stays local and the GM can stop live audio from another ch
   await expect(drawer.getByRole('button', { name: 'Stop all table sharing' })).toBeFocused()
   await stop.click()
   await expect(pill).toBeHidden()
-  expect(commands).toEqual(['play', 'stop all', 'play', 'stop all'])
+  expect(commands).toEqual(['play', 'play', 'stop all', 'play', 'stop all'])
   expect(revealWrites).toEqual([{
     path: `${prefix}/reveals/stop`, body: { schema_version: 1, command_id: expect.any(String), scope: 'all' },
   }])

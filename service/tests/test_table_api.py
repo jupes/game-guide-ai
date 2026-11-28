@@ -750,8 +750,9 @@ def test_stream_is_off_by_default_and_opt_in_reuses_the_table_route_guards(world
                 raise self.result
             return self.result
 
-        async def bytes(self, lease):
+        async def bytes(self, lease, *, auth_expires_at):
             assert lease == "lease"
+            assert auth_expires_at is not None and auth_expires_at > datetime.now(UTC)
             yield b'event: inactive\ndata: {"schema_version":1,"event":"inactive"}\n\n'
 
     streams = Streams()

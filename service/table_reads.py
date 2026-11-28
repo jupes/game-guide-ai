@@ -107,7 +107,10 @@ class TableReads:
             slots = [self._slot(unit, view, TableSlotName.TABLE, view.table)]
             if view.own_slot:
                 slots.append(self._slot(unit, view, TableSlotName.MINE, view.mine or EMPTY_SLOT))
-        context = context_for(campaign_id, view.session_id, view.generation, account_id=account_id, grant_id=grant_id)
+        context = context_for(
+            campaign_id, view.session_id, view.generation, account_id=account_id, grant_id=grant_id,
+            audio_generation=view.audio_generation, participant_id=None if view.is_owner else view.participant_id,
+        )
         return _frames(view.own_slot, view.audio, slots, [opening_audio(f, moment) for f in view.audio_frames]), (
             context if view.audio else None
         )
@@ -136,6 +139,7 @@ class TableStreamWatch:
     generation: int
     account_id: int | None = field(default=None, repr=False)
     grant_id: str | None = field(default=None, repr=False)
+    participant_id: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if (self.account_id is None) == (self.grant_id is None):
@@ -145,10 +149,11 @@ class TableStreamWatch:
 _STREAM_READ_SQL: Final = f"""
 WITH watched AS (
     SELECT * FROM unnest(%(campaigns)s::text[], %(sessions)s::text[], %(generations)s::int[],
-                         %(accounts)s::bigint[], %(grants)s::text[])
-    WITH ORDINALITY AS w(campaign_id, session_id, generation, account_id, grant_id, ordinal)
+                         %(accounts)s::bigint[], %(grants)s::text[], %(seats)s::text[])
+    WITH ORDINALITY AS w(campaign_id, session_id, generation, account_id, grant_id, participant_id, ordinal)
 ), eligible AS (
-    SELECT w.ordinal, s.id AS session_id, s.campaign_id, s.table_audio, p.id AS participant_id,
+    SELECT w.ordinal, s.id AS session_id, s.campaign_id, (s.table_audio AND c.archived_at IS NULL) AS table_audio,
+           p.id AS participant_id,
            (w.account_id IS NOT NULL AND c.owner_id <> w.account_id AND p.confirmed_at IS NOT NULL) AS own_slot,
            {AUDIO_SLOT_ROWS} AS audio_slots
     FROM watched w
@@ -159,7 +164,8 @@ WITH watched AS (
         AND p.accepted_at IS NOT NULL AND p.removed_at IS NULL
     LEFT JOIN campaign.table_credentials g ON g.id = w.grant_id AND g.session_id = s.id
         AND g.link_generation = s.link_generation AND g.revoked_at IS NULL
-    WHERE c.owner_id = w.account_id OR p.id IS NOT NULL OR g.id IS NOT NULL
+    WHERE (c.owner_id = w.account_id OR p.id IS NOT NULL OR g.id IS NOT NULL)
+      AND (w.participant_id IS NULL OR w.participant_id = p.id)
 )
 SELECT e.ordinal, e.own_slot, e.table_audio, audience.region, COALESCE(r.seq, 0), d.type, f.mask,
        (SELECT jsonb_object_agg(key, v.data -> key) FROM unnest(f.mask) AS k(key) WHERE v.data ? key), e.audio_slots
@@ -200,6 +206,7 @@ class TableStreamReads:
             "generations": [watch.generation for watch in watches],
             "accounts": [watch.account_id for watch in watches],
             "grants": [watch.grant_id for watch in watches],
+            "seats": [watch.participant_id for watch in watches],
             "now": aware(now, "a clock"),
         }
         async with self._db.async_connection() as connection:

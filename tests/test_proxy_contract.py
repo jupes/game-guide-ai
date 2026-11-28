@@ -101,7 +101,10 @@ def test_the_table_document_reserves_its_own_path_on_both_front_ends() -> None:
     assert "try_files /table.html =404;" in nginx
     assert not re.search(r"location\s+/table\b", nginx)
     assert not re.search(r"['\"]/table['\"]\s*:", vite)
-    for path in table_paths:
+    assert "/table/assets/{handle}" in table_paths
+    assert "location ^~ /table/assets/ {" in nginx
+    assert "'^/table/assets/': 'http://localhost:8000'" in vite
+    for path in table_paths - {"/table/assets/{handle}"}:
         assert f"location = {path} {{" in nginx
         vite_pattern = f"'^{path}" + r"(?:\\?|$)': 'http://localhost:8000'"
         assert vite_pattern in vite

@@ -52,6 +52,7 @@ interface Voice {
   cue: MixerCue | null
   phase: 'idle' | 'loading' | 'playing' | 'error'
   needsGesture: boolean
+  lastMediaTime: number | null
   retired: boolean
   stopTimer?: number
   stopAt?: number
@@ -121,6 +122,7 @@ export function createAudioMixer(
     voice.cue = null
     voice.retired = false
     voice.needsGesture = false
+    voice.lastMediaTime = null
     voice.phase = 'idle'
     voice.media.pause()
     voice.media.removeAttribute('src')
@@ -171,19 +173,34 @@ export function createAudioMixer(
     source.connect(gain)
     gain.connect(slot === 'ambience' ? ambience! : master!)
     const voice: Voice = { slot, media, source, gain, envelope: level(0), cue: null, phase: 'idle',
-      retired: false, needsGesture: false, seek: false, late: false }
+      retired: false, needsGesture: false, lastMediaTime: null, seek: false, late: false }
     media.addEventListener('loadedmetadata', () => {
       if (voice.cue && !voice.retired) { position(voice); publish() }
     })
-    media.addEventListener('playing', () => {
-      if (!voice.cue || voice.retired || media.paused || !position(voice)) return
+    function markPlaying(): void {
       voice.phase = 'playing'
       voice.needsGesture = false
       updateDuck()
       publish()
+    }
+    media.addEventListener('playing', () => {
+      if (voice.cue && !voice.retired && !media.paused && position(voice)) markPlaying()
+    })
+    // WebKit can send waiting during an initial seek and resume the media
+    // clock without sending another playing event. A seek jump alone must
+    // never count as playback; require forward progress after it completes.
+    media.addEventListener('seeking', () => { voice.lastMediaTime = null })
+    media.addEventListener('seeked', () => { voice.lastMediaTime = media.currentTime })
+    media.addEventListener('timeupdate', () => {
+      if (!voice.cue || voice.retired || voice.seek || media.seeking || media.paused || media.ended
+          || media.readyState < 2 || voice.phase !== 'loading') return
+      const previous = voice.lastMediaTime
+      voice.lastMediaTime = media.currentTime
+      if (previous !== null && media.currentTime > previous) markPlaying()
     })
     for (const event of ['waiting', 'pause']) media.addEventListener(event, () => {
       if (!voice.cue || voice.retired || (event === 'pause' && !media.paused)) return
+      voice.lastMediaTime = null
       if (voice.phase !== 'error') voice.phase = 'loading'
       updateDuck()
       publish()

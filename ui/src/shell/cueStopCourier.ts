@@ -6,6 +6,7 @@ type Outcome = 'acknowledged' | 'gone' | 'failed'
 interface Job {
   account: string
   path: string
+  disable: boolean
   controller: AbortController
   done: Promise<Outcome>
   settle: (value: Outcome) => void
@@ -39,28 +40,38 @@ export class CueStopCourier extends Emitter {
     }
   }
 
-  status(account: string, path: string): { pendingStops: number; retrying: boolean } {
+  status(account: string, path: string): { pendingStops: number; retrying: boolean; disabling: boolean } {
     const jobs = [...this.jobs.values()].filter((job) => job.account === account && job.path === path)
-    return { pendingStops: jobs.length, retrying: jobs.some((job) => job.timer !== undefined) }
+    return { pendingStops: jobs.length, retrying: jobs.some((job) => job.timer !== undefined), disabling: jobs.some(job => job.disable) }
   }
 
   send(account: string, path: string, cue: string | null, send: Send): Promise<Outcome> {
-    const key = JSON.stringify([account, path, cue])
+    return this.enqueue(account, path, cue, false, (id, signal) =>
+      send({ schema_version: CONTRACT_VERSION, command_id: id, cue_id: cue }, signal))
+  }
+
+  disable(account: string, path: string, send: (id: string, signal: AbortSignal) => Promise<Response>): Promise<Outcome> {
+    return this.enqueue(account, path, null, true, send)
+  }
+
+  private enqueue(account: string, path: string, cue: string | null, disable: boolean,
+    send: (id: string, signal: AbortSignal) => Promise<Response>): Promise<Outcome> {
+    const key = JSON.stringify([account, path, cue, disable])
     const existing = this.jobs.get(key)
     if (existing) {
       if (existing.timer !== undefined) existing.attempt()
       return existing.done
     }
-    const body: CueStopRequest = { schema_version: CONTRACT_VERSION, command_id: mintCommandId(), cue_id: cue }
+    const id = mintCommandId()
     const controller = new AbortController()
     let delay = 500
     let settle!: (value: Outcome) => void
     const done = new Promise<Outcome>((resolve) => { settle = resolve })
-    const job: Job = { account, path, done, settle, controller, attempt: () => { void attempt() } }
+    const job: Job = { account, path, disable, done, settle, controller, attempt: () => { void attempt() } }
     const attempt = async () => {
       clearTimeout(job.timer)
       job.timer = undefined
-      const response = await send(body, controller.signal).catch(() => null)
+      const response = await send(id, controller.signal).catch(() => null)
       const status = response?.status ?? 0
       if (controller.signal.aborted) return
       if ((status >= 200 && status < 300) || (status >= 400 && status < 500 && status !== 408 && status !== 429)) {

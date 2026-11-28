@@ -390,10 +390,15 @@ def build_router(
     def presence(
         campaign_id: str, session_id: str, user: User, db: DB, clock: Clock, response: Response,
     ) -> PresenceEvent:
-        with _playback_refusals(), _transaction(db) as transaction:
-            frame, enabled_now, epoch = gm_audio_presence.read(
-                transaction, campaign_id, session_id, user.user_id, clock(),
-            )
+        if not ident.is_id(ident.CAMPAIGN, campaign_id) or not ident.is_id(ident.TABLE_SESSION, session_id):
+            not_found()
+        try:
+            with _playback_refusals(), _transaction(db) as transaction:
+                frame, enabled_now, epoch = gm_audio_presence.read(
+                    transaction, campaign_id, session_id, user.user_id, clock(),
+                )
+        except ValidationError:
+            raise unavailable("Table presence is unavailable.") from None
         response.headers["X-Table-Audio-Enabled"] = "1" if enabled_now else "0"
         response.headers["X-Table-Audio-Epoch"] = str(epoch)
         return frame
@@ -402,6 +407,8 @@ def build_router(
     def settings(
         campaign_id: str, session_id: str, raw: Body, user: User, db: DB, clock: Clock,
     ) -> AudioSettingsAnswer:
+        if not ident.is_id(ident.CAMPAIGN, campaign_id) or not ident.is_id(ident.TABLE_SESSION, session_id):
+            not_found()
         command = _parse(AudioSettingsRequest, raw)
         if command.enabled:
             spend_write(user.user_id)

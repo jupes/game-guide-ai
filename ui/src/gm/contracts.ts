@@ -1593,7 +1593,7 @@ export const CueStopRequestSchema = refusingProtoKeys(
 )
 export type CueStopRequest = z.infer<typeof CueStopRequestSchema>
 
-const presenceHandle = z.string().regex(/^[A-Za-z0-9_-]{32}$/)
+const presenceHandle = z.string().length(32).regex(/^[A-Za-z0-9_-]{32}$/)
 const settingsFields = { schema_version: z.literal(CONTRACT_VERSION), command_id: CommandIdSchema }
 export const AudioSettingsRequestSchema = refusingProtoKeys(z.discriminatedUnion('enabled', [
   z.strictObject({ ...settingsFields, enabled: z.literal(true), audio_epoch: AudioEpochSchema }),
@@ -1610,7 +1610,8 @@ export type TablePresenceRegistration = z.infer<typeof TablePresenceRegistration
 export const TablePresenceRequestSchema = refusingProtoKeys(z.discriminatedUnion('action', [
   z.strictObject({
     schema_version: z.literal(CONTRACT_VERSION), action: z.literal('open'),
-    page_id: z.string().regex(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/), context: z.string().regex(/^[0-9a-f]{64}$/),
+    page_id: z.string().length(36).regex(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
+    context: z.string().length(64).regex(/^[0-9a-f]{64}$/),
   }),
   z.strictObject({
     ...presenceRegistrationFields, action: z.literal('report'),

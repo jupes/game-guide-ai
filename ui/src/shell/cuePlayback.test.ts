@@ -61,6 +61,28 @@ async function fixture(courier = new CueStopCourier(), account = 'gm') {
 afterEach(() => vi.useRealTimers())
 
 describe('GM table cue commands', () => {
+  it('delivers Off immediately during Enable and retries Off with its original command id', async () => {
+    vi.useFakeTimers()
+    const { store, requests, dispose } = await fixture()
+    try {
+      requests[0].finish(state(1))
+      await vi.advanceTimersByTimeAsync(2)
+      const enabling = store.setEnabled(true)
+      const disabling = store.setEnabled(false)
+      expect(store.snapshot()).toMatchObject({ enabling: false, disabling: true, pendingStops: 1 })
+      expect(JSON.parse(requests[1].body!)).toMatchObject({ enabled: true, audio_epoch: 1 })
+      expect(JSON.parse(requests[2].body!)).toMatchObject({ enabled: false })
+      requests[2].finish(new Response(null, { status: 503 }))
+      requests[1].finish(Response.json({ schema_version: 1, enabled: true, audio_epoch: 2 }))
+      await enabling
+      expect(store.snapshot().audioEnabled).not.toBe(true)
+      await vi.advanceTimersByTimeAsync(501)
+      expect(requests[3].body).toBe(requests[2].body)
+      requests[3].finish(Response.json({ schema_version: 1, enabled: false, audio_epoch: 3 }))
+      expect(await disabling).toBe(true)
+      expect(store.snapshot()).toMatchObject({ enabling: false, disabling: false, pendingStops: 0, audioEnabled: false })
+    } finally { dispose() }
+  })
   it('applies only complete ready snapshots and ordered live pairs, then recovers a sequence gap', async () => {
     vi.useFakeTimers()
     const { store, dispose, paths, send } = streamed()

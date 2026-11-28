@@ -1,11 +1,13 @@
 """The public byte route reauthorizes a live slot on every Range and during long reads."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 from _pg import connect, needs_db
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from test_reveal_db import _campaign, _command, _pg_world, _seat, _serve, _session
 from test_reveal_db import dsn as dsn
@@ -16,11 +18,14 @@ from service import app as appmod
 from service import cue_playback, media_serving, table_api
 from service.auth_store import PostgresAuthStore
 from service.campaign_store import pg
+from service.db import Database, PoolSettings
 from service.media_objects import CHUNK_BYTES, InMemoryObjectStore, MediaSettings
 from service.session import SessionData, encode_session
+from service.table_admission import TableAdmission
 from service.table_audio_media import TableAudioMedia
 from service.table_reads import TableReads
-from service.workbench_api import INACTIVE_DETAIL
+from service.table_streams import TableStreams
+from service.workbench_api import INACTIVE_DETAIL, install_workbench
 from service.workbench_contracts import CuePlayRequest, CueStopRequest
 
 pytestmark = [needs_db, pytest.mark.real_auth]
@@ -52,6 +57,31 @@ def _http(world, monkeypatch):
 
 def _account(user):
     return f"{config.SESSION_COOKIE_NAME}={encode_session(SessionData(user, 'player'), config.SESSION_SECRET)}"
+
+
+def _stream_client(dsn, world):
+    """Real PostgreSQL admission and HTTP headers, with a finite body for TestClient."""
+    db = Database(dsn, PoolSettings(sync_max=0, async_max=2))
+
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            yield
+        finally:
+            await db.aclose()
+
+    class FiniteFanout:
+        async def stream(self, watch):
+            yield b": heartbeat\n\n"
+
+    stream = TableStreams(TableAdmission(db), FiniteFanout())
+    local = FastAPI(lifespan=lifespan)
+    install_workbench(local)
+    local.include_router(table_api.build_router(
+        appmod.require_session, lambda: PostgresAuthStore(db=world.db), appmod._clear_session_cookie,
+        lambda: _serve(world).lifecycle, lambda: None, table_streams=lambda: stream, media_enabled=lambda: True,
+    ))
+    return TestClient(local, base_url="https://testserver")
 
 
 def test_table_audio_http_range_checks_grants_accounts_and_revocation(dsn, monkeypatch):
@@ -133,7 +163,9 @@ def test_presence_http_registration_is_scoped_to_its_live_picture_and_principal(
         return client.post(endpoint, headers={"cookie": cookie}, json={"schema_version": 1, "action": action, **props})
 
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings())
-    assert post(screen, "open").status_code == 404
+    missing = client.post("/table/no-such-capability", json={})
+    dark = post(screen, "open")
+    assert (dark.status_code, dark.content) == (missing.status_code, missing.content)
     assert "x-table-audio-context" not in client.get(snapshot, headers={"cookie": screen}).headers
     monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
     assert client.post(endpoint, json={}).status_code == 401
@@ -141,7 +173,12 @@ def test_presence_http_registration_is_scoped_to_its_live_picture_and_principal(
     picture = client.get(snapshot, headers={"cookie": screen})
     context = picture.headers["x-table-audio-context"]
     assert len(context) == 64 and context not in picture.text
-    assert context != client.get(snapshot, headers={"cookie": player}).headers["x-table-audio-context"]
+    player_context = client.get(snapshot, headers={"cookie": player}).headers["x-table-audio-context"]
+    assert context != player_context
+    with _stream_client(dsn, world) as streams:
+        for cookie, expected in [(screen, context), (player, player_context)]:
+            opened = streams.get(f"/table/stream?campaign_id={campaign}", headers={"cookie": cookie})
+            assert opened.status_code == 200 and opened.headers["x-table-audio-context"] == expected
     page = str(uuid4())
     rejected = post(player, "open", page_id=page, context=context)
     assert rejected.status_code == 404 and rejected.json() == {"detail": dict(INACTIVE_DETAIL)}
@@ -166,6 +203,15 @@ def test_presence_http_registration_is_scoped_to_its_live_picture_and_principal(
     with connect(dsn) as conn:
         conn.execute("UPDATE campaign.table_sessions SET table_audio = false WHERE id = %s", (session.id,))
     assert "x-table-audio-context" not in client.get(snapshot, headers={"cookie": player}).headers
+    assert post(screen, "open", page_id=page, context=context).status_code == 404
+    with _stream_client(dsn, world) as streams:
+        url = f"/table/stream?campaign_id={campaign}"
+        assert "x-table-audio-context" not in streams.get(url, headers={"cookie": screen}).headers
+        with connect(dsn) as conn:
+            conn.execute("UPDATE campaign.table_sessions SET table_audio = true WHERE id = %s", (session.id,))
+        rotated = streams.get(url, headers={"cookie": screen}).headers["x-table-audio-context"]
+        assert rotated != context
+        assert rotated == client.get(snapshot, headers={"cookie": screen}).headers["x-table-audio-context"]
     assert post(screen, "open", page_id=page, context=context).status_code == 404
 
 

@@ -337,8 +337,11 @@ def test_campaign_archive_clears_player_audio_and_restore_cannot_revive_it(dsn: 
         ), now)
 
     def ambience():
-        picture = reader.snapshot(campaign, grant_id=screen.id, now=now)
+        picture, context = reader.snapshot_with_context(campaign, grant_id=screen.id, now=now)
         assert picture is not None
+        if context is None:
+            assert all(not isinstance(f, TableAudioEvent) for f in picture.frames)
+            return None
         return next(f for f in picture.frames if isinstance(f, TableAudioEvent) and f.slot == "ambience")
 
     active = ambience()
@@ -346,7 +349,10 @@ def test_campaign_archive_clears_player_audio_and_restore_cannot_revive_it(dsn: 
     for operation in (archive_step_one, archive_step_two, restore):
         operation(served.db, served.stores, campaign_id=campaign, owner_id=world.owner, now=now)
         cleared = ambience()
-        assert cleared.seq > active.seq and cleared.playing is None
+        if operation is archive_step_two:
+            assert cleared is None
+        else:
+            assert cleared.seq > active.seq and cleared.playing is None
 
 
 @needs_db

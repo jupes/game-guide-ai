@@ -134,6 +134,34 @@ describe('the two-slot Web Audio mixer', () => {
     mixer.dispose()
   })
 
+  it('recognizes WebKit resuming after a seek with moving media time and no new playing event', async () => {
+    const { mixer, state } = setup()
+    await mixer.unlock()
+    mixer.apply({ ...emptyAudioSlots, ambience: cue('a') })
+    const media = Context.latest.elements[0]
+    set(media, 'readyState', 2)
+    media.dispatchEvent(new Event('loadedmetadata'))
+    media.dispatchEvent(new Event('waiting'))
+    set(media, 'seeking', true)
+    media.currentTime = 4
+    media.dispatchEvent(new Event('seeking'))
+    media.dispatchEvent(new Event('timeupdate'))
+    expect(state().presence).toBe('idle')
+    set(media, 'seeking', false)
+    media.dispatchEvent(new Event('seeked'))
+    media.dispatchEvent(new Event('timeupdate'))
+    expect(state().presence).toBe('idle')
+    media.currentTime = 4.25
+    media.dispatchEvent(new Event('timeupdate'))
+    expect(state().playing).toEqual([cue('a').url])
+    set(media, 'paused', true)
+    media.dispatchEvent(new Event('pause'))
+    media.currentTime = 5
+    media.dispatchEvent(new Event('timeupdate'))
+    expect(state().presence).toBe('idle')
+    mixer.dispose()
+  })
+
   it('does not stack or restart a one-shot on resync, and lets a sounding one finish through connection silence', async () => {
     const { mixer, setTime, state } = setup()
     await mixer.unlock()

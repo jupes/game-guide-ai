@@ -511,6 +511,8 @@ def build_router(
             if streams is None:
                 raise _unavailable()
             screen, account = principal.screen, principal.account
+            if account is not None and account.expires_at is None:
+                raise _unavailable()
             failure: StarletteHTTPException | None = None
             try:
                 lease = await streams.admission.open(
@@ -531,16 +533,13 @@ def build_router(
                     _throttle(request)
                     inactive()
                 async with leased_body(
-                    streams.bytes(lease), lambda: streams.admission.release(lease),
+                    streams.bytes(lease, auth_expires_at=account.expires_at if account else None),
+                    lambda: streams.admission.release(lease),
                     release_warning="table_stream_release_failed",
                 ) as events:
                     headers = {"X-Accel-Buffering": "no"}
-                    if media_enabled() and lease.audio_enabled:
-                        watch = lease.watch
-                        headers["X-Table-Audio-Context"] = table_presence.context_for(
-                            campaign_id, watch.session_id, watch.generation,
-                            account_id=watch.account_id, grant_id=watch.grant_id,
-                        )
+                    if media_enabled() and (context := lease.audio_context()) is not None:
+                        headers["X-Table-Audio-Context"] = context
                     yield events, headers
                 return
             raise failure

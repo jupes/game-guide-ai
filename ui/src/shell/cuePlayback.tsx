@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 import { notifyUnauthorized } from '../api'
-import { CONTRACT_VERSION, GmEventSchema, type CuePlayRequest, type CueStopRequest } from '../gm/contracts'
+import { AudioSettingsAnswerSchema, CONTRACT_VERSION, GmEventSchema, type CuePlayRequest, type CueStopRequest } from '../gm/contracts'
 import { AudioLiveStrip } from '../gm/AudioLiveStrip'
 import { useCampaign } from './campaignContext'
 import { CueStopCourier, cueStops } from './cueStopCourier'
@@ -21,9 +21,12 @@ interface State {
   presence: PresenceFrame | null
   audioEnabled: boolean | null
   clockOffsetMs: number
+  enabling: boolean
+  disabling: boolean
+  settingError: string | null
 }
 const EMPTY: State = { frames: [], connected: false, pendingPlay: false, pendingStops: 0, failedPlay: null, stopError: null,
-  presence: null, audioEnabled: null, clockOffsetMs: 0 }
+  presence: null, audioEnabled: null, clockOffsetMs: 0, enabling: false, disabling: false, settingError: null }
 const POLL_MS = 5000
 
 // eslint-disable-next-line react-refresh/only-export-components -- separately exercised command and ordering state
@@ -35,6 +38,7 @@ export class CuePlayback {
   private nextRead = 0
   private stopRevision = 0
   private settingsEpoch = -1
+  private settingIntent = 0
   private timer?: ReturnType<typeof setTimeout>
   private readonly path: string
   private readonly campaign: string
@@ -70,14 +74,15 @@ export class CuePlayback {
   }
 
   private settings(enabled: boolean, epoch: number): void {
-    if (!Number.isSafeInteger(epoch) || epoch < this.settingsEpoch) return
+    if (!Number.isSafeInteger(epoch) || epoch < Math.max(this.settingsEpoch, this.state.frames[0]?.audio_epoch ?? -1)) return
     this.settingsEpoch = epoch
     if (this.state.audioEnabled !== enabled) this.patch({ audioEnabled: enabled })
   }
 
   private async readPresence(signal: AbortSignal): Promise<void> {
     try {
-      const reply = await this.fetchImpl(this.path + '/presence', {
+      const fetchImpl = this.fetchImpl
+      const reply = await fetchImpl(this.path + '/presence', {
         credentials: 'include', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(4000)]),
       })
       if (!reply.ok) throw new Error()
@@ -99,8 +104,8 @@ export class CuePlayback {
     this.controller = controller
     let inheritedStops = this.courier.status(this.account, this.path).pendingStops > 0
     const syncStops = () => {
-      const { pendingStops, retrying } = this.courier.status(this.account, this.path)
-      this.patch({ pendingStops, stopError: retrying ? 'Reconnecting to stop table audio…' : null })
+      const { pendingStops, retrying, disabling } = this.courier.status(this.account, this.path)
+      this.patch({ pendingStops, disabling, stopError: retrying ? 'Reconnecting to stop table audio…' : null })
       if (inheritedStops && !pendingStops) {
         inheritedStops = false
         refresh()
@@ -208,6 +213,7 @@ export class CuePlayback {
   private accept(frames: AudioFrame[], read: number): void {
     const old = this.state.frames[0]
     const next = frames[0]
+    if (next.audio_epoch < this.settingsEpoch) return
     if (!old && read < this.latestRead) return
     if (old && next.gen < old.gen) return
     if (old && next.gen === old.gen) {
@@ -228,7 +234,8 @@ export class CuePlayback {
     const { frames, connected, pendingPlay, pendingStops, failedPlay } = this.state
     if (!signal || !connected || pendingPlay || pendingStops || !frames.length || this.state.audioEnabled === false) return
     const body: CuePlayRequest = retry && failedPlay?.cue_id === cueId ? failedPlay : {
-      schema_version: CONTRACT_VERSION, command_id: mintCommandId(), cue_id: cueId, loop, audio_epoch: frames[0].audio_epoch,
+      schema_version: CONTRACT_VERSION, command_id: mintCommandId(), cue_id: cueId, loop,
+      audio_epoch: Math.max(this.settingsEpoch, frames[0].audio_epoch),
     }
     const stops = this.stopRevision
     this.patch({ pendingPlay: true, failedPlay: null, stopError: null })
@@ -248,23 +255,39 @@ export class CuePlayback {
   async setEnabled(enabled: boolean): Promise<boolean> {
     const signal = this.controller?.signal
     const head = this.state.frames[0]
-    if (!signal || (enabled && (!head || !this.state.connected))) return false
-    try {
-      const response = await this.fetchImpl(this.path + '/settings', {
+    if (!signal || (enabled && (this.state.pendingStops || this.state.enabling || !head || !this.state.connected))) return false
+    const intent = ++this.settingIntent
+    this.patch({ enabling: enabled, settingError: null })
+    const deliver = async (id: string, delivery: AbortSignal) => {
+      const fetchImpl = this.fetchImpl
+      const reply = await fetchImpl(this.path + '/settings', {
         method: 'POST', credentials: 'include', cache: 'no-store',
-        signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]), headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ schema_version: CONTRACT_VERSION, command_id: mintCommandId(), enabled,
-          ...(enabled ? { audio_epoch: head.audio_epoch } : {}) }),
+        signal: AbortSignal.any([delivery, AbortSignal.timeout(10000)]), headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schema_version: CONTRACT_VERSION, command_id: id, enabled,
+          ...(enabled ? { audio_epoch: Math.max(this.settingsEpoch, head.audio_epoch) } : {}) }),
       })
-      if (response.status === 401) notifyUnauthorized()
-      if (!response.ok) return false
-      const answer = await response.json()
-      if (signal.aborted || answer?.schema_version !== CONTRACT_VERSION || answer.enabled !== enabled ||
-          !Number.isSafeInteger(answer.audio_epoch) || answer.audio_epoch < 0) return false
-      this.settings(enabled, answer.audio_epoch)
-      window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
-      return true
-    } catch { return false }
+      if (reply.status === 401 && !delivery.aborted) notifyUnauthorized()
+      if (reply.ok) {
+        const answer = AudioSettingsAnswerSchema.parse(await reply.json())
+        if (!delivery.aborted && !signal.aborted && intent === this.settingIntent) {
+          this.settings(answer.enabled, answer.audio_epoch)
+          window.dispatchEvent(new Event(SESSION_REFRESH_EVENT))
+          void this.send('', undefined, signal).catch(() => {})
+        }
+      }
+      return reply
+    }
+    try {
+      const ok = enabled ? (await deliver(mintCommandId(), signal)).ok
+        : await this.courier.disable(this.account, this.path, deliver) === 'acknowledged'
+      if (!ok && !signal.aborted && intent === this.settingIntent) this.patch({ settingError: 'Couldn’t change table audio. Check the session and try again.' })
+      return ok
+    } catch {
+      if (!signal.aborted && intent === this.settingIntent) this.patch({ settingError: 'Couldn’t confirm the change. Check the session and try again.' })
+      return false
+    } finally {
+      if (!signal.aborted && intent === this.settingIntent) this.patch({ enabling: false })
+    }
   }
 
   async stop(cueId: string | null): Promise<void> {
