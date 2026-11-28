@@ -205,7 +205,7 @@ test('a confirmed live seat opens the mobile table, while the same link requires
   await join.click()
   await expect(page).toHaveURL(new URL(TABLE_PATH, BASE_URL).href)
   const projection = page.locator('#table-projections')
-  await expect(page.getByRole('heading', { name: 'Player table', level: 1 })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Table', level: 1, exact: true })).toBeVisible()
   await expect(projection.getByRole('heading', { level: 2 })).toHaveText(['For you', 'Shared with the table'])
   await expect(projection.getByText(shared)).toBeVisible()
   await expect(projection.getByText(PRIVATE_HANDOUT)).toBeVisible()
@@ -226,7 +226,7 @@ test('a confirmed live seat opens the mobile table, while the same link requires
   const signedOut = await browser.newContext({ baseURL: BASE_URL, viewport: PHONE, isMobile: true, hasTouch: true })
   try {
     const visitor = await signedOut.newPage()
-    const read = visitor.waitForResponse((response) => new URL(response.url()).pathname === '/table/snapshot')
+    const read = visitor.waitForResponse((response) => new URL(response.url()).pathname === '/table/identity')
     const document = await visitor.goto(TABLE_PATH)
     expect(document?.headers()['referrer-policy']).toBe('no-referrer')
     expect(document?.headers()['cache-control']).toBe('no-store')

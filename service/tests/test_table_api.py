@@ -83,6 +83,8 @@ T0 = datetime(2026, 9, 1, 19, 0, tzinfo=UTC)
 INACTIVE = {"detail": dict(INACTIVE_DETAIL)}
 UNAUTHENTICATED = {"detail": "not signed in"}
 MINT, LEAVE, SNAPSHOT = "/table/screen", "/table/leave", "/table/snapshot"
+IDENTITY = "/table/identity"
+SIGN_OUT = "/table/sign-out"
 LEAVE_BODY = {"schema_version": 1}
 SOURCE = Path(table_api.__file__)
 SERVICE = SOURCE.parent
@@ -532,7 +534,7 @@ def test_no_cookie_and_a_cookie_that_is_not_a_grant_spend_nothing(world: _World,
 # ── Fetch Metadata and the origin check (SEC-45, SEC-7; T-19) ────────────────
 
 
-@pytest.mark.parametrize("path", [MINT, LEAVE])
+@pytest.mark.parametrize("path", [MINT, LEAVE, IDENTITY, SIGN_OUT])
 @pytest.mark.parametrize(
     "metadata",
     [
@@ -549,8 +551,13 @@ def test_fetch_metadata_is_refused_before_any_cookie_or_row(
     campaign, _ = world.live()
     live = world.grant(campaign)
     opened, reads = world.counting.opened, world.auth.reads
-    body = {"schema_version": 1, "campaign_id": campaign} if path == MINT else LEAVE_BODY
-    answer = _post(path, body, grant=live, account=GM_A, headers=metadata)
+    if path == IDENTITY:
+        answer = _get(path, grant=live, account=GM_A, headers=metadata)
+    elif path == SIGN_OUT:
+        answer = _post(path, grant=live, account=GM_A, headers=metadata)
+    else:
+        body = {"schema_version": 1, "campaign_id": campaign} if path == MINT else LEAVE_BODY
+        answer = _post(path, body, grant=live, account=GM_A, headers=metadata)
     assert (answer.status_code, answer.json()) == (403, {"detail": dict(CROSS_SITE_DETAIL)})
     assert (world.counting.opened, world.auth.reads) == (opened, reads), "no row read, no account read"
     assert world.lifecycle.resolve_screen(live, now=world.now[0]) is not None
@@ -579,6 +586,12 @@ def test_every_table_answer_carries_no_store_and_corp_once_and_each_app_header_o
         "cross_site": _mint(campaign, account=GM_A, headers={"sec-fetch-site": "cross-site"}),
         "origin 403": _mint(campaign, account=GM_A, headers={"origin": "https://evil.example"}),
         "leave 204": _post(LEAVE, LEAVE_BODY, grant=stale),
+        "identity 200": _get(IDENTITY, account=GM_A),
+        "identity 401": _get(IDENTITY),
+        "identity 403": _get(IDENTITY, account=GM_A, headers={"sec-fetch-site": "cross-site"}),
+        "sign-out 204": _post(SIGN_OUT, account=GM_A),
+        "sign-out 401": _post(SIGN_OUT),
+        "sign-out 409": _post(SIGN_OUT, account=GM_A, grant=world.grant(campaign)),
     }
     app_headers = {
         "content-security-policy": security_headers.CONTENT_SECURITY_POLICY,
@@ -729,11 +742,13 @@ def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
     """
     conf = NGINX.read_text(encoding="utf-8")
     table_paths = sorted({path for path, _ in api_routes(app) if path.startswith("/table/")})
-    assert table_paths == sorted({"/table/assets/{handle}", LEAVE, "/table/presence", MINT, SNAPSHOT,
-                                  *(["/table/stream"] if config.TABLE_STREAMS_ENABLED else [])})
+    expected = {"/table/assets/{handle}", IDENTITY, LEAVE, "/table/presence", MINT, SIGN_OUT, SNAPSHOT}
+    if config.TABLE_STREAMS_ENABLED:
+        expected.add("/table/stream")
+    assert table_paths == sorted(expected)
     blocks = dict(re.findall(r"location\s+=\s+(/table/\S+)\s*\{([^}]*)\}", conf))
     # The client can already probe this exact path while the server stream is built.
-    assert set(blocks) == {LEAVE, MINT, SNAPSHOT, "/table/stream", "/table/presence"}
+    assert set(blocks) == {IDENTITY, LEAVE, MINT, SIGN_OUT, SNAPSHOT, "/table/stream", "/table/presence"}
     assets = re.search(r"location\s+\^~\s+/table/assets/\s*\{([^}]*)\}", conf)
     assert assets and "proxy_buffering    off;" in assets[1] and "proxy_cache        off;" in assets[1]
     blocks["/table/assets/{handle}"] = assets[1]
@@ -1047,6 +1062,87 @@ def _get(
     return TestClient(app).get(path, headers=sent)
 
 
+def test_identity_returns_only_the_account_kind_without_a_campaign_or_seat(world: _World) -> None:
+    opened = world.counting.opened
+    for account in (GM_A, PLAYER):
+        result = _get(IDENTITY, account=account)
+        assert (result.status_code, result.json()) == (200, {"schema_version": 1, "kind": "account"})
+        assert _cookies(result) == []
+    anonymous = _get(IDENTITY)
+    assert (anonymous.status_code, anonymous.json()) == (401, UNAUTHENTICATED)
+    assert world.counting.opened == opened
+
+
+def test_identity_prefers_a_live_screen_and_falls_back_after_revocation(world: _World) -> None:
+    campaign, _ = world.live()
+    grant = world.grant(campaign)
+    account_reads = world.auth.reads
+    for account in (None, GM_A):
+        result = _get(IDENTITY, account=account, grant=grant)
+        assert (result.status_code, result.json()) == (200, {"schema_version": 1, "kind": "screen"})
+        assert _cookies(result) == []
+    assert world.auth.reads == account_reads
+    assert world.lifecycle.leave(grant, now=world.now[0])
+    fallback = _get(IDENTITY, account=GM_A, grant=grant)
+    assert (fallback.status_code, fallback.json()) == (200, {"schema_version": 1, "kind": "account"})
+    anonymous = _get(IDENTITY, grant=grant)
+    assert (anonymous.status_code, anonymous.json()) == (401, UNAUTHENTICATED)
+    for result in (fallback, anonymous):
+        assert _deletes_the_grant(result)
+        assert _named(result, config.SESSION_COOKIE_NAME) == []
+
+
+def test_table_sign_out_clears_the_account_and_cache_only_on_success(world: _World) -> None:
+    client = TestClient(app, base_url="https://table.example")
+    client.cookies.set(config.SESSION_COOKIE_NAME, _account(PLAYER), domain="table.example", path="/")
+    assert client.get(IDENTITY).json()["kind"] == "account"
+    foreign = client.post(SIGN_OUT, headers={"origin": "https://elsewhere.example"})
+    assert (foreign.status_code, foreign.json()) == (403, {"detail": dict(FORBIDDEN_ORIGIN_DETAIL)})
+    assert _cookies(foreign) == [] and "clear-site-data" not in foreign.headers
+    signed_out = client.post(SIGN_OUT)
+    assert (signed_out.status_code, signed_out.content) == (204, b"")
+    assert len(_cookies(signed_out)) == 1
+    assert {"path=/", "max-age=0"} <= _attributes(_named(signed_out, config.SESSION_COOKIE_NAME)[0])
+    assert signed_out.headers.get_list("clear-site-data") == ['"cache", "storage"']
+    for subsequent in (client.get(IDENTITY), client.post(SIGN_OUT)):
+        assert (subsequent.status_code, subsequent.json()) == (401, UNAUTHENTICATED)
+        assert _cookies(subsequent) == [] and "clear-site-data" not in subsequent.headers
+
+
+@pytest.mark.parametrize("account", [None, PLAYER])
+def test_table_sign_out_refuses_a_screen_even_after_account_preflight(world: _World, account: int | None) -> None:
+    campaign, _ = world.live()
+    grant = world.grant(campaign)
+    client = TestClient(app, base_url="https://table.example")
+    if account is not None:
+        client.cookies.set(config.SESSION_COOKIE_NAME, _account(account), domain="table.example", path="/")
+        assert client.get(IDENTITY).json()["kind"] == "account"
+    client.cookies.set(table_api.SCREEN_COOKIE, grant, domain="table.example", path="/table")
+    account_reads = world.auth.reads
+    refused = client.post(SIGN_OUT)
+    assert (refused.status_code, refused.json()) == (409, {"detail": {
+        "code": "conflict", "message": "The table access changed. Refresh the table.", "retryable": False,
+    }})
+    assert _cookies(refused) == [] and "clear-site-data" not in refused.headers
+    assert client.get(IDENTITY).json()["kind"] == "screen"
+    assert world.auth.reads == account_reads
+    assert client.get("/auth/me").status_code == (401 if account is None else 200)
+
+
+def test_table_sign_out_discards_a_revoked_screen_and_signs_out_the_account(world: _World) -> None:
+    campaign, _ = world.live()
+    stale = _stale(world, campaign)
+    signed_out = _post(SIGN_OUT, account=PLAYER, grant=stale)
+    assert (signed_out.status_code, signed_out.content) == (204, b"")
+    assert _deletes_the_grant(signed_out)
+    assert {"path=/", "max-age=0"} <= _attributes(_named(signed_out, config.SESSION_COOKIE_NAME)[0])
+    assert signed_out.headers.get_list("clear-site-data") == ['"cache", "storage"']
+    refused = _post(SIGN_OUT, grant=stale)
+    assert (refused.status_code, refused.json()) == (401, UNAUTHENTICATED)
+    assert _deletes_the_grant(refused) and _named(refused, config.SESSION_COOKIE_NAME) == []
+    assert "clear-site-data" not in refused.headers
+
+
 @pytest.fixture
 def reading(world: _World) -> Iterator[_Reading]:
     """A live table whose table slot shows an NPC's name and whose confirmed seat
@@ -1184,8 +1280,9 @@ def test_the_order_of_checks_opens_no_transaction_before_the_id_shape(reading: _
     assert world.counting.opened == before + 1, "one transaction per entitled read"
 
 
+@pytest.mark.parametrize("path", [SNAPSHOT, IDENTITY])
 def test_the_read_budget_is_keyed_by_the_principal_and_never_by_the_source(
-    reading: _Reading, monkeypatch: pytest.MonkeyPatch
+    reading: _Reading, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     """SEC-47(1). Two accounts and a screen behind one source spend their own
     budgets: the keys are `account:<id>` and `screen:<grant>`, and past its bound
@@ -1200,7 +1297,7 @@ def test_the_read_budget_is_keyed_by_the_principal_and_never_by_the_source(
 
     monkeypatch.setattr(ratelimit, "check_table_read", spy)
     monkeypatch.setattr(ratelimit, "table_read_limiter", SlidingWindowLimiter(2, 3600))
-    at = SNAPSHOT_AT + reading.campaign
+    at = SNAPSHOT_AT + reading.campaign if path == SNAPSHOT else IDENTITY
     assert [_get(at, account=GM_A).status_code for _ in range(2)] == [200, 200]
     spent = reading.world.counting.opened
     refused = _get(at, account=GM_A)

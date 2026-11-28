@@ -10,7 +10,7 @@
  * one `inactive`. What a read returns is `service/tests/test_table_api.py` and
  * `tests/test_table_snapshot_db.py`.
  *
- * A new file: no existing spec is edited.
+ * The campaign-independent identity read uses the signed account cookie alone.
  */
 import { expect, signIn, test } from './fixtures'
 import { request as playwrightRequest } from '@playwright/test'
@@ -27,6 +27,15 @@ test.describe('the table snapshot through nginx', () => {
   test.beforeEach(async ({ page, accounts }) => {
     await page.goto('/')
     await signIn(page, accounts[0])
+  })
+
+  test('the table identifies a signed-in account without a campaign address', async ({ page }) => {
+    const response = await page.request.get('/table/identity')
+
+    expect(response.status()).toBe(200)
+    expect(response.headers()['content-type']).toMatch(/^application\/json/)
+    expect(response.headers()['cache-control']).toBe('no-store')
+    expect(await response.json()).toEqual({ schema_version: 1, kind: 'account' })
   })
 
   test('a read reaches the service and answers an envelope with the table headers', async ({ page }) => {
@@ -67,5 +76,9 @@ test('a signed-out read is the one 401', async () => {
 
   expect(response.status()).toBe(401)
   expect(await response.json()).toEqual({ detail: 'not signed in' })
+  const identity = await signedOut.get('/table/identity')
+  expect(identity.status()).toBe(401)
+  expect(identity.headers()['cache-control']).toBe('no-store')
+  expect(await identity.json()).toEqual({ detail: 'not signed in' })
   await signedOut.dispose()
 })

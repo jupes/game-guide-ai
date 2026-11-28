@@ -45,6 +45,8 @@ export default defineConfig({
       '/seats': 'http://localhost:8000',
       '^/table/screen(?:\\?|$)': 'http://localhost:8000',
       '^/table/leave(?:\\?|$)': 'http://localhost:8000',
+      '^/table/identity(?:\\?|$)': 'http://localhost:8000',
+      '^/table/sign-out(?:\\?|$)': 'http://localhost:8000',
       '^/table/snapshot(?:\\?|$)': 'http://localhost:8000',
       '^/table/stream(?:\\?|$)': 'http://localhost:8000',
       '^/table/presence(?:\\?|$)': 'http://localhost:8000',

@@ -5,21 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/app-icon-180.png" />
-    <title>Player table · Aetheril</title>
+    <title>Table · Aetheril</title>
   </head>
   <body>
     <main id="player-table">
-      <h1 tabindex="-1">Player table</h1>
+      <h1 tabindex="-1">Table</h1>
       <p id="table-status" role="status">Joining the table…</p>
       <p id="table-connection" role="status"></p>
       <div id="table-sound"></div>
       <div id="table-projections"></div>
       <nav aria-label="Table actions">
+        <p id="table-identity-notice" hidden></p>
         <button class="table-action" id="table-reload" type="button" hidden>Reload table</button>
         <button class="table-action" id="table-sign-out" type="button" hidden>Sign out</button>
         <button class="table-action" id="table-leave" type="button" hidden>Leave table</button>
         <a class="table-action" id="table-sign-in" href="/" hidden>Sign in</a>
-        <a class="table-action" href="/tavern">Back to the Tavern</a>
+        <a class="table-action" id="table-return" href="/tavern">Back to the Tavern</a>
       </nav>
     </main>
     <script type="module" src="/src/table/main.ts"></script>

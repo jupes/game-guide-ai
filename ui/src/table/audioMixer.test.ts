@@ -96,6 +96,7 @@ it('cuts buffered audio on a terminal or changed poll context and carries the pl
   let stall = false
   let freshAt = T0
   const stop = mountTable(document, 'cmp_table', async (input, init) => {
+    if (input === '/table/identity') return Response.json({ schema_version: 1, kind: 'account' })
     if (String(input).startsWith('/table/stream?')) return streams()
     if (String(input).startsWith('/table/snapshot?')) {
       if (stall) return new Promise(() => {})

@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type BrowserContext, type Page } from '@playwright/test'
 import { TableSessionAnswerSchema } from '../src/gm/contracts'
 
 const PUBLIC = 'Vashti'
 const PRIVATE = 'Harbourmistress'
-const INACTIVE = 'This table isn’t active or available to you.'
+const INACTIVE = 'This table is unavailable.'
 const LIVE_UPDATE_TIMEOUT = 4_000
 
 function fixture(name: string): string {
@@ -17,22 +17,121 @@ function projections(page: Page) {
   return page.locator('#table-projections')
 }
 
-test('a phone shows only the slots allowed by acceptance and confirmation', async ({ page, context }) => {
+async function accountCookie(context: BrowserContext, origin: string, name: string) {
+  await context.addCookies([{
+    name: 'gga_session', value: fixture(name), url: origin + '/', httpOnly: true, sameSite: 'Lax',
+  }])
+}
+
+async function screenCookie(context: BrowserContext, origin: string, name: string) {
+  await context.addCookies([{
+    name: 'gga_screen', value: fixture(name), domain: new URL(origin).hostname,
+    path: '/table', httpOnly: true, sameSite: 'Strict',
+  }])
+}
+
+test('owners and seated players sign out of their account whatever they can see', async ({ page, context }, info) => {
   const origin = fixture('PLAYER_URL')
   const path = `${origin}/table?campaign_id=${fixture('CAMPAIGN')}`
   await page.setViewportSize({ width: 320, height: 780 })
-  await context.addCookies([{ name: 'gga_session', value: fixture('PENDING_COOKIE'), url: origin + '/table' }])
+  for (const account of ['OWNER', 'PENDING', 'PLAYER']) {
+    await accountCookie(context, origin, `${account}_COOKIE`)
+    await page.goto(path)
+    await expect(page.getByRole('heading', { level: 1, name: 'Table', exact: true })).toBeVisible()
+    await expect(projections(page)).toContainText(PUBLIC, { timeout: LIVE_UPDATE_TIMEOUT })
+    if (account === 'PLAYER') await expect(projections(page)).toContainText(PRIVATE)
+    else await expect(projections(page)).not.toContainText(PRIVATE)
+    await expect(page.getByRole('link', { name: 'Back to your seats' })).toHaveAttribute('href', '/tavern')
+    await expect(page.getByRole('button', { name: 'Leave table' })).toBeHidden()
+    expect((await context.request.get(origin + '/auth/me')).status()).toBe(200)
+    if (account === 'PENDING') {
+      await page.screenshot({ path: info.outputPath('table-only-account.png'), animations: 'disabled', scale: 'css' })
+    }
+    await page.getByRole('button', { name: 'Sign out' }).click()
+    await expect(page.getByRole('link', { name: 'Sign in', exact: true })).toBeVisible()
+    expect((await context.request.get(origin + '/auth/me')).status()).toBe(401)
+  }
+})
+
+test('cold inactive, missing and full addresses keep account controls without disclosing a campaign', async ({ page, context }, info) => {
+  const origin = fixture('PLAYER_URL')
+  const path = `${origin}/table?campaign_id=${fixture('CAMPAIGN')}`
+  const unknown = `${origin}/table?campaign_id=cmp_${'z'.repeat(22)}`
+  const signOut = page.getByRole('button', { name: 'Sign out' })
+  const status = page.locator('#table-status')
+  for (const role of ['OFFERED', 'OUTSIDER']) {
+    await accountCookie(context, origin, `${role}_COOKIE`)
+    for (const address of [path, unknown, origin + '/table']) {
+      await page.goto(address)
+      await expect(status).toHaveText(INACTIVE)
+      await expect(projections(page)).toBeEmpty()
+      await expect(signOut).toBeVisible()
+      await expect(page.getByRole('link', { name: 'Back to your seats' })).toHaveAttribute('href', '/tavern')
+    }
+  }
+  await page.screenshot({ path: info.outputPath('unavailable-account.png'), animations: 'disabled', scale: 'css' })
+  // Substitute only the per-instance capacity response. The credential lookup
+  // and the exit still run through the real services and their cookie jar.
+  await accountCookie(context, origin, 'OWNER_COOKIE')
+  await page.route('**/table/stream?*', route => route.fulfill({ status: 503, headers: { 'Retry-After': '30' } }))
   await page.goto(path)
-  // SEC-41 lets an accepted seat see the table slot. The GM must confirm the
-  // seat before it becomes eligible for a personal projection.
-  // Older WebKit may hold the final snapshot bytes until the next network write.
+  await expect(status).toHaveText('This table is full. Ask your GM to make room.')
+  await page.screenshot({ path: info.outputPath('full-account.png'), animations: 'disabled', scale: 'css' })
+  await signOut.click()
+  await expect(page.getByRole('link', { name: 'Sign in', exact: true })).toBeVisible()
+  expect((await context.request.get(origin + '/auth/me')).status()).toBe(401)
+})
+
+test('Leave revokes the room screen across services and preserves the account in the same browser', async ({ browser, context, page }, info) => {
+  const origin = fixture('SCREEN_URL')
+  const otherService = fixture('PLAYER_URL')
+  const campaign = fixture('CAMPAIGN')
+  const path = `${origin}/table?campaign_id=${campaign}`
+  const leave = page.getByRole('button', { name: 'Leave table' })
+  await screenCookie(context, origin, 'EXIT_SCREEN_COOKIE')
+  await accountCookie(context, origin, 'PLAYER_COOKIE')
+
+  for (const address of [`${origin}/table?campaign_id=cmp_${'z'.repeat(22)}`, origin + '/table']) {
+    await page.goto(address)
+    await expect(page.locator('#table-status')).toHaveText(INACTIVE)
+    await expect(leave).toBeVisible()
+    await expect(projections(page)).toBeEmpty()
+  }
+  await page.route('**/table/stream?*', route => route.fulfill({ status: 503, headers: { 'Retry-After': '30' } }))
+  await page.goto(path)
+  await expect(page.locator('#table-status')).toHaveText('This table is full. Ask your GM to make room.')
+  await expect(leave).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Sign out' })).toBeHidden()
+  await page.unroute('**/table/stream?*')
+  await page.goto(path)
   await expect(projections(page)).toContainText(PUBLIC, { timeout: LIVE_UPDATE_TIMEOUT })
   await expect(projections(page)).not.toContainText(PRIVATE)
-  for (const role of ['OFFERED', 'OUTSIDER']) {
-    await context.addCookies([{ name: 'gga_session', value: fixture(`${role}_COOKIE`), url: origin + '/table' }])
-    await page.goto(path)
-    await expect(page.locator('#table-status')).toHaveText(INACTIVE)
-    await expect(projections(page)).toBeEmpty()
+  await expect(page.getByRole('button', { name: 'Sign out' })).toBeHidden()
+  await expect(page.getByRole('link', { name: 'Back to the Tavern' })).toHaveAttribute('href', '/tavern')
+  await page.screenshot({ path: info.outputPath('shared-screen.png'), animations: 'disabled', scale: 'css' })
+
+  // A fresh context can still use the same screen grant on the other service.
+  // Its later refusal proves revocation in the database, beyond clearing this page's cookie.
+  const screenOnly = await browser.newContext()
+  try {
+    await screenCookie(screenOnly, otherService, 'EXIT_SCREEN_COOKIE')
+    const snapshot = `${otherService}/table/snapshot?campaign_id=${campaign}`
+    expect((await screenOnly.request.get(snapshot)).status()).toBe(200)
+    // A screen could arrive after the app's last account-identity read.
+    // Mutation-time precedence keeps both credentials valid for the intended exit.
+    const changed = await context.request.post(origin + '/table/sign-out', { headers: { Origin: origin } })
+    expect(changed.status()).toBe(409)
+    expect((await context.request.get(origin + '/auth/me')).status()).toBe(200)
+    expect((await screenOnly.request.get(snapshot)).status()).toBe(200)
+    expect(await (await context.request.get(origin + '/table/identity')).json()).toEqual({ schema_version: 1, kind: 'screen' })
+    await leave.click()
+    await expect(page.locator('#table-status')).toHaveText('You left the table.')
+    await expect(page.getByRole('link', { name: 'Sign in', exact: true })).toBeHidden()
+    expect((await screenOnly.request.get(snapshot)).status()).toBe(401)
+    expect((await context.request.get(origin + '/auth/me')).status()).toBe(200)
+    expect(await (await context.request.get(origin + '/table/identity')).json()).toEqual({ schema_version: 1, kind: 'account' })
+  } finally {
+    await screenOnly.close()
   }
 })
 
@@ -81,6 +180,7 @@ test('two mobile clients handle Stop, Rotate, and End across two services', asyn
     const shared = await screenContext.newPage()
     await shared.goto(screen + path)
     await expect(projections(shared)).toContainText(PUBLIC, { timeout: LIVE_UPDATE_TIMEOUT })
+    await expect(shared.getByRole('button', { name: 'Leave table' })).toBeVisible()
     await expect(projections(shared)).not.toContainText(PRIVATE)
     for (const page of [player, shared]) {
       await expect(page.locator('#table-connection')).toBeEmpty()
@@ -117,6 +217,9 @@ test('two mobile clients handle Stop, Rotate, and End across two services', asyn
     await expect(projections(player)).toBeEmpty()
     await expect(shared.locator('#table-status')).toHaveText(INACTIVE)
     await expect(projections(shared)).toBeEmpty()
+    await expect(shared.getByRole('link', { name: 'Sign in', exact: true })).toBeHidden()
+    await expect(shared.getByRole('button', { name: 'Leave table' })).toBeHidden()
+    await expect(shared.getByRole('button', { name: 'Sign out' })).toBeHidden()
     await expect.poll(() => Promise.all([connections(play), connections(screen)])).toEqual([1, 0])
     const revoked = await screenContext.request.get(`${screen}/table/snapshot?campaign_id=${fixture('CAMPAIGN')}`)
     expect(revoked.status()).toBe(401)

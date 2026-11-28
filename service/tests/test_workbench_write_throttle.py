@@ -80,6 +80,7 @@ EXEMPT: dict[tuple[str, str], str] = {
     ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/stop"): "immediate audio Stop (SEC-35)",
     ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/settings"): "enable spends after parsing",
     ("POST", "/table/leave"): "screen principal, revoke only, never a new row (SEC-49)",
+    ("POST", "/table/sign-out"): "clears the browser's account cookie only (SEC-49)",
 }
 _STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 

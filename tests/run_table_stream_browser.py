@@ -104,6 +104,7 @@ def _fixture(dsn: str, media_dir: Path) -> dict[str, str]:
     _write(world, campaign, session.id, private, _parts(seat), mask=("qualifier",))
     with world.db.transaction() as unit:
         _, grant = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+        _, exit_grant = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
     with connect(dsn) as connection:
         connection.execute("UPDATE auth.users SET role = 'dm' WHERE id IN (%s, %s)", (world.owner, world.other_owner))
 
@@ -131,6 +132,7 @@ def _fixture(dsn: str, media_dir: Path) -> dict[str, str]:
         "TABLE_BROWSER_OFFERED_COOKIE": encode_session(SessionData(offered, "player"), secret),
         "TABLE_BROWSER_OUTSIDER_COOKIE": encode_session(SessionData(outsider, "player"), secret),
         "TABLE_BROWSER_SCREEN_COOKIE": grant,
+        "TABLE_BROWSER_EXIT_SCREEN_COOKIE": exit_grant,
     }
 
 

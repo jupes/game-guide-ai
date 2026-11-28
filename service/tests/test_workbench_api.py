@@ -1060,6 +1060,7 @@ EXPECTED_WORKBENCH_ROUTES = {
     ("GET", "/campaigns/{campaign_id}/reveals"), ("POST", "/campaigns/{campaign_id}/reveals"),
     ("POST", "/campaigns/{campaign_id}/reveals/stop"),
     ("POST", "/table/screen"), ("POST", "/table/leave"), ("GET", "/table/snapshot"),
+    ("GET", "/table/identity"), ("POST", "/table/sign-out"),
     ("GET", "/table/assets/{handle}"), ("POST", "/table/presence"),
     ("GET", "/campaigns/{campaign_id}/tool-availability"),
     ("POST", "/campaigns/{campaign_id}/tool-invocations"),
