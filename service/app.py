@@ -2043,7 +2043,7 @@ app.include_router(
 app.include_router(seats_api.build_router(require_session, get_timeline_database))
 app.include_router(documents_api.build_router(WORKBENCH_GM, get_timeline_database))
 if config.TABLE_STREAMS_ENABLED:
-    app.include_router(gm_stream_api.build_router(WORKBENCH_GM, get_gm_streams))
+    app.include_router(gm_stream_api.build_router(WORKBENCH_GM, get_gm_streams, media_enabled=_media_enabled))
 app.include_router(document_lifecycle_api.build_router(WORKBENCH_GM, get_timeline_database, reauthenticator))
 app.include_router(assets_api.build_router(WORKBENCH_GM, get_timeline_database, _media, _media_enabled))
 app.include_router(

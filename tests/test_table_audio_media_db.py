@@ -15,7 +15,7 @@ from test_table_stream_reads_db import _ready_ambience
 
 import config
 from service import app as appmod
-from service import cue_playback, media_serving, table_api
+from service import cue_playback, media_serving, ratelimit, table_api
 from service.auth_store import PostgresAuthStore
 from service.campaign_store import pg
 from service.db import Database, PoolSettings
@@ -213,6 +213,64 @@ def test_presence_http_registration_is_scoped_to_its_live_picture_and_principal(
         assert rotated != context
         assert rotated == client.get(snapshot, headers={"cookie": screen}).headers["x-table-audio-context"]
     assert post(screen, "open", page_id=page, context=context).status_code == 404
+
+
+def test_two_screens_on_one_network_can_poll_report_and_seek_for_five_minutes(dsn, monkeypatch):
+    world = _pg_world(dsn, fill=True)
+    campaign = _campaign(world)
+    session = _session(world, campaign)
+    asset, _, handle, _ = _playing(dsn, world, campaign, session)
+    objects = InMemoryObjectStore()
+    size = asset["size_bytes"]
+    objects.put_stream(asset["object_key"], [b"a" * size], max_bytes=size)
+    client = _http(world, monkeypatch)
+    audio = TableAudioMedia(world.db, objects)
+    monkeypatch.setitem(appmod.app.dependency_overrides, appmod.get_table_audio_media, lambda: audio)
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+    virtual_time = [0]
+
+    class TimedBudget(ratelimit.SlidingWindowLimiter):
+        attempts = 0
+
+        def check(self, key):
+            self.attempts += 1
+            super().check(key, now=virtual_time[0])
+
+    source = TimedBudget(limit=30, window_seconds=300)
+    monkeypatch.setattr(ratelimit, "source_limiter", source)
+    monkeypatch.setattr(ratelimit, "table_read_limiter", TimedBudget(limit=120, window_seconds=60))
+    snapshot = f"/table/snapshot?campaign_id={campaign}"
+    presence = f"/table/presence?campaign_id={campaign}"
+    screens = []
+    for _ in range(2):
+        with world.db.transaction() as unit:
+            grant, secret = world.sessions.mint_screen(unit, campaign, session.id, owner_id=world.owner)
+        cookie = {"cookie": f"{table_api.SCREEN_COOKIE}={secret}"}
+        context = client.get(snapshot, headers=cookie).headers["x-table-audio-context"]
+        opened = client.post(presence, headers=cookie, json={"schema_version": 1, "action": "open",
+                             "page_id": str(uuid4()), "context": context})
+        screens.append((grant.id, cookie, opened.json()["registration"]))
+
+    for moment in range(0, 300, 5):
+        virtual_time[0] = moment
+        for _, cookie, registration in screens:
+            assert client.get(snapshot, headers=cookie).status_code == 200
+            if moment % 15 == 0:
+                report = {"schema_version": 1, "action": "report", "registration": registration,
+                          "revision": moment // 15 + 1, "state": "listening", "playing_handles": [handle]}
+                assert client.post(presence, headers=cookie, json=report).status_code == 204
+            if moment % 30 == 0:
+                assert client.get(f"/table/assets/{handle}", headers=cookie | {"range": "bytes=0-1"}).status_code == 206
+    assert source.attempts == len(screens)
+    revoked, old_cookie, _ = screens[0]
+    with world.db.transaction() as unit:
+        world.sessions.revoke_screen(unit, campaign, revoked, owner_id=world.owner)
+    assert client.get(snapshot, headers=old_cookie).status_code == 401
+    assert source.attempts == len(screens) + 1
+    for _ in range(30 - source.attempts):
+        assert client.get(snapshot, headers=old_cookie).status_code == 401
+    assert client.get(snapshot, headers=old_cookie).status_code == 429
+    assert client.get(snapshot, headers=screens[1][1]).status_code == 200
 
 
 @pytest.mark.parametrize("change", ["stop", "cookie expiry", "session expiry", "playback ended"])

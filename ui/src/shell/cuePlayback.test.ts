@@ -61,6 +61,22 @@ async function fixture(courier = new CueStopCourier(), account = 'gm') {
 afterEach(() => vi.useRealTimers())
 
 describe('GM table cue commands', () => {
+  it('updates listener feedback without restarting either live cue', async () => {
+    vi.useFakeTimers()
+    const { store, dispose, paths, send } = streamed()
+    try {
+      send(sessionFrame(1), reveal, ...audioFrames(1), presence, ready)
+      await vi.advanceTimersByTimeAsync(1)
+      const prior = store.snapshot().frames
+      expect(store.snapshot().presence?.guests.pending).toBe(1)
+      const muted = { ...presence, guests: { connected: 1, listening: 0, muted: 1, pending: 0 } }
+      send(muted)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(store.snapshot().presence?.guests.muted).toBe(1)
+      expect(store.snapshot().frames).toBe(prior)
+      expect(paths).toEqual(['/campaigns/cmp_A/stream'])
+    } finally { dispose() }
+  })
   it('delivers Off immediately during Enable and retries Off with its original command id', async () => {
     vi.useFakeTimers()
     const { store, requests, dispose } = await fixture()

@@ -60,12 +60,11 @@ responses, TA-6/TA-7), added by `TableRoute` to whatever built the answer, once.
 No route-level `Content-Security-Policy` or `Referrer-Policy`: these are JSON
 answers that never redirect, and the table page's policy is `1kg.7.4`'s.
 
-**The digest lookup is throttled per source** (release review S6,
-agent-forge-harness-6621). A grant-shaped cookie costs a database round trip
-before anyone is known, so each one spends an attempt from the auth source
-budget (`ratelimit.source_limiter`) first; past it the answer is `429
-throttled_user` with its wait, and no lookup runs. A request with no cookie, or
-one that is not a grant, spends nothing.
+**Every digest lookup is budgeted before it reaches the database** (S6, SEC-47).
+An unfamiliar grant spends from the auth source budget. A recently verified
+grant spends from its own table-read budget, so screens at one venue can poll,
+report and request media ranges. The database checks liveness on every lookup.
+A revoked grant loses its budget mapping and spends from the source budget.
 
 The grant is 32 CSPRNG bytes; only its digest is stored (SEC-5). It leaves the
 server in exactly one place, the mint's `Set-Cookie` — never a body, a URL, a
@@ -99,6 +98,7 @@ from . import ratelimit, table_presence
 from .auth_store import AuthStore
 from .campaign_store import MissingParent, ScreenLimit, pg
 from .db import TransactionalDatabase
+from .screen_lookup_budget import ScreenLookupBudget
 from .session import SessionData
 from .stream_response import leased_body
 from .table_admission import TableFull
@@ -282,6 +282,8 @@ def _spend_read(principal: Principal) -> None:
     id or the grant id, so one venue's NAT never shares a budget. Past it, `429
     throttled_user` with its wait, deciding nothing about the principal."""
     if principal.screen is not None:
+        if principal.read_budget_spent:
+            return
         key = f"screen:{principal.screen.grant_id}"
     elif principal.account is not None:
         key = f"account:{principal.account.user_id}"
@@ -326,6 +328,7 @@ class GrantCookie:
 
     secret: str | None = field(default=None, repr=False)
     live: LiveScreen | None = None
+    read_budget_spent: bool = False
 
 
 @dataclass(frozen=True)
@@ -334,6 +337,7 @@ class Principal:
 
     screen: LiveScreen | None = None
     account: SessionData | None = None
+    read_budget_spent: bool = False
 
 
 def build_router(
@@ -355,16 +359,14 @@ def build_router(
         route_class=TableRoute,
         dependencies=[Depends(fetch_metadata), Depends(origin_check())],
     )
+    screen_budgets = ScreenLookupBudget()
 
     def grant_cookie(
         request: Request,
         sessions: TableSessions | None = Depends(lifecycle),
         now: datetime = Depends(get_clock),
     ) -> GrantCookie:
-        """The grant cookie, resolved with one digest lookup (SEC-46), which is
-        throttled per source (S6). One that is not live is marked for deletion;
-        a database that cannot answer, or a throttled source, decides nothing,
-        and deletes nothing."""
+        """Resolve a grant against current standing after charging its lookup budget."""
         secret = request.cookies.get(SCREEN_COOKIE)
         if secret is None:
             return GrantCookie()
@@ -373,11 +375,21 @@ def build_router(
             return GrantCookie(secret)
         if sessions is None:
             raise _unavailable()
-        _throttle(request)
+        digest = ident.digest(secret)
+        known = screen_budgets.grant_id(digest)
+        if known is None:
+            _throttle(request)
+        else:
+            spend_stream_read(f"screen:{known}")
         live = _guarded(lambda: sessions.resolve_screen(secret, now=now))
         if live is None:
             _forget(request)
-        return GrantCookie(secret, live)
+            if known is not None:
+                screen_budgets.forget(digest)
+                _throttle(request)
+        else:
+            screen_budgets.remember(digest, live.grant_id)
+        return GrantCookie(secret, live, read_budget_spent=live is not None and known == live.grant_id)
 
     def table_principal(
         request: Request,
@@ -388,7 +400,7 @@ def build_router(
         application's own check; its refusal is re-raised as it is, and the route
         class adds a stale grant's deletion to it."""
         if grant.live is not None:
-            return Principal(screen=grant.live)
+            return Principal(screen=grant.live, read_budget_spent=grant.read_budget_spent)
         return Principal(account=session(request, store))
 
     def mint_throttle(principal: Principal = Depends(table_principal)) -> None:
@@ -460,6 +472,7 @@ def build_router(
         secret = grant.secret
         if grant.live is not None and secret is not None and sessions is not None:
             _guarded(lambda: sessions.leave(secret, now=now))
+            screen_budgets.forget(ident.digest(secret))
             _forget(request)
             response.headers["clear-site-data"] = CLEAR_SITE_DATA
         return response

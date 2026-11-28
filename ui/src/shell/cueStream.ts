@@ -39,7 +39,7 @@ export async function streamCueState(campaign: string, session: string, request:
   try {
     const sentAt = Date.now()
     const reply = await request(`/campaigns/${encodeURIComponent(campaign)}/stream`, {
-      headers: { Accept: 'text/event-stream' }, credentials: 'include', cache: 'no-store', signal: timed,
+      headers: { Accept: 'text/event-stream', 'X-Table-Audio-Presence': '1' }, credentials: 'include', cache: 'no-store', signal: timed,
     })
     timed.throwIfAborted()
     if (reply.status === 401) return 'signed-out'

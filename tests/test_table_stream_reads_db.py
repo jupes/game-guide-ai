@@ -8,6 +8,7 @@ from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from uuid import uuid4
 
 import psycopg
 import pytest
@@ -18,7 +19,7 @@ from test_reveal_db import _campaign, _clear, _command, _document, _parts, _pg_w
 from test_reveal_db import dsn as dsn
 
 from service import campaign_identity as ident
-from service import cue_playback
+from service import cue_playback, table_presence
 from service.campaign_store import pg
 from service.campaigns_api import archive_step_one, archive_step_two, restore
 from service.db import Database, PoolSettings
@@ -31,7 +32,14 @@ from service.table_fanout import TableFanout, listen_table_wakeups
 from service.table_reads import TableReads, TableStreamReads, TableStreamWatch
 from service.table_stream_events import CAMPAIGN_WAKEUP_CHANNEL, CREDENTIAL_WAKEUP_CHANNEL, SESSION_WAKEUP_CHANNEL
 from service.table_streams import TableStreams
-from service.workbench_contracts import CuePlayRequest, CueStopRequest, TableAudioEvent, TableRevealSnapshotEvent
+from service.workbench_contracts import (
+    CuePlayRequest,
+    CueStopRequest,
+    TableAudioEvent,
+    TablePresenceOpen,
+    TablePresenceReport,
+    TableRevealSnapshotEvent,
+)
 
 
 def _slots(snapshot):
@@ -458,6 +466,8 @@ def test_two_gm_instances_share_audio_updates_and_release_revoked_or_expired_str
     world = _pg_world(dsn, fill=True)
     campaign = _campaign(world)
     session = _session(world, campaign)
+    player = world.players[0]
+    seat = _seat(world, campaign, "accepted", player)
     _, cue = _ready_ambience(dsn, campaign, world.owner)
     with connect(dsn) as conn:
         conn.execute("UPDATE auth.users SET role = 'dm' WHERE id IN (%s, %s)", (world.owner, world.other_owner))
@@ -468,7 +478,7 @@ def test_two_gm_instances_share_audio_updates_and_release_revoked_or_expired_str
             fans = []
             tabs = []
             now = datetime.now(UTC)
-            for _ in range(2):
+            for presence in (False, True):
                 db = Database(dsn, PoolSettings(sync_max=0, async_max=2))
                 cleanup.push_async_callback(db.aclose)
                 fan = TableFanout(TableStreamReads(db), partial(listen_table_wakeups, dsn), poll_s=20, heartbeat_s=.2)
@@ -483,7 +493,7 @@ def test_two_gm_instances_share_audio_updates_and_release_revoked_or_expired_str
                 lease = await gm.admission.open(campaign, account_id=world.owner, now=now)
                 assert lease is not None
                 tabs.append(await cleanup.enter_async_context(aclosing(
-                    gm.bytes(lease, auth_expires_at=now + timedelta(hours=1)),
+                    gm.bytes(lease, auth_expires_at=now + timedelta(hours=1), include_presence=presence),
                 )))
 
             async def read(tab):
@@ -503,14 +513,29 @@ def test_two_gm_instances_share_audio_updates_and_release_revoked_or_expired_str
             assert opening is not None
             with connect(dsn) as conn:
                 assert conn.execute("SELECT count(*) FROM campaign.gm_stream_connections").fetchone() == (2,)
-            for tab in tabs:
-                frames = [await read(tab) for _ in opening.frames]
-                assert frames == [frame.model_dump(mode="json") for frame in opening.frames]
+            for tab, presence in zip(tabs, (False, True), strict=True):
+                expected = [f for f in opening.frames if presence or f.event != "presence"]
+                frames = [await read(tab) for _ in expected]
+                assert frames == [frame.model_dump(mode="json") for frame in expected]
                 assert [f["slot"] for f in frames if f["event"] == "audio"] == ["ambience", "one_shot"]
                 assert frames[-1]["event"] == "ready"
             async with asyncio.timeout(4):
                 while not all(fan.listening for fan in fans):
                     await asyncio.sleep(.02)
+
+            _, context = TableReads(world.db, world.reveals, world.documents).snapshot_with_context(
+                campaign, account_id=player, now=now,
+            )
+            with world.db.transaction() as unit:
+                opened = table_presence.apply(pg(unit), campaign, account_id=player, grant_id=None, now=now,
+                    body=TablePresenceOpen(schema_version=1, action="open", page_id=str(uuid4()), context=context))
+                table_presence.apply(pg(unit), campaign, account_id=player, grant_id=None, now=now,
+                    body=TablePresenceReport(schema_version=1, action="report", registration=opened.registration,
+                                             revision=1, state="idle", playing_handles=[]))
+            update = await read(tabs[1])
+            assert update["event"] == "presence"
+            assert [(p["participant_id"], p["audio"]) for p in update["participants"]] == [(seat, "idle")]
+            assert await asyncio.wait_for(anext(tabs[0]), 1) == b": heartbeat\n\n"
 
             def heard(frame):
                 return frame["event"] == "audio" and frame["slot"] == "ambience"

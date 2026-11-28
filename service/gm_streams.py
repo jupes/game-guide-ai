@@ -139,7 +139,9 @@ class GmStreams:
             for viewer in self._viewers:
                 viewer.update(None, loop.time())
 
-    async def bytes(self, lease: GmLease, *, auth_expires_at: datetime) -> AsyncGenerator[bytes]:
+    async def bytes(
+        self, lease: GmLease, *, auth_expires_at: datetime, include_presence: bool = True,
+    ) -> AsyncGenerator[bytes]:
         loop = asyncio.get_running_loop()
         expires = loop.time() + self._lifetime_s()
         opening_deadline = loop.time() + _FRESH_FOR_S
@@ -184,6 +186,8 @@ class GmStreams:
                 updates = current.frames if previous is None else _updates(previous, current)
                 if updates is None:
                     break
+                if not include_presence:
+                    updates = [frame for frame in updates if not isinstance(frame, PresenceEvent)]
                 for frame in updates:
                     if (viewer.closed or viewer.picture != current or datetime.now(UTC) >= auth_expires_at
                             or loop.time() >= expires or loop.time() - viewer.checked >= _FRESH_FOR_S):

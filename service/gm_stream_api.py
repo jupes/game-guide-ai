@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated
 
 import psycopg
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 
 from . import campaign_identity as ident
@@ -17,10 +17,13 @@ from .stream_response import leased_body
 from .table_admission import TableFull
 from .table_api import fetch_metadata, get_clock, spend_stream_read
 from .workbench_api import SessionDependency, check_same_origin, not_found, workbench_router
-from .workbench_contracts import ErrorCode, GmSnapshot
+from .workbench_contracts import ErrorCode, GmSnapshot, PresenceEvent
 
 
-def build_router(gm: SessionDependency, get_streams: Callable[[], GmStreams | None]) -> APIRouter:
+def build_router(
+    gm: SessionDependency, get_streams: Callable[[], GmStreams | None], *,
+    media_enabled: Callable[[], bool] = lambda: False,
+) -> APIRouter:
     router = workbench_router(gm, dependencies=[Depends(fetch_metadata), Depends(check_same_origin)])
     User = Annotated[SessionData, Depends(gm)]
     Streams = Annotated[GmStreams | None, Depends(get_streams)]
@@ -36,8 +39,16 @@ def build_router(gm: SessionDependency, get_streams: Callable[[], GmStreams | No
 
     Runtime = Annotated[GmStreams, Depends(service)]
 
+    def accepts_presence(request: Request) -> bool:
+        # Earlier GM clients reject the idle posture when decoding the opening snapshot.
+        return media_enabled() and request.headers.get("X-Table-Audio-Presence") == "1"
+
+    Presence = Annotated[bool, Depends(accepts_presence)]
+
     @router.get("/campaigns/{campaign_id}/snapshot", include_in_schema=False)
-    async def snapshot(campaign_id: str, user: User, streams: Runtime, now: Now, response: Response) -> GmSnapshot:
+    async def snapshot(
+        campaign_id: str, user: User, streams: Runtime, now: Now, response: Response, presence: Presence,
+    ) -> GmSnapshot:
         try:
             found = await streams.snapshot(campaign_id, account_id=user.user_id, now=now)
         except (psycopg.Error, GmProjectionUnavailable):
@@ -46,11 +57,14 @@ def build_router(gm: SessionDependency, get_streams: Callable[[], GmStreams | No
             if found is None:
                 not_found()
             response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+            if not presence:
+                frames = [f for f in found.frames if not isinstance(f, PresenceEvent)]
+                return found.model_copy(update={"frames": frames})
             return found
         raise failure
 
     async def open_stream(
-        campaign_id: str, user: User, streams: Runtime, now: Now,
+        campaign_id: str, user: User, streams: Runtime, now: Now, presence: Presence,
     ) -> AsyncGenerator[AsyncGenerator[bytes]]:
         if user.expires_at is None:
             raise unavailable()
@@ -67,7 +81,8 @@ def build_router(gm: SessionDependency, get_streams: Callable[[], GmStreams | No
             if lease is None:
                 not_found()
             async with leased_body(
-                streams.bytes(lease, auth_expires_at=user.expires_at), lambda: streams.admission.release(lease),
+                streams.bytes(lease, auth_expires_at=user.expires_at, include_presence=presence),
+                lambda: streams.admission.release(lease),
                 release_warning="gm_stream_release_failed",
             ) as events:
                 yield events
