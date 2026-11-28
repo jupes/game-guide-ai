@@ -29,13 +29,17 @@ test.describe('the table snapshot through nginx', () => {
     await signIn(page, accounts[0])
   })
 
-  test('the table identifies a signed-in account without a campaign address', async ({ page }) => {
+  test('the table identifies and signs out an account without a campaign address', async ({ page }) => {
     const response = await page.request.get('/table/identity')
 
     expect(response.status()).toBe(200)
     expect(response.headers()['content-type']).toMatch(/^application\/json/)
     expect(response.headers()['cache-control']).toBe('no-store')
     expect(await response.json()).toEqual({ schema_version: 1, kind: 'account' })
+
+    const signOut = await page.request.post('/table/sign-out', { headers: { Origin: new URL(BASE_URL).origin } })
+    expect(signOut.status()).toBe(204)
+    expect((await page.request.get('/auth/me')).status()).toBe(401)
   })
 
   test('a read reaches the service and answers an envelope with the table headers', async ({ page }) => {

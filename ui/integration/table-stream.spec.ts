@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { expect, test, type BrowserContext, type Page } from '@playwright/test'
+import { expect, test, type BrowserContext, type Locator, type Page } from '@playwright/test'
 import { TableSessionAnswerSchema } from '../src/gm/contracts'
 
 const PUBLIC = 'Vashti'
@@ -30,6 +30,14 @@ async function screenCookie(context: BrowserContext, origin: string, name: strin
   }])
 }
 
+async function expectMobileExit(page: Page, action: Locator) {
+  await expect(action).toBeVisible()
+  const target = await action.boundingBox()
+  expect(target?.height).toBeGreaterThanOrEqual(44)
+  expect(target?.width).toBeGreaterThanOrEqual(44)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+}
+
 test('owners and seated players sign out of their account whatever they can see', async ({ page, context }, info) => {
   const origin = fixture('PLAYER_URL')
   const path = `${origin}/table?campaign_id=${fixture('CAMPAIGN')}`
@@ -43,11 +51,13 @@ test('owners and seated players sign out of their account whatever they can see'
     else await expect(projections(page)).not.toContainText(PRIVATE)
     await expect(page.getByRole('link', { name: 'Back to your seats' })).toHaveAttribute('href', '/tavern')
     await expect(page.getByRole('button', { name: 'Leave table' })).toBeHidden()
+    const signOut = page.getByRole('button', { name: 'Sign out' })
+    await expectMobileExit(page, signOut)
     expect((await context.request.get(origin + '/auth/me')).status()).toBe(200)
     if (account === 'PENDING') {
       await page.screenshot({ path: info.outputPath('table-only-account.png'), animations: 'disabled', scale: 'css' })
     }
-    await page.getByRole('button', { name: 'Sign out' }).click()
+    await signOut.click()
     await expect(page.getByRole('link', { name: 'Sign in', exact: true })).toBeVisible()
     expect((await context.request.get(origin + '/auth/me')).status()).toBe(401)
   }
@@ -108,6 +118,7 @@ test('Leave revokes the room screen across services and preserves the account in
   await expect(projections(page)).not.toContainText(PRIVATE)
   await expect(page.getByRole('button', { name: 'Sign out' })).toBeHidden()
   await expect(page.getByRole('link', { name: 'Back to the Tavern' })).toHaveAttribute('href', '/tavern')
+  await expectMobileExit(page, leave)
   await page.screenshot({ path: info.outputPath('shared-screen.png'), animations: 'disabled', scale: 'css' })
 
   // A fresh context can still use the same screen grant on the other service.

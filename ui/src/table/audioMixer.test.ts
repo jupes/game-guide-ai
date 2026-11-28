@@ -164,6 +164,85 @@ it('cuts buffered audio on a terminal or changed poll context and carries the pl
   } finally { stop() }
 })
 
+it.each([true, false])('keeps sound consent only for the fresh authorized context (matching: %s)', async matches => {
+  document.body.innerHTML = new DOMParser().parseFromString(tableHtml, 'text/html').body.innerHTML
+  let kind: 'account' | 'screen' | 'unknown' = 'unknown'
+  let contextKey = 'a'
+  let hold: Promise<void> | undefined
+  const reports: { action: string; state?: string; context?: string; registration?: string }[] = []
+  const stop = mountTable(document, 'cmp_table', async (input, init) => {
+    if (input === '/table/identity') return kind === 'unknown' ? new Response(null, { status: 404 })
+      : Response.json({ schema_version: 1, kind })
+    if (String(input).startsWith('/table/stream?')) return new Response(null, { status: 404 })
+    if (input === '/table/sign-out' && kind === 'screen') return new Response(null, { status: 409 })
+    if (String(input).startsWith('/table/snapshot?')) {
+      await hold
+      const frames = [
+        { event: 'session', role: 'guest', audio: true },
+        { event: 'snapshot', slots: [{ slot: 'table', seq: 1, content: null }] },
+        { event: 'audio', slot: 'ambience', seq: 1, playing: {
+          asset: { kind: 'audio', handle: 'x'.repeat(32), media_type: 'audio/mpeg', duration_ms: 20_000, width: null, height: null },
+          started_at: new Date().toISOString(), duration_ms: 20_000, start_offset_ms: 0, loop: true,
+        } },
+        { event: 'audio', slot: 'one_shot', seq: 0, playing: null },
+        { event: 'ready' },
+      ].map(f => ({ schema_version: 1, ...f }))
+      return Response.json({ schema_version: 1, frames }, { headers: { 'X-Table-Audio-Context': contextKey.repeat(64) } })
+    }
+    if (!String(input).startsWith('/table/presence?')) throw new Error('Unexpected table action')
+    const report = JSON.parse(String(init?.body))
+    reports.push(report)
+    return report.action === 'open' ? Response.json({ schema_version: 1, registration: report.context.slice(0, 32) })
+      : new Response(null, { status: 204 })
+  }, () => null)
+  try {
+    await vi.advanceTimersByTimeAsync(2)
+    const [accept, mute] = document.querySelectorAll<HTMLButtonElement>('#table-sound button')
+    accept.click()
+    await next()
+    const original = Context.latest
+    expect(mute).toBeVisible()
+    const reload = document.querySelector<HTMLButtonElement>('#table-reload')!
+    expect(original.elements.some(media => media.src.endsWith('/table/assets/' + 'x'.repeat(32)))).toBe(true)
+    kind = 'account'
+    contextKey = matches ? 'a' : 'c'
+    let release!: () => void
+    hold = new Promise(resolve => { release = resolve })
+    reload.click()
+    await next()
+    expect(original.elements.every(media => media.paused && !media.hasAttribute('src'))).toBe(true)
+    expect(reports).toContainEqual({ schema_version: 1, action: 'close', registration: 'a'.repeat(32) })
+    expect(mute).not.toBeVisible()
+    release()
+    await vi.advanceTimersByTimeAsync(2)
+    expect(mute.hidden).toBe(!matches)
+    expect(original.close).toHaveBeenCalledTimes(matches ? 0 : 1)
+    if (!matches) {
+      accept.click()
+      await next()
+    }
+    const accountContext = Context.latest
+    kind = 'unknown'
+    reload.click()
+    await vi.advanceTimersByTimeAsync(2)
+    expect(reload).toHaveTextContent('Retry')
+    expect(mute).toBeVisible()
+    expect(accountContext.close).not.toHaveBeenCalled()
+    kind = 'account'
+    reload.click()
+    await next()
+    kind = 'screen'
+    contextKey = 'b'
+    document.querySelector<HTMLButtonElement>('#table-sign-out')!.click()
+    await vi.advanceTimersByTimeAsync(4)
+    expect(document.querySelector('#table-leave')).toBeVisible()
+    expect(accept).toBeVisible()
+    expect(mute).not.toBeVisible()
+    expect(accountContext.close).toHaveBeenCalledOnce()
+    expect(reports.at(-1)).toMatchObject({ registration: 'b'.repeat(32), state: 'pending' })
+  } finally { stop() }
+})
+
 describe('the two-slot Web Audio mixer', () => {
   it('calculates from the supplied server clock and applies the late join threshold to one-shots only', () => {
     expect(cuePosition(cue('a', { start_offset_ms: 500 }), T0 + 21_000)).toBe(1.5)
