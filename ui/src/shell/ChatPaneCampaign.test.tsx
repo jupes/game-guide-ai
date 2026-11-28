@@ -105,7 +105,15 @@ async function mount(options: {
   vi.spyOn(api, 'getMe').mockResolvedValue({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })
   const recordFirstPrompt = vi.spyOn(LocalStorageConversationStore.prototype, 'recordFirstPrompt')
   const server = serve(options.campaign, options.create)
-  vi.stubGlobal('fetch', options.tools ?? (async () => jsonReply(availableTools)))
+  const tools = options.tools ?? (async () => jsonReply(availableTools))
+  const fetchImpl: typeof fetch = async (input, init) => {
+    if (String(input) === '/metrics/ui' && init?.method === 'POST') {
+      const batch = JSON.parse(String(init.body)) as { points: unknown[] }
+      return jsonReply({ accepted: batch.points.length }, 202)
+    }
+    return tools(input, init)
+  }
+  vi.stubGlobal('fetch', fetchImpl)
   const turns = [...(options.turns ?? [])]
   const post = vi.fn<PostFn>(async (_prompt, _mode, id) => turns.shift() ?? { kind: 'ok', response: { answer: 'An answer', sources: [], answerable: true, conversation_id: id } })
   const read = { history: [] as string[], timeline: [] as string[], attachments: [] as string[] }
