@@ -5,8 +5,8 @@ import { mountTable } from './table'
 import type { IdentityChannelLike } from '../shell/identityBroadcast'
 
 const event = { schema_version: 1 }
-const slot = (name: 'table' | 'mine', title: string | null) => ({
-  slot: name, seq: 1, content: title === null ? null : {
+const slot = (name: 'table' | 'mine', title: string | null, seq = 1) => ({
+  slot: name, seq, content: title === null ? null : {
     content_kind: 'document', type: 'npc', fields: [{ key: 'name', value: title }],
     gm_note: 'must never surface',
   },
@@ -183,6 +183,164 @@ function streamFixture() {
 }
 
 const connection = () => document.querySelector('#table-connection')!
+
+const sharedNotice = 'Your GM shared something new.'
+const stoppedNotice = 'Your GM stopped sharing something.'
+
+function watchStatus() {
+  const region = document.querySelector<HTMLElement>('#table-status')!
+  expect(region).toHaveAttribute('role', 'status')
+  const messages: string[] = []
+  const observer = new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (node.textContent) messages.push(node.textContent)
+      }
+      if (record.type === 'characterData' && record.target.textContent) messages.push(record.target.textContent)
+    }
+  })
+  observer.observe(region, { childList: true, characterData: true, subtree: true })
+  return { messages, disconnect: () => observer.disconnect() }
+}
+
+describe('player table announcements and focus', () => {
+  it('announces both slots in a new snapshot once, and stays quiet on equal polls and the initial picture', async () => {
+    const opened = [slot('table', 'First table secret'), slot('mine', 'First personal secret')]
+    const changed = [slot('table', 'Second table secret', 2), slot('mine', 'Second personal secret', 2)]
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(picture('participant', ...opened))
+      .mockResolvedValueOnce(picture('participant', ...changed))
+      .mockImplementation(async () => picture('participant', ...changed))
+    const live = watchStatus()
+    try {
+      await start(request)
+      expect(content()).toHaveTextContent('First personal secret')
+      expect(live.messages).not.toContain(sharedNotice)
+      await vi.advanceTimersByTimeAsync(10_500)
+      expect(request).toHaveBeenCalledTimes(3)
+      expect(content()).toHaveTextContent('Second personal secret')
+      expect(live.messages.filter(message => message === sharedNotice)).toHaveLength(1)
+      expect(live.messages.join(' ')).not.toMatch(/secret|personal|For you/i)
+    } finally {
+      live.disconnect()
+    }
+  })
+
+  it('announces each visible disclosure and a partial Stop, ignoring duplicate, audio-only and unrenderable updates', async () => {
+    const stream = streamFixture()
+    await start(vi.fn(), undefined, async () => stream.response)
+    stream.frame('session', { role: 'participant', audio: true })
+    stream.frame('snapshot', { slots: [slot('table', 'Handout'), slot('mine', 'Personal note')] })
+    stream.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    const live = watchStatus()
+    try {
+      stream.frame('slot', slot('table', 'A replacement', 2))
+      stream.frame('slot', slot('table', 'A replacement', 3))
+      stream.frame('slot', slot('table', 'A replacement', 3))
+      stream.frame('audio', { slot: 'ambience', seq: 1, playing: null })
+      await vi.advanceTimersByTimeAsync(600)
+      expect(live.messages).toEqual([sharedNotice, sharedNotice])
+      stream.frame('slot', slot('mine', null, 2))
+      await vi.advanceTimersByTimeAsync(600)
+      expect(content()).toHaveTextContent('A replacement')
+      expect(content()).not.toHaveTextContent('Personal note')
+      expect(live.messages).toEqual([sharedNotice, sharedNotice, stoppedNotice])
+      stream.frame('slot', { slot: 'mine', seq: 3, content: {
+        content_kind: 'document', type: 'npc', fields: [{ key: 'portrait', value: {
+          handle: 'a'.repeat(32), kind: 'image', media_type: 'image/webp', width: 10, height: 10, duration_ms: null,
+        } }],
+      } })
+      await vi.advanceTimersByTimeAsync(600)
+      expect(content()).not.toHaveTextContent('For you')
+      expect(live.messages).toEqual([sharedNotice, sharedNotice, stoppedNotice])
+    } finally {
+      live.disconnect()
+    }
+  })
+
+  it.each(['hidden', 'inactive', 'teardown'])('drops delayed reveal announcements after %s', async (transition) => {
+    const stream = streamFixture()
+    await start(vi.fn(), undefined, async () => stream.response)
+    stream.snapshot('guest', [slot('table', 'Original')])
+    stream.frame('ready')
+    await vi.advanceTimersByTimeAsync(0)
+    stream.frame('slot', slot('table', 'Second', 2))
+    await vi.advanceTimersByTimeAsync(200)
+    expect(status()).toBe(sharedNotice)
+    stream.frame('slot', slot('table', 'Third', 3))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(content()).toHaveTextContent('Third')
+    expect(status()).toBe('')
+    const live = watchStatus()
+    try {
+      if (transition === 'hidden') {
+        visibility.mockReturnValue('hidden')
+        document.dispatchEvent(new Event('visibilitychange'))
+      } else if (transition === 'inactive') {
+        stream.frame('inactive')
+      } else {
+        stop!()
+        stop = undefined
+      }
+      await vi.advanceTimersByTimeAsync(600)
+      expect(live.messages).not.toContain(sharedNotice)
+      expect(content()).toBeEmptyDOMElement()
+      if (transition === 'inactive') expect(status()).toMatch(/isn’t active/)
+    } finally {
+      live.disconnect()
+    }
+  })
+
+  it.each([
+    { selector: '#table-reload', response: 401 },
+    { selector: 'a[href="/tavern"]', response: 401 },
+    { selector: '#table-sign-out', response: 404 },
+  ])('preserves surviving focus on $selector after access is lost', async ({ selector, response }) => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(picture('participant', slot('table', 'Handout'), slot('mine', null)))
+      .mockResolvedValueOnce(new Response(null, { status: response }))
+    await start(request)
+    const focused = document.querySelector<HTMLElement>(selector)!
+    focused.focus()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(content()).toBeEmptyDOMElement()
+    expect(focused).toBeVisible()
+    expect(focused).toHaveFocus()
+  })
+
+  it('transfers focus from the disappearing account action to the table heading on authorization loss', async () => {
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(picture('participant', slot('table', null), slot('mine', null)))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+    await start(request)
+    document.querySelector<HTMLButtonElement>('#table-sign-out')!.focus()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(document.querySelector('#table-sign-out')).not.toBeVisible()
+    expect(document.querySelector('h1')).toHaveFocus()
+  })
+
+  it('leaves focus on the Tavern link if the user tabs away while sign-out is pending', async () => {
+    let finishSignOut!: (response: Response) => void
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(picture('participant', slot('table', null), slot('mine', null)))
+      .mockImplementationOnce(() => new Promise(resolve => { finishSignOut = resolve }))
+    await start(request)
+    const signOut = document.querySelector<HTMLButtonElement>('#table-sign-out')!
+    const tavern = document.querySelector<HTMLAnchorElement>('a[href="/tavern"]')!
+    signOut.focus()
+    signOut.click()
+    expect(signOut).toHaveFocus()
+    expect(signOut).toHaveAttribute('aria-disabled', 'true')
+    signOut.click()
+    tavern.focus()
+    finishSignOut(new Response(null, { status: 204 }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(request.mock.calls.filter(([url]) => url === '/auth/logout')).toHaveLength(1)
+    expect(status()).toBe('You signed out.')
+    expect(tavern).toHaveFocus()
+  })
+})
 
 describe('player table streams and reconnects', () => {
   it.each([
