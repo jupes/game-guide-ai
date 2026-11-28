@@ -90,8 +90,10 @@ describe('CreateCampaignForm (30c, F-1 to F-3)', () => {
     expect(m.onAnnounce.mock.calls.filter(([text]) => text === '')).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Create campaign' })).toBeDisabled()
     act(() => m.server.posts()[0].reply({ status: 201, body: campaign('cmp_new', 'The Hollow Crown') }))
-    await waitFor(() => expect(m.onCreated).toHaveBeenCalledTimes(1))
-    expect(screen.getByRole('button', { name: 'Create campaign' })).toBeEnabled()
+    await waitFor(() => {
+      expect(m.onCreated).toHaveBeenCalledTimes(1)
+      expect(screen.getByRole('button', { name: 'Create campaign' })).toBeEnabled()
+    })
   })
 
   it('F-2 a name the contract refuses reads on the field, focuses it, and is announced; no request is made', async () => {
@@ -122,10 +124,12 @@ describe('CreateCampaignForm (30c, F-1 to F-3)', () => {
     const m = await mount((call) => (call.method === 'POST' ? { status: 201, body: made } : { status: 200, body: {} }))
     await userEvent.type(screen.getByRole('textbox', { name: 'Campaign name' }), 'The Hollow Crown')
     await userEvent.click(screen.getByRole('button', { name: 'Create campaign' }))
-    await waitFor(() => expect(m.onCreated).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(m.onCreated).toHaveBeenCalledTimes(1)
+      expect(screen.getByRole('textbox', { name: 'Campaign name' })).toHaveValue('')
+    })
     expect(m.onCreated).toHaveBeenCalledWith(made)
     expect(m.onAnnounce).toHaveBeenLastCalledWith('Campaign created')
-    expect(screen.getByRole('textbox', { name: 'Campaign name' })).toHaveValue('')
     expect(screen.getByRole('textbox', { name: 'Campaign name' })).not.toHaveAttribute('aria-invalid')
     expect(m.server.posts().map((c) => c.url)).toEqual(['/campaigns'])
   })
