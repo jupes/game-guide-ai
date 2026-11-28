@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CuePlayback } from './cuePlayback'
+import { CUE_STATE_SILENCE_MS } from './cueStream'
 import { CueStopCourier } from './cueStopCourier'
 import { SESSION_REFRESH_EVENT } from './tableSession'
 
@@ -47,20 +48,107 @@ function streamed() {
 }
 async function fixture(courier = new CueStopCourier(), account = 'gm') {
   const requests: { path: string; body?: string; finish: (response: Response) => void }[] = []
+  const stream = vi.fn(async () => new Response(null, { status: 503 }))
   const fetchImpl: typeof fetch = (input, init) => {
-    if (String(input).endsWith('/stream')) return Promise.resolve(new Response(null, { status: 503 }))
+    if (String(input).endsWith('/stream')) return stream()
     if (String(input).endsWith('/presence')) return Promise.resolve(Response.json(presence))
     return new Promise((finish) => requests.push({ path: String(input), body: init?.body as string | undefined, finish }))
   }
   const store = new CuePlayback('cmp_A', session, fetchImpl, account, courier)
   const dispose = store.start()
   await vi.waitFor(() => expect(requests).toHaveLength(1))
-  return { store, requests, dispose }
+  return { store, requests, stream, dispose }
 }
 
 afterEach(() => vi.useRealTimers())
 
 describe('GM table cue commands', () => {
+  it('keeps fresh polling state and listener feedback through repeated unsupported stream probes', async () => {
+    vi.useFakeTimers()
+    const { store, requests, stream, dispose } = await fixture()
+    try {
+      stream.mockImplementation(async () => new Response(null, { status: 404 }))
+      requests[0].finish(state(4))
+      await vi.advanceTimersByTimeAsync(0)
+      const reports: boolean[] = []
+      store.subscribe(() => reports.push(store.snapshot().connected && store.snapshot().presence !== null))
+      await vi.advanceTimersByTimeAsync(1300)
+      expect(stream).toHaveBeenCalledTimes(2)
+      expect(store.snapshot()).toMatchObject({ connected: true, presence })
+      requests[1].finish(state(4))
+      await vi.advanceTimersByTimeAsync(2600)
+      expect(stream).toHaveBeenCalledTimes(3)
+      expect(reports).toContain(true)
+      expect(reports).not.toContain(false)
+      requests[2].finish(new Response(null, { status: 503 }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.snapshot()).toMatchObject({ connected: false, presence: null })
+      expect(reports.at(-1)).toBe(false)
+    } finally { dispose() }
+  })
+
+  it.each(['hanging stream probe', 'hanging poll', 'regressing poll'] as const)(
+    'expires the last verified poll while a %s cannot refresh it', async (fault) => {
+      vi.useFakeTimers()
+      const { store, requests, stream, dispose } = await fixture()
+      try {
+        requests[0].finish(state(4, 3))
+        await vi.advanceTimersByTimeAsync(0)
+        if (fault === 'hanging stream probe') stream.mockImplementation(() => new Promise(() => {}))
+        await vi.advanceTimersByTimeAsync(1300)
+        if (fault === 'regressing poll') requests[1].finish(state(3, 2))
+        await vi.advanceTimersByTimeAsync(CUE_STATE_SILENCE_MS - 1301)
+        expect(store.snapshot()).toMatchObject({ connected: true, presence })
+        await vi.advanceTimersByTimeAsync(1)
+        expect(store.snapshot()).toMatchObject({ connected: false, presence: null })
+        expect(store.snapshot().frames[0].audio_epoch).toBe(4)
+        const pending = requests.length
+        await store.play('cue_Rain', true)
+        expect(requests).toHaveLength(pending)
+      } finally { dispose() }
+    },
+  )
+
+  it('withdraws a fresh polling snapshot immediately on authoritative stream refusal', async () => {
+    vi.useFakeTimers()
+    const { store, requests, stream, dispose } = await fixture()
+    try {
+      requests[0].finish(state(4))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.snapshot()).toMatchObject({ connected: true, presence })
+      stream.mockImplementation(async () => new Response(null, { status: 403 }))
+      await vi.advanceTimersByTimeAsync(1300)
+      expect(store.snapshot()).toMatchObject({ connected: false, frames: [], presence: null })
+      expect(requests).toHaveLength(1)
+    } finally { dispose() }
+  })
+
+  it('falls back immediately when an opening stream snapshot is older than the accepted poll', async () => {
+    vi.useFakeTimers()
+    const { store, requests, stream, dispose } = await fixture()
+    try {
+      requests[0].finish(state(4, 3))
+      await vi.advanceTimersByTimeAsync(0)
+      const oldPresence = { ...presence, guests: { connected: 2, listening: 0, muted: 0, pending: 2 } }
+      const opening = [sessionFrame(3), reveal, ...audioFrames(3, 2), oldPresence, ready]
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        const text = opening.map((frame) => `event: ${frame.event}\ndata: ${JSON.stringify(frame)}\n\n`).join('')
+        controller.enqueue(new TextEncoder().encode(text))
+      } })
+      stream.mockResolvedValueOnce(new Response(body, { headers: { 'Content-Type': 'text/event-stream' } }))
+      const seen: number[] = []
+      store.subscribe(() => seen.push(store.snapshot().presence?.guests.connected ?? 0))
+      await vi.advanceTimersByTimeAsync(1300)
+      expect(requests).toHaveLength(2)
+      expect(store.snapshot()).toMatchObject({ connected: true, presence })
+      expect(store.snapshot().frames[0].audio_epoch).toBe(4)
+      requests[1].finish(state(5, 4))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(store.snapshot().frames[0].audio_epoch).toBe(5)
+      expect(seen).not.toContain(2)
+    } finally { dispose() }
+  })
+
   it('updates listener feedback without restarting either live cue', async () => {
     vi.useFakeTimers()
     const { store, dispose, paths, send } = streamed()

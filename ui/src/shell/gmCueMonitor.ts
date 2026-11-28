@@ -2,7 +2,7 @@ import { readPreviewVolume } from '../gm/audioGain'
 import { readCue } from '../gm/cueApi'
 import { assetPath } from '../gm/documentFields'
 import { createAudioMixer, emptyAudioSlots, type MixerCue, type MixerSlot } from '../table/audioMixer'
-import type { AudioFrame } from './cueStream'
+import { CUE_STATE_SILENCE_MS, type AudioFrame } from './cueStream'
 
 /** The GM hears the same two slots through the owner's authenticated media routes. */
 export class GmCueMonitor {
@@ -53,36 +53,39 @@ export class GmCueMonitor {
     this.render(true)
   }
 
+  private forgetLiveCues(): void {
+    clearTimeout(this.staleTimer)
+    this.staleTimer = undefined
+    this.live = false
+    this.frames = []
+    this.key = ''
+    this.loading?.abort()
+    this.loading = null
+    this.pending.clear()
+    this.urls.clear()
+    this.rendered = { ...emptyAudioSlots }
+  }
+
+  /** The transport's silence deadline has already passed. */
+  expire(): void {
+    this.connected = false
+    const wasLive = this.live
+    this.forgetLiveCues()
+    if (wasLive) this.mixer?.silence()
+  }
+
   update(frames: readonly AudioFrame[], connected: boolean, enabled: boolean, clockOffsetMs: number, forceResync = false): void {
     this.offset = clockOffsetMs
     const resync = forceResync || !this.connected
     this.connected = connected
     if (!enabled || !frames.some((frame) => frame.playing)) {
-      clearTimeout(this.staleTimer)
-      this.staleTimer = undefined
-      this.live = false
-      this.frames = []
-      this.key = ''
-      this.loading?.abort()
-      this.pending.clear()
-      this.urls.clear()
-      this.rendered = { ...emptyAudioSlots }
+      this.forgetLiveCues()
       this.mixer?.clear()
       return
     }
     if (!connected) {
       if (!this.live) return
-      this.staleTimer ??= setTimeout(() => {
-        this.live = false
-        this.staleTimer = undefined
-        this.frames = []
-        this.key = ''
-        this.loading?.abort()
-        this.pending.clear()
-        this.urls.clear()
-        this.rendered = { ...emptyAudioSlots }
-        this.mixer?.silence()
-      }, 10_000)
+      this.staleTimer ??= setTimeout(() => this.expire(), CUE_STATE_SILENCE_MS)
       return
     }
     clearTimeout(this.staleTimer)
@@ -132,16 +135,9 @@ export class GmCueMonitor {
   dispose(): void {
     document.removeEventListener('click', this.activate, true)
     document.removeEventListener('keydown', this.activate, true)
-    clearTimeout(this.staleTimer)
-    this.staleTimer = undefined
-    this.key = ''
-    this.live = false
+    this.forgetLiveCues()
+    this.connected = false
     this.preview = null
-    this.frames = []
-    this.rendered = { ...emptyAudioSlots }
-    this.loading?.abort()
-    this.pending.clear()
-    this.urls.clear()
     this.mixer?.dispose()
     this.mixer = null
   }
