@@ -30,6 +30,7 @@ import * as React from 'react'
 import { clearGoogleOutcome } from './googleOutcome'
 import { cueStops } from './cueStopCourier'
 import { revealSignOutNotice } from './revealSignOut'
+import { clearSignedOutStorage } from '../signOutStorage'
 import { deriveInitials, type AvatarTone } from '../ds/Avatar'
 import {
   getMe,
@@ -188,8 +189,8 @@ interface LiveAuth {
   user: AuthUser | null
   /** Bumped by every auth transition: an answer requested before one is dropped. */
   generation: number
-  /** A background re-check is in flight; signals meanwhile coalesce into it. */
-  rechecking: boolean
+  /** A signal during this read means its cookie may already be obsolete. */
+  read: { dirty: boolean } | null
   broadcast: IdentityBroadcast | null
 }
 
@@ -203,43 +204,61 @@ export function CurrentUserProvider(
   // identity rather than mirrored into state, so switching accounts can't leave
   // the previous user's name/avatar on screen (and needs no syncing effect).
   const [edits, setEdits] = useState<Record<string, StoredProfile>>({})
-  const live = useRef<LiveAuth>({ status: 'checking', user: null, generation: 0, rechecking: false, broadcast: null })
+  const live = useRef<LiveAuth>({ status: 'checking', user: null, generation: 0, read: null, broadcast: null })
 
   const transition = useCallback((user: AuthUser | null, status: AuthStatus) => {
     const state = live.current
     if (user !== null || status === 'unauthenticated') cueStops.retain(user?.email ?? null)
+    if (user !== null) revealSignOutNotice.clear()
     if (state.user !== null && (status === 'unauthenticated' || (user !== null && state.user.email !== user.email))) {
       clearGoogleOutcome()
+      setEdits({})
     }
     state.generation += 1
+    state.read = null
     state.status = status
     state.user = user
     setAuthUser(user)
     setAuthStatus(status)
   }, [])
 
-  // Session check on mount, re-runnable via retryAuthCheck. getMe() never
-  // throws (network errors and non-2xx both resolve to a normal AuthResult), so
-  // this can't leave authStatus stuck in `checking`.
+  const readSession = useCallback(async (afterLogout = false): Promise<AuthResult | null> => {
+    const state = live.current
+    const read = { dirty: false }
+    state.read = read
+    let result: AuthResult
+    do {
+      read.dirty = false
+      result = afterLogout ? await getMe(fetch, { afterLogout: true }) : await getMe()
+      if (state.read !== read) return null
+      // A burst of notifications needs one read after its last changed cookie.
+    } while (read.dirty)
+    state.read = null
+    return result
+  }, [])
+
+  const checkSession = useCallback((foreground: boolean) => {
+    const state = live.current
+    const generation = state.generation
+    void readSession().then(result => {
+      if (!result || generation !== state.generation) return
+      if (result.kind === 'ok') {
+        const known = state.status === 'authenticated' ? state.user : null
+        if (known?.email !== result.user.email || known.role !== result.user.role) transition(result.user, 'authenticated')
+      } else if (result.status === UNAUTHORIZED) {
+        if (state.status !== 'unauthenticated') transition(null, 'unauthenticated')
+      } else if (foreground) transition(null, 'unavailable')
+    })
+  }, [transition, readSession])
+
+  // A mount or explicit retry gates the shell; peer signals recheck it in
+  // the background. Both reject any answer overtaken by an identity change.
   const [checkNonce, setCheckNonce] = useState(0)
   useEffect(() => {
-    let cancelled = false
-    getMe().then((result) => {
-      if (cancelled) return
-      if (result.kind === 'ok') {
-        transition(result.user, 'authenticated')
-        return
-      }
-      // Only a 401 means "signed out". A 5xx or a network failure means the
-      // question went unanswered — sending the user to Login there would ask
-      // them to prove an identity to a service that cannot check it, and would
-      // silently discard a session that is still perfectly valid.
-      transition(null, result.status === UNAUTHORIZED ? 'unauthenticated' : 'unavailable')
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [checkNonce, transition])
+    const state = live.current
+    checkSession(true)
+    return () => { state.read = null }
+  }, [checkNonce, checkSession])
 
   // Back to `checking` for the duration of the retry, so App shows the loading
   // gate rather than leaving the error screen up with a dead button. Set here
@@ -248,6 +267,7 @@ export function CurrentUserProvider(
   // what react-hooks/set-state-in-effect is there to stop).
   const retryAuthCheck = useCallback(() => {
     live.current.generation += 1
+    live.current.read = null
     live.current.status = 'checking'
     setAuthStatus('checking')
     setCheckNonce((n) => n + 1)
@@ -274,21 +294,8 @@ export function CurrentUserProvider(
   useEffect(() => {
     const state = live.current
     const recheck = (): void => {
-      if (state.status === 'checking' || state.rechecking) return
-      state.rechecking = true
-      const generation = state.generation
-      const settle = (result: AuthResult | null): void => {
-        state.rechecking = false
-        if (result === null || generation !== state.generation) return
-        if (result.kind === 'ok') {
-          const known = state.status === 'authenticated' ? state.user : null
-          if (known?.email === result.user.email && known.role === result.user.role) return
-          transition(result.user, 'authenticated')
-        } else if (result.status === UNAUTHORIZED && state.status !== 'unauthenticated') {
-          transition(null, 'unauthenticated')
-        }
-      }
-      getMe().then(settle, () => settle(null))
+      if (state.read) state.read.dirty = true
+      else checkSession(state.status === 'checking')
     }
     const broadcast = openIdentityBroadcast(recheck, identityChannelFactory)
     state.broadcast = broadcast
@@ -296,11 +303,9 @@ export function CurrentUserProvider(
       broadcast.close()
       if (state.broadcast === broadcast) state.broadcast = null
     }
-  }, [identityChannelFactory, transition])
+  }, [identityChannelFactory, checkSession])
 
   const signIn = useCallback((next: AuthUser) => {
-    // Whoever signs in, by any path, never reads the previous account's reveal notice (REVEAL-16).
-    revealSignOutNotice.clear()
     transition(next, 'authenticated')
     live.current.broadcast?.post()
   }, [transition])
@@ -309,13 +314,37 @@ export function CurrentUserProvider(
     // Only the server can clear an httpOnly cookie. If it refuses, stay signed
     // in rather than pretending — otherwise a refresh silently restores the
     // session the user believes they ended.
+    const generation = live.current.generation
     const ok = await apiLogout()
     if (!ok) return false
+    const state = live.current
+    // The older POST could have cleared a newer sign-in's cookie. Ask again
+    // before removing any local data or accepting either identity as current.
+    const verifyNewSession = generation !== state.generation && state.status !== 'unauthenticated'
+    if (verifyNewSession) {
+      const checking = state.generation
+      state.broadcast?.post()
+      const current = await readSession(true)
+      if (!current || checking !== state.generation) return false
+      if (current.kind === 'ok') {
+        if (state.status !== 'authenticated' || state.user?.email !== current.user.email || state.user.role !== current.user.role) {
+          transition(current.user, 'authenticated')
+        }
+        return false
+      }
+      if (current.status !== UNAUTHORIZED) {
+        transition(null, 'unavailable')
+        return false
+      }
+    }
+    clearSignedOutStorage()
+    setEdits({})
+    revealSignOutNotice.clear()
     clearGoogleOutcome()
     transition(null, 'unauthenticated')
-    live.current.broadcast?.post()
+    if (!verifyNewSession) state.broadcast?.post()
     return true
-  }, [transition])
+  }, [transition, readSession])
 
   const profile = useMemo(
     () => edits[userId] ?? loadProfile(userId),

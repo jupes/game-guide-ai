@@ -15,6 +15,8 @@ import config
 from service.app import app, get_auth_store
 from service.auth_store import InMemoryAuthStore
 from service.invites import Role
+from service.table_api import SCREEN_COOKIE
+from service.workbench_api import FORBIDDEN_ORIGIN_DETAIL
 
 pytestmark = pytest.mark.real_auth
 
@@ -148,10 +150,43 @@ def test_login_verifies_a_hash_even_for_unknown_emails(store, monkeypatch):
     assert verifications[0] == app_module.DUMMY_PASSWORD_HASH
 
 
-def test_logout_clears_session(store):
+@pytest.mark.parametrize("headers", [{}, {"Origin": "https://game.example", "Sec-Fetch-Site": "same-origin"}])
+def test_logout_clears_the_account_cookie_cache_and_storage(store, monkeypatch, headers):
+    monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", True)
     token = _invite(store)
-    client = TestClient(app)
+    client = TestClient(app, base_url="https://game.example")
     client.post("/auth/signup", json={"email": "ada@example.com", "password": "password123", "invite": token})
+    client.cookies.set(SCREEN_COOKIE, "screen", domain="game.example", path="/table")
+    client.cookies.set("other", "preserved", domain="game.example", path="/")
     assert client.get("/auth/me").status_code == 200
-    client.post("/auth/logout")
+    for _ in range(2):  # A trusted repeat after the cookie expires keeps the same wire contract.
+        response = client.post("/auth/logout", headers=headers)
+        assert (response.status_code, response.content) == (200, b'{"ok":true}')
+        assert response.headers.get_list("clear-site-data") == ['"cache", "storage"']
+        assert response.headers.get_list("cache-control") == ["no-store"]
+        cookie, = response.headers.get_list("set-cookie")
+        name, *attributes = cookie.split("; ")
+        assert name == f'{config.SESSION_COOKIE_NAME}=""'
+        expected = {"HttpOnly", "Secure", "Max-Age=0", "Path=/", f"SameSite={config.SESSION_COOKIE_SAMESITE}"}
+        assert expected <= set(attributes)
     assert client.get("/auth/me").status_code == 401
+    assert client.cookies[SCREEN_COOKIE] == "screen" and client.cookies["other"] == "preserved"
+
+
+def test_logout_refuses_untrusted_origins_before_clearing_anything(store):
+    client = TestClient(app, base_url="https://game.example")
+    client.post(
+        "/auth/signup", json={"email": "ada@example.com", "password": "password123", "invite": _invite(store)},
+    )
+    session = client.cookies[config.SESSION_COOKIE_NAME]
+    for headers in (
+        {"Origin": "https://elsewhere.example"},
+        {"Origin": "null"},
+        {"Sec-Fetch-Site": "cross-site"},
+        {"Origin": "https://game.example", "Sec-Fetch-Site": "same-site"},
+    ):
+        refused = client.post("/auth/logout", headers=headers)
+        assert (refused.status_code, refused.json()) == (403, {"detail": dict(FORBIDDEN_ORIGIN_DETAIL)})
+        assert "set-cookie" not in refused.headers and "clear-site-data" not in refused.headers
+        assert client.cookies[config.SESSION_COOKIE_NAME] == session
+    assert client.get("/auth/me").status_code == 200

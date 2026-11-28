@@ -682,18 +682,33 @@ describe('login', () => {
 })
 
 describe('logout', () => {
-  it('posts to /auth/logout with credentials:include', async () => {
-    let called = false
+  it('posts to the same-origin logout and requires its JSON acknowledgement', async () => {
+    let path: RequestInfo | URL | undefined
     let captured: RequestInit | undefined
-    const spy: typeof fetch = (async (_url, init) => {
-      called = true
+    const spy: typeof fetch = (async (url, init) => {
+      path = url
       captured = init
-      return new Response(null, { status: 200 })
+      return Response.json({ ok: true })
     }) as typeof fetch
-    await logout(spy)
-    expect(called).toBe(true)
-    expect(captured?.method).toBe('POST')
-    expect(captured?.credentials).toBe('include')
+    await expect(logout(spy)).resolves.toBe(true)
+    expect(path).toBe('/auth/logout')
+    expect(captured).toMatchObject({ method: 'POST', credentials: 'include', mode: 'same-origin', redirect: 'error', cache: 'no-store' })
+  })
+
+  it.each([
+    htmlFetch(), fakeFetch(200, {}), fakeFetch(200, { ok: false }), fakeFetch(200, { ok: 1 }),
+    fakeFetch(201, { ok: true }), fakeFetch(204), fakeFetchWithHeaders(200, { 'Content-Type': 'text/plain' }, { ok: true }),
+    async () => new Response('{', { headers: { 'Content-Type': 'application/json' } }),
+  ])('rejects a proxy, malformed or unconfirmed success response', async fetchImpl => {
+    await expect(logout(fetchImpl)).resolves.toBe(false)
+  })
+
+  it.each([
+    ['redirected', true], ['url', 'https://other.example/auth/logout'],
+  ])('rejects a successful-looking %s response', async (property, value) => {
+    const reply = Response.json({ ok: true })
+    Object.defineProperty(reply, property, { value })
+    await expect(logout(async () => reply)).resolves.toBe(false)
   })
 
   it('reports failure (false) instead of throwing when the request fails', async () => {
@@ -711,6 +726,18 @@ describe('logout', () => {
 })
 
 describe('getMe', () => {
+  it('reconciles a concurrent sign-in with verified identity or the canonical JSON 401', async () => {
+    const user = { email: 'bea@example.com', role: 'player' }
+    await expect(getMe(fakeFetch(200, user), { afterLogout: true })).resolves.toEqual({ kind: 'ok', user })
+    await expect(getMe(fakeFetch(401, { detail: 'not signed in' }), { afterLogout: true })).resolves.toMatchObject({ kind: 'error', status: 401 })
+    for (const response of [fakeFetch(401, {}), fakeFetchWithHeaders(401, { 'Content-Type': 'text/html' }, { detail: 'not signed in' }),
+      fakeFetch(200, {}), fakeFetch(200, { email: 'bea@example.com', role: 'unknown' })]) {
+      const result = await getMe(response, { afterLogout: true })
+      expect(result).toMatchObject({ kind: 'error' })
+      expect(result).not.toHaveProperty('status', 401)
+    }
+  })
+
   it('returns ok with the user on 200', async () => {
     const result = await getMe(fakeFetch(200, { email: 'ada@example.com', role: 'dm' }))
     expect(result).toEqual({ kind: 'ok', user: { email: 'ada@example.com', role: 'dm' } })

@@ -21,6 +21,8 @@ import {
   type CampaignDocumentValue, type SeatReadOutcome, type SwitchGuard,
 } from './campaignContext'
 import type { IdentityChannelLike } from './identityBroadcast'
+import { revealSignOutNotice } from './revealSignOut'
+import { clearPendingStop, readPendingStops, writePendingStop } from './revealStopMarker'
 import type { CampaignRestore } from './workspaceFragment'
 
 // ── Fixtures and harness ──────────────────────────────────────────────────────
@@ -681,10 +683,11 @@ describe('identity transitions', () => {
 describe('the cross-tab identity signal', () => {
   const MESSAGE = { v: 1, kind: 'identity-changed' }
 
-  it('ignores a signal while the initial authentication check is pending', async () => {
+  it('rechecks a peer sign-out during the initial read before showing the old account', async () => {
     const signal = channels()
     const initial = deferred<api.AuthResult>()
-    const me = vi.spyOn(api, 'getMe').mockReturnValue(initial.promise)
+    const latest = deferred<api.AuthResult>()
+    const me = vi.spyOn(api, 'getMe').mockReturnValueOnce(initial.promise).mockReturnValue(latest.promise)
     render(
       <AppNavProvider initialScreen="workspace" initialMode="gm">
         <CurrentUserProvider identityChannelFactory={signal.factory}><Probe /></CurrentUserProvider>
@@ -693,11 +696,14 @@ describe('the cross-tab identity signal', () => {
     expect(signal.opened).toHaveLength(1)
     expect(live.user.authStatus).toBe('checking')
     await signal.receive(MESSAGE)
+    await signal.receive(MESSAGE)
     expect(me).toHaveBeenCalledTimes(1)
     await act(async () => { initial.resolve({ kind: 'ok', user: { email: ADA, role: 'dm' } }) })
-    expect(live.user.authStatus).toBe('authenticated')
-    await signal.receive(MESSAGE)
     expect(me).toHaveBeenCalledTimes(2)
+    await act(async () => { latest.resolve({ kind: 'error', status: 401, message: 'not signed in' }) })
+    expect(live.user.authStatus).toBe('unauthenticated')
+    expect(rendered.map(row => row.account)).not.toContain(ADA)
+    expect(signal.posts()).toEqual([])
   })
 
   it('posts exactly the bare message after sign-in, a sign-out the server accepted and the first 401 (T1-17)', async () => {
@@ -752,7 +758,51 @@ describe('the cross-tab identity signal', () => {
     await waitFor(() => expect(window.location.hash).toBe(''))
   })
 
-  it('coalesces a burst into one check, and drops an answer that lands after a local sign-out (critic 12b, 12c)', async () => {
+  it('a peer sign-in retires the expired account’s private reveal notice before another sign-out', async () => {
+    const { signal } = await mount()
+    const stop = { campaignId: 'cmp_A', documentId: 'doc_A', sessionId: 'ses_A', epoch: 1, commandId: 'cmd_A' }
+    writePendingStop(ADA, stop)
+    try {
+      // The live reveal's 401 listener records what the GM still needs to stop.
+      act(() => {
+        revealSignOutNotice.set(['Private NPC name'])
+        api.notifyUnauthorized()
+      })
+      expect(live.user.authStatus).toBe('unauthenticated')
+      expect(revealSignOutNotice.text).toContain('Private NPC name')
+      expect(readPendingStops(ADA)).toEqual([stop])
+      await switchAccount(signal, BOB)
+      vi.mocked(api.getMe).mockResolvedValue({ kind: 'error', status: 401, message: 'not signed in' })
+      await signal.receive(MESSAGE)
+      await waitFor(() => expect(live.user.authStatus).toBe('unauthenticated'))
+      expect(revealSignOutNotice.text).toBeNull()
+    } finally {
+      revealSignOutNotice.clear()
+      clearPendingStop(ADA, stop.campaignId, stop.documentId)
+    }
+  })
+
+  it('reads the latest cookie once after overlapping peer signals before acting on an account change', async () => {
+    const { signal } = await mount()
+    await loaded()
+    const earlier = deferred<api.AuthResult>()
+    const latest = deferred<api.AuthResult>()
+    const me = vi.mocked(api.getMe).mockClear().mockReturnValueOnce(earlier.promise).mockReturnValue(latest.promise)
+    await signal.receive(MESSAGE)
+    await signal.receive(MESSAGE)
+    await signal.receive(MESSAGE)
+    expect(me).toHaveBeenCalledTimes(1)
+    // Another tab signed in, then signed out before its first signal's read answered.
+    await act(async () => { earlier.resolve({ kind: 'ok', user: { email: BOB, role: 'dm' } }) })
+    expect(me).toHaveBeenCalledTimes(2)
+    await act(async () => { latest.resolve({ kind: 'error', status: 401, message: 'not signed in' }) })
+    expect(live.user.authStatus).toBe('unauthenticated')
+    expect(live.c.list.kind).toBe('idle')
+    expect(rendered.map(row => row.account)).not.toContain(BOB)
+    expect(signal.posts()).toEqual([])
+  })
+
+  it('drops a pending peer check when a local sign-out settles first (critic 12b, 12c)', async () => {
     const { signal } = await mount()
     const me = vi.mocked(api.getMe)
     const answer = deferred<api.AuthResult>()

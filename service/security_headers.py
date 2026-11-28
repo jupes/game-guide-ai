@@ -145,6 +145,10 @@ PERMISSIONS_POLICY: Final[str] = "camera=(), microphone=(), geolocation=(), paym
 #: `ui/nginx.conf`; guarded by `tests/test_security_headers_contract.py`.
 STRICT_TRANSPORT_SECURITY: Final[str] = "max-age=31536000; includeSubDomains"
 
+#: SEC-48/49 clear origin data on a confirmed browser identity change. Cookie
+#: expiry stays selective through Set-Cookie, including the table-scoped grant.
+CLEAR_SITE_DATA: Final[str] = '"cache", "storage"'
+
 #: The separate player table document contains no inline scripts or styles.
 TABLE_PAGE_HEADERS: Final[dict[str, str]] = {
     "Content-Security-Policy": (

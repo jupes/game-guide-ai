@@ -141,6 +141,11 @@ describe('session check', () => {
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
     setGoogleOutcome({ search: '?google=linked', pathname: '/profile' })
+    revealSignOutNotice.set(['Private NPC name'])
+    act(() => result.current.setDisplayName('Private alias'))
+    act(() => result.current.setAvatarTone('arcane'))
+    localStorage.setItem('game-guide-ai:gm-pending-stops:ada@example.com', 'command')
+    sessionStorage.setItem('rag-chat:conversations', 'legacy')
     await act(async () => {
       await result.current.user.signOut()
     })
@@ -148,6 +153,12 @@ describe('session check', () => {
     expect(result.current.authStatus).toBe('unauthenticated')
     expect(result.current.user.id).toBe('guest')
     expect(getGoogleOutcome()).toBeNull()
+    expect(revealSignOutNotice.text).toBeNull()
+    expect(localStorage.getItem('game-guide-ai:gm-pending-stops:ada@example.com')).toBeNull()
+    expect(sessionStorage.getItem('rag-chat:conversations')).toBeNull()
+    act(() => result.current.signIn({ email: 'ada@example.com', role: 'dm' }))
+    expect(result.current.user.displayName).toBe(STUB.displayName)
+    expect(result.current.user.avatarTone).toBe('gold')
   })
 
   it('a FAILED logout keeps the user signed in (the cookie is still live)', async () => {
@@ -160,6 +171,8 @@ describe('session check', () => {
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
 
+    const key = 'game-guide-ai:gm-pending-stops:ada@example.com'
+    localStorage.setItem(key, 'command')
     let outcome: boolean | undefined
     await act(async () => {
       outcome = await result.current.user.signOut()
@@ -169,6 +182,8 @@ describe('session check', () => {
     expect(outcome).toBe(false)
     expect(result.current.authStatus).toBe('authenticated')
     expect(result.current.user.id).toBe('ada@example.com')
+    expect(localStorage.getItem(key)).toBe('command')
+    localStorage.removeItem(key)
   })
 
   it('a 401 from any guarded call drops the app back to unauthenticated', async () => {
@@ -178,6 +193,9 @@ describe('session check', () => {
     const { result } = renderHook(() => useCurrentUser(), { wrapper })
     await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
 
+    const key = 'game-guide-ai:gm-pending-stops:ada@example.com'
+    localStorage.setItem(key, 'command')
+    revealSignOutNotice.set(['Private NPC name'])
     // Simulate a guarded endpoint reporting the session is gone.
     await act(async () => {
       const res = await api.postChat('hi', 'sage', null, (async () =>
@@ -185,6 +203,43 @@ describe('session check', () => {
       expect(res.kind).toBe('error')
     })
     expect(result.current.authStatus).toBe('unauthenticated')
+    expect(localStorage.getItem(key)).toBe('command')
+    expect(revealSignOutNotice.text).toContain('Private NPC name')
+    localStorage.removeItem(key)
+  })
+
+  it.each(['still signed in', 'signed out', 'unavailable'] as const)('checks the current cookie after a raced sign-in: %s', async outcome => {
+    const ada = { email: 'ada@example.com', role: 'dm' as const }
+    const bea = { email: 'bea@example.com', role: 'player' as const }
+    const me = vi.spyOn(api, 'getMe').mockResolvedValueOnce({ kind: 'ok', user: ada })
+      .mockResolvedValue(outcome === 'still signed in' ? { kind: 'ok', user: bea }
+        : { kind: 'error', status: outcome === 'signed out' ? 401 : 503, message: 'Could not load account' })
+    let finish!: (ok: boolean) => void
+    vi.spyOn(api, 'logout').mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const channel = { onmessage: null, close: vi.fn(), postMessage: vi.fn() }
+    const { result } = renderHook(() => useCurrentUser(), {
+      wrapper: ({ children }) => <CurrentUserProvider identityChannelFactory={() => channel}>{children}</CurrentUserProvider>,
+    })
+    await waitFor(() => expect(result.current.authStatus).toBe('authenticated'))
+    const pending = result.current.user.signOut()
+    act(() => result.current.signIn(bea))
+    act(() => result.current.setDisplayName('Bea'))
+    await act(async () => {
+      finish(true)
+      await expect(pending).resolves.toBe(outcome === 'signed out')
+    })
+    expect(me).toHaveBeenCalledTimes(2)
+    expect(channel.postMessage).toHaveBeenCalledTimes(2)
+    const key = 'game-guide-ai:profile:bea@example.com'
+    expect(result.current.authStatus).toBe(outcome === 'still signed in' ? 'authenticated'
+      : outcome === 'signed out' ? 'unauthenticated' : 'unavailable')
+    if (outcome === 'still signed in') {
+      expect(result.current.user.id).toBe(bea.email)
+      expect(result.current.user.displayName).toBe('Bea')
+    } else expect(result.current.user.id).toBe('guest')
+    if (outcome === 'signed out') expect(localStorage.getItem(key)).toBeNull()
+    else expect(localStorage.getItem(key)).toContain('Bea')
+    localStorage.removeItem(key)
   })
 })
 

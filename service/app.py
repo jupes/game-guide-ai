@@ -126,7 +126,7 @@ from .ratelimit import (
 )
 from .reveals import Reveals
 from .route_errors import RouteErrors
-from .security_headers import SecurityHeadersMiddleware
+from .security_headers import CLEAR_SITE_DATA, SecurityHeadersMiddleware
 from .session import SessionData, decode_session, encode_session
 from .spa_fallback import install_spa
 from .table_audio_media import TableAudioMedia
@@ -1789,8 +1789,11 @@ def login(
 
 
 @app.post("/auth/logout")
-def logout(response: Response) -> dict[str, bool]:
+def logout(request: Request, response: Response) -> dict[str, bool]:
+    check_same_origin(request)
     _clear_session_cookie(response)
+    response.headers["clear-site-data"] = CLEAR_SITE_DATA
+    response.headers["cache-control"] = "no-store"
     return {"ok": True}
 
 
