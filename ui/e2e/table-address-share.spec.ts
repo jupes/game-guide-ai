@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test'
 import jsQR from 'jsqr'
+import { TOOL_IDS } from '../src/gm/contracts'
 import { expect, signIn, test, type TesterAccount } from './fixtures'
 import { installRevealRoutes } from './revealStubs'
 import { CAMPAIGN_ID, DOCUMENT_ID, DOCUMENT_TITLE, installWorkbenchRoutes, THREAD_PAGE } from './workbenchStubs'
@@ -10,6 +11,9 @@ async function prepareGM(page: Page, account: TesterAccount) {
   await page.goto('/')
   await signIn(page, account)
   await installWorkbenchRoutes(page)
+  await page.route(`**/campaigns/${CAMPAIGN_ID}/tool-availability`, route => route.fulfill({
+    json: Object.fromEntries(TOOL_IDS.map(id => [id, null])),
+  }))
   await page.route(url => url.pathname === '/conversations' && !url.searchParams.has('campaign_id'),
     route => route.fulfill({ json: THREAD_PAGE }))
   return installRevealRoutes(page)
@@ -74,6 +78,7 @@ test('the GM shares a scannable table address that still requires table access',
   page, browser, baseURL, accounts, isMobile,
 }, info) => {
   await prepareGM(page, accounts[1])
+  if (!isMobile) await page.setViewportSize({ width: 1440, height: 900 })
   await page.addInitScript(() => {
     // A phone can decline clipboard access. Capture the copy request, then exercise that refusal too.
     let copies = 0
@@ -92,6 +97,7 @@ test('the GM shares a scannable table address that still requires table access',
   const expected = new URL(`/table?campaign_id=${CAMPAIGN_ID}`, page.url()).href
   await expect(address).toHaveValue(expected)
   await expect(address).toHaveAttribute('readonly', '')
+  await page.screenshot({ path: info.outputPath('table-address-link.png'), animations: 'disabled', scale: 'css' })
   await page.getByRole('button', { name: 'Show QR code', exact: true }).click()
   const image = page.getByRole('img', { name: 'QR code for the player table', exact: true })
   await image.scrollIntoViewIfNeeded()
