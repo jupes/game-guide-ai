@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { act, render, renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import appHtml from '../../index.html?raw'
+import appCss from '../index.css?raw'
 import {
   CurrentUserProvider,
   useCurrentUser,
@@ -259,22 +261,32 @@ describe('session check', () => {
       }
       const root = document.createElement('div')
       root.id = 'root'
-      document.body.append(root)
+      const status = new DOMParser().parseFromString(appHtml, 'text/html').getElementById('session-restore-status')!
+      const styles = document.createElement('style')
+      styles.textContent = appCss
+      document.head.append(styles)
+      document.body.append(status, root)
       const view = render(<CurrentUserProvider identityChannelFactory={() => null}><AccountView /></CurrentUserProvider>, { container: root })
       try {
         const draft = await view.findByRole('textbox') as HTMLInputElement
         const portal = document.body.querySelector('aside')!
         expect(root.contains(portal)).toBe(false)
+        expect(status).not.toBeVisible()
         draft.value = 'Unsaved private draft'
         act(() => window.dispatchEvent(new PageTransitionEvent('pagehide')))
         expect(root).toBeVisible()
         act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
         expect(root).not.toBeVisible()
         expect(portal).not.toBeVisible()
-        expect(getComputedStyle(document.documentElement).display).toBe('none')
+        expect(getComputedStyle(root).display).toBe('none')
+        expect(getComputedStyle(portal).display).toBe('none')
+        expect(status).toBeVisible()
+        expect(status).toHaveRole('status')
+        expect(status).toHaveTextContent('Loading…')
         act(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
         expect(root).not.toBeVisible()
         expect(portal).not.toBeVisible()
+        expect(status).toBeVisible()
         expect(me).toHaveBeenCalledTimes(2)
         await act(async () => {
           if (outcome === 'same account' || outcome === 'different account') {
@@ -282,13 +294,23 @@ describe('session check', () => {
           } else settle({ kind: 'error', status: outcome === 'signed out' ? 401 : 503, message: 'Session check failed' })
         })
         expect(root).toBeVisible()
+        expect(status).not.toBeVisible()
         if (outcome === 'same account') expect(view.getByRole('textbox')).toHaveValue('Unsaved private draft')
         else {
           expect(draft).not.toBeInTheDocument()
           expect(root).not.toHaveTextContent(ada.email)
           expect(root).toHaveTextContent(outcome === 'different account' ? bea.email : outcome === 'signed out' ? 'unauthenticated' : 'unavailable')
         }
-      } finally { view.unmount(); root.remove() }
+        act(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+        expect(status).toBeVisible()
+      } finally {
+        view.unmount()
+        expect(status).not.toBeVisible()
+        expect(document.documentElement).not.toHaveAttribute('data-session-restoring')
+        root.remove()
+        status.remove()
+        styles.remove()
+      }
     },
   )
 })

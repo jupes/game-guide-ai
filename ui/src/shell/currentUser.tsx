@@ -269,20 +269,24 @@ export function CurrentUserProvider(
   }, [checkNonce, checkSession])
 
   // The back/forward cache can freeze a tab before a sign-out notification
-  // arrives. Hide the document and its portals before capture, preserving
+  // arrives. Cover the document and its portals before capture, preserving
   // the account's unsubmitted fields until its cookie can be checked.
   useEffect(() => {
     const state = live.current
+    const html = document.documentElement
+    const status = document.getElementById('session-restore-status')
     let visit = 0
     let covered = false
     function cover(): void {
-      if (!document.documentElement.hidden) {
-        document.documentElement.hidden = true
-        covered = true
-      }
+      if (html.hasAttribute('data-session-restoring')) return
+      html.setAttribute('data-session-restoring', '')
+      if (status) status.hidden = false
+      covered = true
     }
     function uncover(): void {
-      if (covered) document.documentElement.hidden = false
+      if (!covered) return
+      if (status) status.hidden = true
+      html.removeAttribute('data-session-restoring')
       covered = false
     }
     function hide(event: PageTransitionEvent): void {

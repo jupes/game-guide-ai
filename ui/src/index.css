@@ -30,8 +30,10 @@ body {
   padding: 0;
 }
 
-/* The account check on a cached-page restore covers the app and body portals. */
-html[hidden] { display: none !important; }
+/* Keep the cached workspace and all body portals out of view until the
+   account is verified. Only the neutral status is available during the check. */
+html[data-session-restoring] body > :not(#session-restore-status),
+#session-restore-status[hidden] { display: none !important; }
 
 body {
   background:
