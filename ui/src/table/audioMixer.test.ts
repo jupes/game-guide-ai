@@ -164,6 +164,101 @@ it('cuts buffered audio on a terminal or changed poll context and carries the pl
   } finally { stop() }
 })
 
+function playingSnapshot(contextKey: string, startedAt: number): Response {
+  const frames = [
+    { event: 'session', role: 'guest', audio: true },
+    { event: 'snapshot', slots: [{ slot: 'table', seq: 1, content: { content_kind: 'document', type: 'npc',
+      fields: [{ key: 'name', value: 'A shared handout' }] } }] },
+    { event: 'audio', slot: 'ambience', seq: 1, playing: {
+      asset: { kind: 'audio', handle: 'x'.repeat(32), media_type: 'audio/mpeg', duration_ms: 20_000, width: null, height: null },
+      started_at: new Date(startedAt).toISOString(), duration_ms: 20_000, start_offset_ms: 0, loop: true,
+    } },
+    { event: 'audio', slot: 'one_shot', seq: 0, playing: null },
+    { event: 'ready' },
+  ].map(f => ({ schema_version: 1, ...f }))
+  return Response.json({ schema_version: 1, frames }, { headers: { 'X-Table-Audio-Context': contextKey.repeat(64) } })
+}
+
+it.each(['stream 429', 'snapshot 429', 'typed stream inactive'])('%s cuts live sound and closes presence before another read', async denial => {
+  vi.setSystemTime(T0)
+  document.body.innerHTML = new DOMParser().parseFromString(tableHtml, 'text/html').body.innerHTML
+  const reports: string[] = []
+  let contextKey = 'a'
+  const snapshots = vi.fn(() => playingSnapshot(contextKey, T0))
+  const limited = () => new Response(null, { status: 429, headers: { 'Retry-After': '25' } })
+  let deny = false
+  let writer!: ReadableStreamDefaultController<Uint8Array>
+  const pending = new ReadableStream<Uint8Array>({ start(controller) { writer = controller } })
+  const stop = mountTable(document, 'cmp_table', async (input, init) => {
+    if (input === '/table/identity') return Response.json({ schema_version: 1, kind: 'account' })
+    if (String(input).startsWith('/table/stream?')) {
+      if (deny && denial === 'stream 429') return limited()
+      if (deny && denial === 'typed stream inactive') return new Response(pending, { status: 404, headers: {
+        'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Cross-Origin-Resource-Policy': 'same-origin',
+      } })
+      return Response.json({ detail: 'Not Found' }, { status: 404 })
+    }
+    if (String(input).startsWith('/table/snapshot?')) return deny && denial === 'snapshot 429' ? limited() : snapshots()
+    const body = JSON.parse(String(init?.body))
+    reports.push(body.action)
+    return body.action === 'open' ? Response.json({ schema_version: 1, registration: 'r'.repeat(32) })
+      : new Response(null, { status: 204 })
+  }, () => null)
+  try {
+    await vi.advanceTimersByTimeAsync(3)
+    const [accept, mute] = document.querySelectorAll<HTMLButtonElement>('#table-sound button')
+    accept.click()
+    await next()
+    const original = Context.latest
+    const media = original.elements.find(el => el.src.endsWith('/table/assets/' + 'x'.repeat(32)))!
+    sounding(media)
+    mute.click()
+    // Normal FastAPI missing-route probes must leave authorized playback alone.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(snapshots).toHaveBeenCalledTimes(2)
+    expect(reports).not.toContain('close')
+    expect(media.paused).toBe(false)
+    expect(document.querySelector('#table-projections')).toHaveTextContent('A shared handout')
+    const plays = played.length
+    deny = true
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(document.querySelector('#table-projections')).toBeEmptyDOMElement()
+    expect(document.querySelector('#table-sound section')).not.toBeVisible()
+    expect(media.paused).toBe(true)
+    expect(media.hasAttribute('src')).toBe(false)
+    expect(reports.filter(a => a === 'close')).toEqual(['close'])
+    const message = denial === 'typed stream inactive' ? 'This table is unavailable.' : 'Too many requests. Wait a moment and try again.'
+    expect(document.querySelector('#table-status')).toHaveTextContent(message)
+    if (denial === 'typed stream inactive') {
+      writer.enqueue(new TextEncoder().encode(JSON.stringify({ detail: { code: 'inactive', message: 'Inactive.', retryable: false } })))
+      writer.close()
+    }
+    await vi.advanceTimersByTimeAsync(12_000)
+    expect(document.querySelector('#table-status')).toHaveTextContent(message)
+    expect(snapshots).toHaveBeenCalledTimes(2)
+    expect(reports.filter(a => a === 'open')).toHaveLength(1)
+    expect(played).toHaveLength(plays)
+    if (denial !== 'typed stream inactive') {
+      const sameListener = denial === 'stream 429'
+      contextKey = sameListener ? 'a' : 'b'
+      deny = false
+      await vi.advanceTimersByTimeAsync(13_003)
+      expect(document.querySelector('#table-projections')).toHaveTextContent('A shared handout')
+      expect(accept.hidden).toBe(sameListener)
+      expect(original.close).toHaveBeenCalledTimes(sameListener ? 0 : 1)
+      if (sameListener) {
+        expect(mute).toHaveAttribute('aria-pressed', 'true')
+        expect(played.length).toBeGreaterThan(plays)
+      } else {
+        expect(played).toHaveLength(plays)
+        accept.click()
+        await next()
+        expect(played.length).toBeGreaterThan(plays)
+      }
+    }
+  } finally { stop() }
+})
+
 it.each([true, false])('keeps sound consent only for the fresh authorized context (matching: %s)', async matches => {
   document.body.innerHTML = new DOMParser().parseFromString(tableHtml, 'text/html').body.innerHTML
   let kind: 'account' | 'screen' | 'unknown' = 'unknown'
@@ -177,17 +272,7 @@ it.each([true, false])('keeps sound consent only for the fresh authorized contex
     if (input === '/table/sign-out' && kind === 'screen') return new Response(null, { status: 409 })
     if (String(input).startsWith('/table/snapshot?')) {
       await hold
-      const frames = [
-        { event: 'session', role: 'guest', audio: true },
-        { event: 'snapshot', slots: [{ slot: 'table', seq: 1, content: null }] },
-        { event: 'audio', slot: 'ambience', seq: 1, playing: {
-          asset: { kind: 'audio', handle: 'x'.repeat(32), media_type: 'audio/mpeg', duration_ms: 20_000, width: null, height: null },
-          started_at: new Date().toISOString(), duration_ms: 20_000, start_offset_ms: 0, loop: true,
-        } },
-        { event: 'audio', slot: 'one_shot', seq: 0, playing: null },
-        { event: 'ready' },
-      ].map(f => ({ schema_version: 1, ...f }))
-      return Response.json({ schema_version: 1, frames }, { headers: { 'X-Table-Audio-Context': contextKey.repeat(64) } })
+      return playingSnapshot(contextKey, Date.now())
     }
     if (!String(input).startsWith('/table/presence?')) throw new Error('Unexpected table action')
     const report = JSON.parse(String(init?.body))

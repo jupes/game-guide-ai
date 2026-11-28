@@ -68,5 +68,12 @@ nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
   cursor: pointer;
 }
 
+.table-action[aria-disabled='true'] {
+  background: transparent;
+  border-style: dashed;
+  color: var(--table-text);
+  cursor: not-allowed;
+}
+
 [hidden] { display: none; }
 :focus-visible { outline: 3px solid var(--table-accent); outline-offset: 3px; }

@@ -4,6 +4,7 @@ import { BASE_URL } from './e2e/stack'
 const mobileSpecs = [
   '**/phone.spec.ts', '**/tavern-seats.spec.ts', '**/workbench-composer.spec.ts',
   '**/cue-playback.spec.ts', '**/table-address-share.spec.ts', '**/table-accessibility.spec.ts',
+  '**/table-read-denials.spec.ts',
 ]
 export const mobileProjects = [
   { name: 'mobile-chromium', use: devices['Pixel 5'], testMatch: mobileSpecs },

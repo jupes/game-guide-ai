@@ -5,6 +5,7 @@ import { tableProjections } from './projection'
 import { mountTableAudio } from './audioControls'
 import type { MixerCue } from './audioMixer'
 import { tablePresence } from './presence'
+import { tableReadRetryAt } from './readResponse'
 import { responseClock, streamTable, tablePicture, type TablePicture } from './stream'
 
 const POLL_MS = 5000
@@ -12,7 +13,7 @@ const BLANK_MS = 10_000
 const READ_TIMEOUT_MS = 8000
 const ANNOUNCEMENT_INTERVAL_MS = 100
 
-type ReadResult = TablePicture | { kind: 'inactive' | 'signed-out' | 'retry' } | { kind: 'limited'; delay: number }
+type ReadResult = TablePicture | { kind: 'inactive' | 'signed-out' | 'retry' } | { kind: 'limited'; retryAt: number }
 
 async function readTable(id: string, signal: AbortSignal, request: typeof fetch): Promise<ReadResult> {
   try {
@@ -21,10 +22,7 @@ async function readTable(id: string, signal: AbortSignal, request: typeof fetch)
     signal.throwIfAborted()
     if (response.status === 401) return { kind: 'signed-out' }
     if (response.status === 403 || response.status === 404) return { kind: 'inactive' }
-    if (response.status === 429) {
-      const seconds = Number(response.headers.get('Retry-After'))
-      return { kind: 'limited', delay: Number.isFinite(seconds) ? Math.max(POLL_MS, Math.min(seconds, 300) * 1000) : POLL_MS }
-    }
+    if (response.status === 429) return { kind: 'limited', retryAt: tableReadRetryAt(response) }
     if (!response.ok) return { kind: 'retry' }
     const offset = responseClock(response, sentAt)
     const snapshot = await response.json()
@@ -86,6 +84,10 @@ export function mountTable(
   let hasPicture = false
   let streamRetryAt = 0
   let streamFailures = 0
+  let tableRetryAt = 0
+  let tableRetryTimer: number | undefined
+  let leaveRetryAt = 0
+  let keepExitFailure = false
   let paused = false
   let departed = false
   let pendingAction: AbortController | null = null
@@ -150,8 +152,12 @@ export function mountTable(
     reload.textContent = retry ? 'Retry' : 'Reload table'
     if (retry) reload.setAttribute('aria-describedby', 'table-identity-notice')
     else reload.removeAttribute('aria-describedby')
-    if (retry && Date.now() < identityRetryAt) reload.setAttribute('aria-disabled', 'true')
+    if (tableReadLimited() || (retry && Date.now() < identityRetryAt)) reload.setAttribute('aria-disabled', 'true')
     else reload.removeAttribute('aria-disabled')
+    if (!pendingAction) {
+      if (Date.now() < leaveRetryAt) leave.setAttribute('aria-disabled', 'true')
+      else leave.removeAttribute('aria-disabled')
+    }
     restoreRedactedFocus(focused)
   }
 
@@ -197,7 +203,7 @@ export function mountTable(
       // A request opened while identity was unknown may still belong to
       // another cookie, even if it has not delivered its first frame yet.
       const sameActorPossible = previous === null || credential === previous
-      const priorConsent = wasUnknown && sameActorPossible && audio.accepted ? audioContext : null
+      const priorConsent = wasUnknown && sameActorPossible && audio.accepted ? audioContext ?? consentToRecheck : null
       reset()
       clearSound()
       if (priorConsent !== null) consentToRecheck = priorConsent
@@ -208,9 +214,9 @@ export function mountTable(
   }
 
   async function refreshIdentity(): Promise<void> {
-    if (paused || departed || disposed || pendingAction) return
+    if (paused || departed || disposed || pendingAction || keepExitFailure || tableReadLimited()) return
     const result = await checkIdentity()
-    if (result) applyIdentity(result)
+    if (result && !tableReadLimited()) applyIdentity(result)
   }
 
   function showDegraded(degraded: boolean): void {
@@ -239,6 +245,35 @@ export function mountTable(
 
   function queue(delay: number): void {
     pollTimer = browser.setTimeout(() => { void read() }, delay)
+  }
+
+  function tableReadLimited(): boolean {
+    return Date.now() < tableRetryAt
+  }
+
+  function waitForReadBudget(): void {
+    browser.clearTimeout(tableRetryTimer)
+    showActions(credential === 'unknown' && !identityNotice.hidden)
+    if (!keepExitFailure) announce(COPY.limited)
+    // A Leave can be retried before reads if its own shorter delay expires.
+    const now = Date.now()
+    const next = leaveRetryAt > now ? Math.min(leaveRetryAt, tableRetryAt) : tableRetryAt
+    tableRetryTimer = browser.setTimeout(() => {
+      if (tableReadLimited()) waitForReadBudget()
+      else {
+        tableRetryAt = 0
+        showActions(credential === 'unknown' && !identityNotice.hidden)
+        recheck()
+      }
+    }, Math.min(Math.max(0, next - now), 2_147_483_647))
+  }
+
+  function limitTableReads(retryAt: number): void {
+    tableRetryAt = Math.max(tableRetryAt, retryAt)
+    cancelIdentityRead()
+    reset()
+    clearSoundForRecheck()
+    waitForReadBudget()
   }
 
   function showPicture(result: TablePicture): boolean {
@@ -332,10 +367,18 @@ export function mountTable(
     audio.reset()
   }
 
+  function clearSoundForRecheck(): void {
+    if (audio.accepted) {
+      if (audioContext !== null) consentToRecheck = audioContext
+      else if (consentToRecheck === null) resetConsent()
+    }
+    clearSound()
+  }
+
   async function finish(): Promise<void> {
     browser.clearTimeout(blankTimer)
     redact()
-    clearSound()
+    clearSoundForRecheck()
     showDegraded(false)
     announce(COPY.inactive)
     await refreshIdentity()
@@ -351,6 +394,14 @@ export function mountTable(
     }
     const end = await streamTable(id, controller.signal, request, {
       hidden: () => document.visibilityState === 'hidden',
+      checkingAccess() {
+        if (activeRead !== controller) return
+        browser.clearTimeout(blankTimer)
+        redact()
+        clearSoundForRecheck()
+        showDegraded(false)
+        announce(COPY.inactive)
+      },
       opened() {
         if (activeRead !== controller) return
         opened = true
@@ -370,6 +421,10 @@ export function mountTable(
     })
     browser.clearTimeout(deadline)
     if (activeRead !== controller) return
+    if (end.kind === 'limited') {
+      limitTableReads(end.retryAt)
+      return
+    }
     activeRead = null
     if (opened) redact()
     // A content-free terminal can mean Rotate, even during the opening
@@ -396,7 +451,8 @@ export function mountTable(
   }
 
   async function read(): Promise<void> {
-    if (campaignId === null || paused || departed || pendingAction || disposed || credential === 'signed-out' || activeRead !== null) return
+    if (campaignId === null || paused || departed || pendingAction || disposed || keepExitFailure
+      || credential === 'signed-out' || activeRead !== null || tableReadLimited()) return
     const controller = new AbortController()
     activeRead = controller
     if (Date.now() >= streamRetryAt) {
@@ -407,6 +463,10 @@ export function mountTable(
     const result = await readTable(campaignId, controller.signal, request)
     browser.clearTimeout(deadline)
     if (activeRead !== controller) return
+    if (result.kind === 'limited') {
+      limitTableReads(result.retryAt)
+      return
+    }
     activeRead = null
     if (result.kind === 'live') {
       if (!showPicture(result)) return
@@ -420,17 +480,21 @@ export function mountTable(
       queue(POLL_MS)
       return
     }
-    redact()
-    if (result.kind === 'limited') {
-      announce(COPY.limited)
-      queue(result.delay)
-      return
-    }
     await finish()
   }
 
   function recheck(): void {
     if (disposed || departed || paused || pendingAction) return
+    if (tableReadLimited()) {
+      waitForReadBudget()
+      return
+    }
+    if (tableRetryAt) {
+      tableRetryAt = 0
+      browser.clearTimeout(tableRetryTimer)
+      showActions(credential === 'unknown' && !identityNotice.hidden)
+    }
+    if (keepExitFailure) return
     reset()
     resync = true
     announce(campaignId === null ? COPY.inactive : COPY.joining)
@@ -444,6 +508,7 @@ export function mountTable(
   // can retain a page for Back/Forward or present it after unlocking a phone.
   function suspend(): void {
     paused = true
+    browser.clearTimeout(tableRetryTimer)
     cancelIdentityRead()
     cancelAction()
     reset()
@@ -480,6 +545,7 @@ export function mountTable(
     lastVerified = null
     wasScreen = false
     departed = false
+    keepExitFailure = false
     identityNotice.hidden = true
     showActions()
     recheck()
@@ -495,18 +561,22 @@ export function mountTable(
 
   async function depart(kind: TableActor): Promise<void> {
     if (pendingAction || departed || disposed || paused || credential !== kind) return
+    if (kind === 'screen' && Date.now() < leaveRetryAt) return
     const action = kind === 'account' ? signOut : leave
     const failed = kind === 'account' ? 'Couldn’t sign out. Try again.' : 'Couldn’t leave the table. Try again.'
     const controller = new AbortController()
     pendingAction = controller
+    keepExitFailure = false
     cancelIdentityRead()
     reset()
-    clearSound()
+    clearSoundForRecheck()
     // Keep the pending action in the tab order. A native disabled button
     // drops focus on both mobile engines; the pending request guards re-entry.
     action.setAttribute('aria-disabled', 'true')
     try {
-      if (kind === 'screen') {
+      // Leave can only remove a screen grant. During a table-read backoff,
+      // a verified screen can still leave without spending another read.
+      if (kind === 'screen' && !tableReadLimited()) {
         const current = await checkIdentity()
         if (!current || pendingAction !== controller) return
         if (current.kind !== kind) {
@@ -523,11 +593,20 @@ export function mountTable(
       }
       actionDeadline = browser.setTimeout(() => {
         if (pendingAction !== controller) return
+        keepExitFailure = true
         cancelAction()
         announce(failed)
       }, READ_TIMEOUT_MS)
       const response = await request(kind === 'account' ? '/table/sign-out' : '/table/leave', options)
       if (pendingAction !== controller) return
+      if (kind === 'screen' && response.status === 429) {
+        cancelAction()
+        keepExitFailure = true
+        leaveRetryAt = tableReadRetryAt(response)
+        limitTableReads(leaveRetryAt)
+        announce('Couldn’t leave the table. Wait a moment and try again.')
+        return
+      }
       if (kind === 'account' && response.status === 409) {
         // The guarded POST observed a screen. Hide exits until the separate
         // credential read settles, and allow only public pictures meanwhile.
@@ -537,6 +616,10 @@ export function mountTable(
         lastVerified = 'screen'
         wasScreen = true
         showActions()
+        if (tableReadLimited()) {
+          waitForReadBudget()
+          return
+        }
         announce(campaignId === null ? COPY.inactive : COPY.joining)
         const fresh = await checkIdentity()
         if (fresh) {
@@ -549,6 +632,7 @@ export function mountTable(
       if (pendingAction !== controller) return
       const focused = document.activeElement
       departed = true
+      browser.clearTimeout(tableRetryTimer)
       credential = kind === 'account' ? 'signed-out' : 'unknown'
       returnLink.textContent = 'Back to the Tavern'
       signOut.hidden = true
@@ -564,7 +648,10 @@ export function mountTable(
         else returnLink.focus()
       } else restoreRedactedFocus(focused)
     } catch {
-      if (pendingAction === controller) announce(failed)
+      if (pendingAction === controller) {
+        keepExitFailure = true
+        announce(failed)
+      }
     } finally {
       if (pendingAction === controller) cancelAction()
     }
@@ -573,6 +660,8 @@ export function mountTable(
   const onSignOut = () => { void depart('account') }
   const onLeave = () => { void depart('screen') }
   const onReload = () => {
+    if (tableReadLimited()) { recheck(); return }
+    keepExitFailure = false
     if (credential === 'unknown' && !identityNotice.hidden) void refreshIdentity()
     else recheck()
   }
@@ -589,6 +678,7 @@ export function mountTable(
 
   return () => {
     disposed = true
+    browser.clearTimeout(tableRetryTimer)
     cancelAction()
     cancelIdentityRead()
     reset()

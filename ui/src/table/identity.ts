@@ -1,4 +1,5 @@
 import { TableIdentitySchema, type TableIdentity } from '../gm/contracts'
+import { tableReadRetryAt } from './readResponse'
 
 export type TableActor = TableIdentity['kind']
 export type IdentityResult = { kind: TableActor | 'signed-out' } | { kind: 'unavailable'; retryAt?: number }
@@ -21,11 +22,7 @@ export async function readTableIdentity(request: typeof fetch, signal: AbortSign
       return await isSignedOutResponse(response) ? { kind: 'signed-out' } : { kind: 'unavailable' }
     }
     if (response.status === 429) {
-      const header = response.headers.get('Retry-After')?.trim()
-      const now = Date.now()
-      const until = header && /^\d+$/.test(header)
-        ? Math.min(Number.MAX_SAFE_INTEGER, now + Number(header) * 1000) : Date.parse(header ?? '')
-      return { kind: 'unavailable', retryAt: Number.isFinite(until) ? Math.max(now + 1000, until) : now + 5000 }
+      return { kind: 'unavailable', retryAt: tableReadRetryAt(response) }
     }
     if (response.ok) {
       const result = TableIdentitySchema.safeParse(await response.json())
