@@ -145,9 +145,10 @@ export function createAudioMixer(
   }
 
   function position(voice: Voice): boolean {
-    if (!voice.cue || !voice.seek || voice.media.readyState < 1) return true
+    if (!voice.cue || !voice.seek) return true
     const offset = cuePosition(voice.cue, now(), voice.late && voice.slot === 'one_shot')
     if (offset === null) { clear(voice); return false }
+    if (voice.media.readyState < 1) return true
     voice.media.currentTime = offset
     voice.seek = false
     return true
@@ -236,9 +237,18 @@ export function createAudioMixer(
         continue
       }
       if (current && sameCue(current.cue, cue)) {
-        if (resync && slot === 'ambience') {
+        const paused = current.media.paused && !current.media.ended
+        // Keep a sounding shot continuous. After a phone pauses it, the fresh
+        // snapshot is a late join, even if the media element survived the lock.
+        if (resync && (slot === 'ambience' || paused)) {
           current.seek = true
-          if (position(current) && current.media.paused && current.phase !== 'error') play(current)
+          current.late = true
+          if (position(current) && paused && current.phase !== 'error') {
+            current.phase = 'loading'
+            current.lastMediaTime = null
+            updateDuck()
+            play(current)
+          }
         }
         continue
       }

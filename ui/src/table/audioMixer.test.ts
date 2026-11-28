@@ -186,6 +186,50 @@ describe('the two-slot Web Audio mixer', () => {
     mixer.dispose()
   })
 
+  it.each([true, false])('rejoins a phone-paused one-shot on a fresh snapshot (pause event received: %s)', async (pauseEventReceived) => {
+    const { mixer, setTime, state } = setup()
+    await mixer.unlock()
+    const shot = Context.latest.elements[2]
+    const one = cue('c', { loop: false })
+    const slots = { ...emptyAudioSlots, one_shot: one }
+    mixer.apply(slots)
+    sounding(shot)
+    shot.currentTime = 2
+    shot.pause()
+    if (pauseEventReceived) shot.dispatchEvent(new Event('pause'))
+    setTime(T0 + 19_000) // Exactly one second remains.
+    const attempts = played.length
+    mixer.apply(slots)
+    expect(played).toHaveLength(attempts)
+    expect(state().playing).toEqual([])
+    mixer.apply(slots, { resync: true })
+    expect(played).toHaveLength(attempts + 1)
+    expect(shot.currentTime).toBe(19)
+    expect(state().playing).toEqual([])
+    shot.dispatchEvent(new Event('playing'))
+    expect(state().playing).toEqual([one.url])
+    mixer.dispose()
+  })
+
+  it.each([0, 4])('drops a paused one-shot with under a second left at readyState %i', async (readyState) => {
+    const { mixer, setTime, state } = setup()
+    await mixer.unlock()
+    const shot = Context.latest.elements[2]
+    const slots = { ...emptyAudioSlots, one_shot: cue('c', { loop: false }) }
+    mixer.apply(slots)
+    sounding(shot)
+    shot.pause()
+    shot.dispatchEvent(new Event('pause'))
+    set(shot, 'readyState', readyState)
+    setTime(T0 + 19_001)
+    const attempts = played.length
+    mixer.apply(slots, { resync: true })
+    expect(played).toHaveLength(attempts)
+    expect(shot.hasAttribute('src')).toBe(false)
+    expect(state().status).toBe('idle')
+    mixer.dispose()
+  })
+
   it('declines remote URLs and skips a late one-shot without touching the media network', async () => {
     const { mixer, state, setTime } = setup()
     await mixer.unlock()
