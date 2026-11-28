@@ -90,7 +90,7 @@ export const PresenceWithGuestsAndPending: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(
-      canvas.getByText("2 listening · 1 muted · Gorath and 1 guest haven't tapped in yet"),
+      canvas.getByText("2 listening · 1 muted · Gorath and 1 screen haven't tapped in yet"),
     ).toBeInTheDocument()
   },
 }

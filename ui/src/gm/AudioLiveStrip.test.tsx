@@ -157,7 +157,7 @@ describe('presence (AUDIO-21, AUDIO-22)', () => {
   it('writes the sentence, naming participants and counting guests', () => {
     setup({ presence: PRESENCE_MIXED })
     expect(
-      screen.getByText("2 listening · 1 muted · Gorath and 1 guest haven't tapped in yet"),
+      screen.getByText("2 listening · 1 muted · Gorath and 1 screen haven't tapped in yet"),
     ).toBeInTheDocument()
   })
 
@@ -167,7 +167,7 @@ describe('presence (AUDIO-21, AUDIO-22)', () => {
     })
 
     const sentence = screen.getByText(/listening/).textContent ?? ''
-    expect(sentence).toBe("1 listening · 0 muted · 2 guests haven't tapped in yet")
+    expect(sentence).toBe("1 listening · 0 muted · 2 screens haven't tapped in yet")
     expect(sentence).not.toMatch(/guest[a-z]*\s+[A-Z]/)
   })
 

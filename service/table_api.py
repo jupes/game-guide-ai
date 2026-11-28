@@ -60,12 +60,11 @@ responses, TA-6/TA-7), added by `TableRoute` to whatever built the answer, once.
 No route-level `Content-Security-Policy` or `Referrer-Policy`: these are JSON
 answers that never redirect, and the table page's policy is `1kg.7.4`'s.
 
-**The digest lookup is throttled per source** (release review S6,
-agent-forge-harness-6621). A grant-shaped cookie costs a database round trip
-before anyone is known, so each one spends an attempt from the auth source
-budget (`ratelimit.source_limiter`) first; past it the answer is `429
-throttled_user` with its wait, and no lookup runs. A request with no cookie, or
-one that is not a grant, spends nothing.
+**Every digest lookup is budgeted before it reaches the database** (S6, SEC-47).
+An unfamiliar grant spends from the auth source budget. A recently verified
+grant spends from its own table-read budget, so screens at one venue can poll,
+report and request media ranges. The database checks liveness on every lookup.
+A revoked grant loses its budget mapping and spends from the source budget.
 
 The grant is 32 CSPRNG bytes; only its digest is stored (SEC-5). It leaves the
 server in exactly one place, the mint's `Set-Cookie` — never a body, a URL, a
@@ -84,27 +83,42 @@ from typing import Any, cast
 
 import psycopg
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Match
 from starlette.types import Message, Receive, Scope, Send
 
 import config
 
 from . import campaign_identity as ident
-from . import ratelimit
+from . import ratelimit, table_presence
 from .auth_store import AuthStore
-from .campaign_store import MissingParent, ScreenLimit
+from .campaign_store import MissingParent, ScreenLimit, pg
+from .db import TransactionalDatabase
+from .screen_lookup_budget import ScreenLookupBudget
 from .session import SessionData
 from .stream_response import leased_body
 from .table_admission import TableFull
+from .table_audio_media import TableAudioMedia, TableMediaBusy, TableMediaUnavailable
 from .table_reads import TableReads
 from .table_session_store import LiveScreen
 from .table_sessions import BackendUnavailable, Inactive, TableSessions
 from .table_streams import TableStreams
-from .workbench_api import WorkbenchRoute, cross_site, inactive, mark_write_throttle, origin_check, spend_write
+from .workbench_api import (
+    WorkbenchRoute,
+    body_reader,
+    cross_site,
+    inactive,
+    mark_write_throttle,
+    origin_check,
+    spend_write,
+)
 from .workbench_contracts import (
     CONTRACT_VERSION,
+    TABLE_PRESENCE_REQUEST,
     ErrorBody,
     ErrorCode,
     ErrorInfo,
@@ -268,6 +282,8 @@ def _spend_read(principal: Principal) -> None:
     id or the grant id, so one venue's NAT never shares a budget. Past it, `429
     throttled_user` with its wait, deciding nothing about the principal."""
     if principal.screen is not None:
+        if principal.read_budget_spent:
+            return
         key = f"screen:{principal.screen.grant_id}"
     elif principal.account is not None:
         key = f"account:{principal.account.user_id}"
@@ -312,6 +328,7 @@ class GrantCookie:
 
     secret: str | None = field(default=None, repr=False)
     live: LiveScreen | None = None
+    read_budget_spent: bool = False
 
 
 @dataclass(frozen=True)
@@ -320,6 +337,7 @@ class Principal:
 
     screen: LiveScreen | None = None
     account: SessionData | None = None
+    read_budget_spent: bool = False
 
 
 def build_router(
@@ -330,6 +348,9 @@ def build_router(
     table_reads: Callable[[], TableReads | None],
     *,
     table_streams: Callable[[], TableStreams | None] | None = None,
+    table_media: Callable[[], TableAudioMedia | None] | None = None,
+    presence_database: Callable[[], TransactionalDatabase | None] | None = None,
+    media_enabled: Callable[[], bool] = lambda: False,
 ) -> APIRouter:
     """The table router, given the application's session check (called
     directly, never declared), its auth store getter, its account-cookie
@@ -338,16 +359,14 @@ def build_router(
         route_class=TableRoute,
         dependencies=[Depends(fetch_metadata), Depends(origin_check())],
     )
+    screen_budgets = ScreenLookupBudget()
 
     def grant_cookie(
         request: Request,
         sessions: TableSessions | None = Depends(lifecycle),
         now: datetime = Depends(get_clock),
     ) -> GrantCookie:
-        """The grant cookie, resolved with one digest lookup (SEC-46), which is
-        throttled per source (S6). One that is not live is marked for deletion;
-        a database that cannot answer, or a throttled source, decides nothing,
-        and deletes nothing."""
+        """Resolve a grant against current standing after charging its lookup budget."""
         secret = request.cookies.get(SCREEN_COOKIE)
         if secret is None:
             return GrantCookie()
@@ -356,11 +375,21 @@ def build_router(
             return GrantCookie(secret)
         if sessions is None:
             raise _unavailable()
-        _throttle(request)
+        digest = ident.digest(secret)
+        known = screen_budgets.grant_id(digest)
+        if known is None:
+            _throttle(request)
+        else:
+            spend_stream_read(f"screen:{known}")
         live = _guarded(lambda: sessions.resolve_screen(secret, now=now))
         if live is None:
             _forget(request)
-        return GrantCookie(secret, live)
+            if known is not None:
+                screen_budgets.forget(digest)
+                _throttle(request)
+        else:
+            screen_budgets.remember(digest, live.grant_id)
+        return GrantCookie(secret, live, read_budget_spent=live is not None and known == live.grant_id)
 
     def table_principal(
         request: Request,
@@ -371,7 +400,7 @@ def build_router(
         application's own check; its refusal is re-raised as it is, and the route
         class adds a stale grant's deletion to it."""
         if grant.live is not None:
-            return Principal(screen=grant.live)
+            return Principal(screen=grant.live, read_budget_spent=grant.read_budget_spent)
         return Principal(account=session(request, store))
 
     def mint_throttle(principal: Principal = Depends(table_principal)) -> None:
@@ -443,6 +472,7 @@ def build_router(
         secret = grant.secret
         if grant.live is not None and secret is not None and sessions is not None:
             _guarded(lambda: sessions.leave(secret, now=now))
+            screen_budgets.forget(ident.digest(secret))
             _forget(request)
             response.headers["clear-site-data"] = CLEAR_SITE_DATA
         return response
@@ -464,18 +494,20 @@ def build_router(
         if reads is None:
             raise _unavailable()
         screen, account = principal.screen, principal.account
-        found = _guarded(
-            lambda: reads.snapshot(
-                campaign_id,
-                now=now,
-                grant_id=None if screen is None else screen.grant_id,
-                account_id=None if account is None else account.user_id,
-            )
-        )
+        grant_id = None if screen is None else screen.grant_id
+        account_id = None if account is None else account.user_id
+        context = None
+        if media_enabled():
+            found, context = _guarded(lambda: reads.snapshot_with_context(
+                campaign_id, now=now, grant_id=grant_id, account_id=account_id,
+            ))
+        else:
+            found = _guarded(lambda: reads.snapshot(campaign_id, now=now, grant_id=grant_id, account_id=account_id))
         if found is None:
             _throttle(request)
             inactive()
-        return JSONResponse(found.model_dump(mode="json"))
+        headers = {"X-Table-Audio-Context": context} if context else {}
+        return JSONResponse(found.model_dump(mode="json"), headers=headers)
 
     if table_streams is not None:
 
@@ -485,13 +517,15 @@ def build_router(
             principal: Principal = Depends(table_principal),
             streams: TableStreams | None = Depends(table_streams),
             now: datetime = Depends(get_clock),
-        ) -> AsyncGenerator[AsyncGenerator[bytes]]:
+        ) -> AsyncGenerator[tuple[AsyncGenerator[bytes], dict[str, str]]]:
             if campaign_id is None or not ident.is_id(ident.CAMPAIGN, campaign_id):
                 inactive()
             _spend_read(principal)
             if streams is None:
                 raise _unavailable()
             screen, account = principal.screen, principal.account
+            if account is not None and account.expires_at is None:
+                raise _unavailable()
             failure: StarletteHTTPException | None = None
             try:
                 lease = await streams.admission.open(
@@ -512,16 +546,101 @@ def build_router(
                     _throttle(request)
                     inactive()
                 async with leased_body(
-                    streams.bytes(lease), lambda: streams.admission.release(lease),
+                    streams.bytes(lease, auth_expires_at=account.expires_at if account else None),
+                    lambda: streams.admission.release(lease),
                     release_warning="table_stream_release_failed",
                 ) as events:
-                    yield events
+                    headers = {"X-Accel-Buffering": "no"}
+                    if media_enabled() and (context := lease.audio_context()) is not None:
+                        headers["X-Table-Audio-Context"] = context
+                    yield events, headers
                 return
             raise failure
 
         @router.get("/table/stream")
-        async def stream(body: AsyncGenerator[bytes] = Depends(open_stream)) -> StreamingResponse:
-            return StreamingResponse(body, media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
+        async def stream(
+            body: tuple[AsyncGenerator[bytes], dict[str, str]] = Depends(open_stream),
+        ) -> StreamingResponse:
+            events, headers = body
+            return StreamingResponse(events, media_type="text/event-stream", headers=headers)
+
+    class MediaTableRoute(TableRoute):
+        def matches(self, scope: Scope) -> tuple[Match, Scope]:
+            return super().matches(scope) if media_enabled() else (Match.NONE, {})
+
+    router.route_class = MediaTableRoute
+    if table_media is not None:
+
+        @router.get("/table/assets/{handle}", include_in_schema=False)
+        async def audio_bytes(
+            handle: str, request: Request, principal: Principal = Depends(table_principal),
+            media: TableAudioMedia | None = Depends(table_media),
+        ) -> Response:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{32}", handle):
+                inactive()
+            _spend_read(principal)
+            if media is None:
+                raise _unavailable()
+            account, screen = principal.account, principal.screen
+            try:
+                result = await media.read(
+                    handle, account_id=account.user_id if account else None,
+                    grant_id=screen.grant_id if screen else None,
+                    expires_at=account.expires_at if account else None, range_header=request.headers.get("range"),
+                    if_range=request.headers.get("if-range"),
+                )
+            except TableMediaBusy as exc:
+                failure = _refusal(503, ErrorCode.BACKEND_UNAVAILABLE, UNAVAILABLE_MESSAGE,
+                                   retryable=True, retry_after_s=exc.retry_after_s)
+            except TableMediaUnavailable:
+                failure = _unavailable()
+            else:
+                if result is None:
+                    _throttle(request)
+                    inactive()
+                return result
+            raise failure
+
+    if presence_database is not None:
+        def presence_throttle(principal: Principal = Depends(table_principal)) -> None:
+            _spend_read(principal)
+
+        mark_write_throttle(presence_throttle)
+
+        @router.post("/table/presence", dependencies=[Depends(presence_throttle)], include_in_schema=False)
+        def presence(
+            request: Request, campaign_id: str | None = None, principal: Principal = Depends(table_principal),
+            raw: bytes = Depends(body_reader(2048)), db: TransactionalDatabase | None = Depends(presence_database),
+            now: datetime = Depends(get_clock),
+        ) -> Response:
+            if campaign_id is None or not ident.is_id(ident.CAMPAIGN, campaign_id):
+                inactive()
+            try:
+                body = TABLE_PRESENCE_REQUEST.validate_json(raw)
+            except ValidationError:
+                raise RequestValidationError([{"type": "value_error", "loc": ("body",), "msg": "invalid"}]) from None
+            if db is None:
+                raise _unavailable()
+            account, screen = principal.account, principal.screen
+            try:
+                with db.transaction() as unit:
+                    reply = table_presence.apply(
+                        pg(unit), campaign_id, account_id=account.user_id if account else None,
+                        grant_id=screen.grant_id if screen else None, body=body, now=now,
+                    )
+            except table_presence.PresenceInactive:
+                _throttle(request)
+                inactive()
+            except table_presence.PresenceFull:
+                failure = _refusal(503, ErrorCode.BACKEND_UNAVAILABLE, "This table is full.",
+                                   retryable=True, retry_after_s=5)
+            except table_presence.PresenceConflict:
+                failure = _refusal(409, ErrorCode.CONFLICT, "Table audio changed. Refresh the table.", retryable=False)
+            except psycopg.Error:
+                failure = _unavailable()
+            else:
+                return JSONResponse(reply.model_dump(mode="json")) if reply is not None else Response(status_code=204)
+            raise failure
 
     return router
 

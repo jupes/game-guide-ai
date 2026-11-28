@@ -26,11 +26,14 @@ class TableStreams:
         self.admission = admission
         self._fanout = fanout
 
-    async def bytes(self, lease: StreamLease) -> AsyncGenerator[bytes]:
+    async def bytes(self, lease: StreamLease, *, auth_expires_at: datetime | None = None) -> AsyncGenerator[bytes]:
         loop = asyncio.get_running_loop()
         next_renewal = loop.time() + LEASE_HEARTBEAT_S
         async with aclosing(self._fanout.stream(lease.watch)) as frames:
             try:
+                if auth_expires_at is not None and datetime.now(UTC) >= auth_expires_at:
+                    yield RECONNECT_FRAME
+                    return
                 async for frame in frames:
                     if loop.time() >= next_renewal:
                         try:
@@ -42,6 +45,9 @@ class TableStreams:
                             yield RECONNECT_FRAME
                             return
                         next_renewal = loop.time() + LEASE_HEARTBEAT_S
+                    if auth_expires_at is not None and datetime.now(UTC) >= auth_expires_at:
+                        yield RECONNECT_FRAME
+                        return
                     yield frame
             finally:
                 with anyio.CancelScope(shield=True), anyio.move_on_after(2):

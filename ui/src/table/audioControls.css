@@ -1,0 +1,21 @@
+.table-sound {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-block: 16px;
+}
+
+.table-sound[hidden], .table-sound [hidden] { display: none; }
+.table-sound-enable { flex-direction: column; justify-content: center; }
+.table-sound-detail { color: var(--table-text); font-size: .875rem; }
+.table-sound[data-variant='prompt'] .table-sound-enable {
+  inline-size: 100%;
+  padding-block: 16px;
+  border-color: var(--table-accent);
+}
+.table-sound button[aria-pressed='true'] {
+  background: var(--table-accent);
+  color: var(--table-bg);
+}
+.table-sound [role='status'] { margin: 0; }

@@ -58,6 +58,7 @@ from service.reconciliation import enqueue_reconciliation
 from service.reveal_scope import Audience, ParticipantsAudience, TableAudience
 from service.reveal_store import InMemoryRevealStore
 from service.reveals import DisplayCommand, Reveals, slot_clear_for
+from service.screen_lookup_budget import ScreenLookupBudget
 from service.session import SessionData, encode_session
 from service.table_admission import StreamLease, TableAdmission, TableFull
 from service.table_fanout import TableFanout
@@ -72,7 +73,7 @@ from service.workbench_api import (
     api_routes,
     install_workbench,
 )
-from service.workbench_contracts import Author, DocumentTypeId, GmReadyEvent, GmSnapshot, TableSnapshot
+from service.workbench_contracts import Author, DocumentTypeId, GmReadyEvent, GmSnapshot, PresenceEvent, TableSnapshot
 
 pytestmark = pytest.mark.real_auth
 
@@ -469,6 +470,21 @@ def test_leave_is_never_a_401_and_never_signs_an_account_out(world: _World) -> N
 SOURCE_A, SOURCE_B = {"x-forwarded-for": "203.0.113.7"}, {"x-forwarded-for": "203.0.113.8"}
 
 
+def test_screen_lookup_budget_book_is_bounded_and_recently_verified_only(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("service.screen_lookup_budget.time.monotonic", lambda: now[0])
+    book = ScreenLookupBudget(limit=2, lifetime_s=10)
+    book.remember("digest-1", "first")
+    book.remember("digest-2", "second")
+    book.remember("digest-1", "first")
+    book.remember("digest-3", "third")
+    assert book.grant_id("digest-2") is None and book.grant_id("digest-1") == "first"
+    book.forget("digest-1")
+    assert book.grant_id("digest-1") is None
+    now[0] = 10
+    assert book.grant_id("digest-3") is None
+
+
 @pytest.fixture
 def budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """A source budget of two in place of the auth one, keyed on the address
@@ -713,10 +729,14 @@ def test_nginx_names_each_table_route_and_forwards_host_and_source() -> None:
     """
     conf = NGINX.read_text(encoding="utf-8")
     table_paths = sorted({path for path, _ in api_routes(app) if path.startswith("/table/")})
-    assert table_paths == [LEAVE, MINT, SNAPSHOT]
+    assert table_paths == sorted({"/table/assets/{handle}", LEAVE, "/table/presence", MINT, SNAPSHOT,
+                                  *(["/table/stream"] if config.TABLE_STREAMS_ENABLED else [])})
     blocks = dict(re.findall(r"location\s+=\s+(/table/\S+)\s*\{([^}]*)\}", conf))
     # The client can already probe this exact path while the server stream is built.
-    assert sorted(blocks) == [*table_paths, "/table/stream"]
+    assert set(blocks) == {LEAVE, MINT, SNAPSHOT, "/table/stream", "/table/presence"}
+    assets = re.search(r"location\s+\^~\s+/table/assets/\s*\{([^}]*)\}", conf)
+    assert assets and "proxy_buffering    off;" in assets[1] and "proxy_cache        off;" in assets[1]
+    blocks["/table/assets/{handle}"] = assets[1]
     for path, block in blocks.items():
         assert "proxy_set_header   Host $host;" in block, path
         assert "proxy_set_header   X-Real-IP $remote_addr;" in block, path
@@ -746,8 +766,9 @@ def test_stream_is_off_by_default_and_opt_in_reuses_the_table_route_guards(world
                 raise self.result
             return self.result
 
-        async def bytes(self, lease):
+        async def bytes(self, lease, *, auth_expires_at):
             assert lease == "lease"
+            assert auth_expires_at is not None and auth_expires_at > datetime.now(UTC)
             yield b'event: inactive\ndata: {"schema_version":1,"event":"inactive"}\n\n'
 
     streams = Streams()
@@ -790,10 +811,13 @@ def test_stream_is_off_by_default_and_opt_in_reuses_the_table_route_guards(world
 
 
 def test_gm_stream_and_snapshot_require_the_owner_account_not_a_table_grant(world: _World, monkeypatch) -> None:
-    campaign, _ = world.live()
+    campaign, session = world.live()
     deadlines: list[datetime] = []
     released = []
     ready = GmReadyEvent(schema_version=1, event="ready")
+    presence = PresenceEvent.model_validate({"schema_version": 1, "event": "presence", "session_id": session,
+        "gen": 1, "participants": [{"participant_id": "seat", "alias": "Player", "audio": "idle"}],
+        "guests": {"connected": 0, "listening": 0, "muted": 0, "pending": 0}})
 
     class Streams:
         admission_result: Exception | None = None
@@ -812,21 +836,26 @@ def test_gm_stream_and_snapshot_require_the_owner_account_not_a_table_grant(worl
             if self.projection_error:
                 raise gm_stream_api.GmProjectionUnavailable("private projection details")
             if campaign_id == campaign and account_id == GM_A:
-                return GmSnapshot(schema_version=1, frames=[ready])
+                return GmSnapshot(schema_version=1, frames=[presence, ready])
             return None
 
         async def release(self, lease):
             released.append(lease)
 
-        async def bytes(self, lease, *, auth_expires_at):
+        async def bytes(self, lease, *, auth_expires_at, include_presence):
             assert lease == "lease"
             deadlines.append(auth_expires_at)
+            if include_presence:
+                yield f"event: presence\ndata: {presence.model_dump_json()}\n\n".encode()
             yield f"event: ready\ndata: {ready.model_dump_json()}\n\n".encode()
 
     streams = Streams()
     local = FastAPI()
     install_workbench(local)
-    local.include_router(gm_stream_api.build_router(appmod.WORKBENCH_GM, lambda: cast(GmStreams, streams)))
+    live_media = [True]
+    local.include_router(gm_stream_api.build_router(
+        appmod.WORKBENCH_GM, lambda: cast(GmStreams, streams), media_enabled=lambda: live_media[0],
+    ))
     local.dependency_overrides[get_auth_store] = lambda: world.auth
     client = TestClient(local, base_url="https://testserver")
     resources = [f"/campaigns/{campaign}/{name}" for name in ("snapshot", "stream")]
@@ -849,6 +878,13 @@ def test_gm_stream_and_snapshot_require_the_owner_account_not_a_table_grant(worl
     opening = client.get(resources[0], headers=account(GM_A))
     assert opening.json()["frames"] == [ready.model_dump(mode="json")]
     assert opening.headers["cross-origin-resource-policy"] == "same-origin"
+    modern = {**account(GM_A), "X-Table-Audio-Presence": "1"}
+    assert client.get(resources[0], headers=modern).json()["frames"] == [
+        presence.model_dump(mode="json"), ready.model_dump(mode="json"),
+    ]
+    assert client.get(resources[1], headers=modern).text.startswith("event: presence\n")
+    live_media[0] = False
+    assert client.get(resources[0], headers=modern).json()["frames"] == [ready.model_dump(mode="json")]
     streams.projection_error = True
     failed = client.get(resources[0], headers=account(GM_A))
     assert failed.status_code == 503 and "private projection details" not in failed.text
@@ -872,7 +908,7 @@ def test_gm_stream_and_snapshot_require_the_owner_account_not_a_table_grant(worl
     streams.admission_result = None
     monkeypatch.setattr(gm_stream_api.StreamingResponse, "stream_response", disconnected_before_headers)
     TestClient(local, raise_server_exceptions=False).get(resources[1], headers=account(GM_A))
-    assert released == ["lease"] and len(deadlines) == 1
+    assert released == ["lease"] and len(deadlines) == 2
 
 
 SNAPSHOT_AT = "/table/snapshot?campaign_id="

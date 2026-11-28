@@ -226,6 +226,7 @@ jobs:
             tests/test_asset_db.py tests/test_session_dividers_db.py \
             tests/test_reveal_db.py tests/test_table_stream_reads_db.py tests/test_eligibility_db.py \
             tests/test_cue_playback_db.py tests/test_gm_streams_db.py \
+            tests/test_table_audio_media_db.py tests/test_table_presence_db.py \
             tests/test_policy_facts_db.py tests/test_principals_db.py tests/test_entity_index_db.py \
             tests/test_assets_api_db.py \
             tests/test_asset_serving_db.py tests/test_document_generation_db.py \

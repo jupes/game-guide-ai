@@ -34,10 +34,9 @@ with no filename, `Cache-Control: no-store`, `Accept-Ranges: bytes`, and no
 other than the table's send one is undecided (threat model TA-6, `ifq`).
 
 **The re-check seam** (requirement 5.6; SEC-16). A response may be given an
-async `recheck`, asked before each chunk once `RECHECK_BYTES` have gone since the
-last answer; `False` ends the stream with `ReadRevoked`. A response shorter than
-that completes. The GM's route passes none: its authorisation is the one query
-that found the key. The table side's re-check is `1kg.7.x`'s.
+async `recheck`, asked before sending any byte past each `RECHECK_BYTES`
+boundary; `False` ends the stream with `ReadRevoked`. The GM's route passes
+none: its authorisation is the one query that found the key.
 """
 
 from __future__ import annotations
@@ -179,25 +178,34 @@ class ByteResponse(StreamingResponse):
         self._chunks = chunks
         self._recheck = recheck
         super().__init__(
-            self._body(), status_code=206 if window.partial else 200, headers=byte_headers(window, size),
+            self._body(window.length), status_code=206 if window.partial else 200, headers=byte_headers(window, size),
             media_type=media_type,
         )
 
     def _pull(self) -> bytes | None:
         return next(self._chunks, None)
 
-    async def _body(self) -> AsyncIterator[bytes]:
-        unchecked = 0
-        while True:
-            if self._recheck is not None and unchecked >= RECHECK_BYTES:
+    async def _body(self, remaining: int) -> AsyncIterator[bytes]:
+        allowance = RECHECK_BYTES
+        pending = b""
+        while remaining > 0:
+            if self._recheck is not None and allowance == 0:
                 if not await self._recheck():
                     raise ReadRevoked()
-                unchecked = 0
-            chunk = await self._lease.run(self._pull)
-            if chunk is None:
-                return
-            unchecked += len(chunk)
-            yield chunk
+                allowance = RECHECK_BYTES
+            if not pending:
+                chunk = await self._lease.run(self._pull)
+                if chunk is None:
+                    return
+                pending = chunk
+            size = min(len(pending), remaining)
+            if self._recheck is not None:
+                # A store chunk can straddle the authorization boundary.
+                size = min(size, allowance)
+                allowance -= size
+            part, pending = pending[:size], pending[size:]
+            remaining -= size
+            yield part
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:

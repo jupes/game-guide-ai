@@ -19,6 +19,7 @@ import { Badge } from '../ds/Badge'
 import { Button } from '../ds/Button'
 import { useTableSession, type SessionProblem, type StartOutcome, type TableSessionValue } from './tableSession'
 import './SessionControl.css'
+import { TableAudioSetting } from './TableAudioSetting'
 
 // Section 12.2's strings verbatim; the others inferred, one constant each, for `cub`.
 const NONE = 'No session running'
@@ -130,6 +131,7 @@ export function SessionControl({ value, announce }: SessionControlProps): React.
               </Button>
             )}
           </div>
+          {live && <TableAudioSetting />}
         </div>
       )}
       {announce === undefined && (

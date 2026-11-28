@@ -1,0 +1,96 @@
+{
+  "schema": "TablePresenceRequest",
+  "direction": "request",
+  "note": "Page-local consent and actual playback. The server derives all identities.",
+  "valid": [
+    {
+      "name": "open",
+      "value": {
+        "schema_version": 1,
+        "action": "open",
+        "page_id": "1b9c0de0-1111-4eee-8111-1f1111111111",
+        "context": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "idle",
+      "value": {
+        "schema_version": 1,
+        "registration": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "action": "report",
+        "revision": 1,
+        "state": "idle",
+        "playing_handles": []
+      }
+    },
+    {
+      "name": "listening",
+      "value": {
+        "schema_version": 1,
+        "registration": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "action": "report",
+        "revision": 1,
+        "state": "listening",
+        "playing_handles": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    },
+    {
+      "name": "close",
+      "value": {
+        "schema_version": 1,
+        "registration": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "action": "close"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "identity supplied",
+      "value": {
+        "schema_version": 1,
+        "action": "open",
+        "page_id": "1b9c0de0-1111-4eee-8111-1f1111111111",
+        "context": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "alias": "Player"
+      }
+    },
+    {
+      "name": "listening without playback",
+      "value": {
+        "schema_version": 1,
+        "registration": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "action": "report",
+        "revision": 1,
+        "state": "listening",
+        "playing_handles": []
+      }
+    },
+    {
+      "name": "repeated handles",
+      "value": {
+        "schema_version": 1,
+        "registration": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "action": "report",
+        "revision": 1,
+        "state": "listening",
+        "playing_handles": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      }
+    },
+    {
+      "name": "unknown state",
+      "value": {
+        "schema_version": 1,
+        "registration": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "action": "report",
+        "revision": 1,
+        "state": "absent",
+        "playing_handles": []
+      }
+    }
+  ]
+}

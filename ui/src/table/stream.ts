@@ -1,13 +1,23 @@
 import { CONTRACT_VERSION, TableEventSchema, TableSnapshotSchema, type TableEvent, type TableSlot } from '../gm/contracts'
 import { readEventStream } from '../gm/readEventStream'
 
-export type TablePicture = { kind: 'live'; participant: boolean; slots: TableSlot[] }
+export type AudioFrame = Extract<TableEvent, { event: 'audio' }>
+export type TablePicture = {
+  kind: 'live'; participant: boolean; slots: TableSlot[]
+  audioEnabled: boolean; audio: AudioFrame[]; clockOffsetMs: number; audioContext: string | null
+}
 type Snapshot = TablePicture | { kind: 'inactive' | 'retry' }
 type StreamEnd = { kind: 'inactive' | 'signed-out' | 'reconnect' | 'retry' } | { kind: 'full'; delay: number }
 
 const SNAPSHOT_FRAME_LIMIT = 50
 
-export function tablePicture(raw: unknown): Snapshot {
+/** HTTP Date has one-second precision. Estimate server time at the midpoint of the request. */
+export function responseClock(response: Response, sentAt: number): number {
+  const server = Date.parse(response.headers.get('Date') ?? '')
+  return Number.isFinite(server) ? server + 500 - (sentAt + Date.now()) / 2 : 0
+}
+
+export function tablePicture(raw: unknown, clockOffsetMs = 0, audioContext: string | null = null): Snapshot {
   const parsed = TableSnapshotSchema.safeParse(raw)
   if (!parsed.success) return { kind: 'retry' }
   const { frames } = parsed.data
@@ -15,13 +25,19 @@ export function tablePicture(raw: unknown): Snapshot {
   const picture = frames.find((frame) => frame.event === 'snapshot')
   if (session === undefined) return { kind: 'inactive' }
   if (picture === undefined) return { kind: 'retry' }
-  return { kind: 'live', participant: session.role === 'participant', slots: picture.slots }
+  const audio = frames.filter((frame): frame is AudioFrame => frame.event === 'audio')
+  if (new Set(audio.map((frame) => frame.slot)).size !== audio.length || (!session.audio && audio.some((f) => f.playing))) {
+    return { kind: 'retry' }
+  }
+  return { kind: 'live', participant: session.role === 'participant', slots: picture.slots,
+    audioEnabled: session.audio, audio, clockOffsetMs, audioContext }
 }
 
 type StreamUpdates = {
   opened(): void
   bytes(): void
   picture(picture: TablePicture): void
+  hidden?(): boolean
 }
 
 export async function streamTable(
@@ -31,6 +47,7 @@ export async function streamTable(
   updates: StreamUpdates,
 ): Promise<StreamEnd> {
   try {
+    const sentAt = Date.now()
     const response = await request(`/table/stream?campaign_id=${encodeURIComponent(campaignId)}`, {
       headers: { Accept: 'text/event-stream' },
       cache: 'no-store',
@@ -45,6 +62,7 @@ export async function streamTable(
     }
     const contentType = response.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase()
     if (!response.ok || response.body === null || contentType !== 'text/event-stream') return { kind: 'retry' }
+    const clockOffsetMs = responseClock(response, sentAt)
     updates.opened()
     const pending: TableEvent[] = []
     let picture: TablePicture | null = null
@@ -68,14 +86,27 @@ export async function streamTable(
         ) return false
         pending.push(frame)
         if (frame.event !== 'ready') return true
-        const snapshot = tablePicture({ schema_version: CONTRACT_VERSION, frames: pending })
+        const snapshot = tablePicture({ schema_version: CONTRACT_VERSION, frames: pending }, clockOffsetMs,
+          response.headers.get('X-Table-Audio-Context'))
         pending.length = 0
         if (snapshot.kind !== 'live') return false
         picture = snapshot
+        if (updates.hidden?.()) picture.slots = picture.slots.map((slot) => ({ ...slot, content: null }))
         updates.picture(picture)
         return true
       }
-      if (frame.event === 'audio') return true
+      if (frame.event === 'audio') {
+        if (!picture.audioEnabled) return false
+        const mark = picture.audio.find((item) => item.slot === frame.slot)?.seq ?? 0
+        if (frame.seq <= mark) return true
+        if (frame.seq !== mark + 1) {
+          end = { kind: 'reconnect' }
+          return false
+        }
+        picture = { ...picture, audio: [...picture.audio.filter((item) => item.slot !== frame.slot), frame] }
+        updates.picture(picture)
+        return true
+      }
       if (frame.event !== 'slot') return false
       const previous = picture.slots.find((slot) => slot.slot === frame.slot)
       if (previous === undefined) return false
@@ -84,7 +115,7 @@ export async function streamTable(
         end = { kind: 'reconnect' }
         return false
       }
-      const next: TableSlot = { slot: frame.slot, seq: frame.seq, content: frame.content }
+      const next: TableSlot = { slot: frame.slot, seq: frame.seq, content: updates.hidden?.() ? null : frame.content }
       picture = { ...picture, slots: picture.slots.map((slot) => slot.slot === next.slot ? next : slot) }
       updates.picture(picture)
       return true

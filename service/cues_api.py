@@ -13,7 +13,7 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, ValidationError
 
 from . import campaign_identity as ident
-from . import cue_playback
+from . import cue_playback, gm_audio_presence
 from .asset_serving_api import get_audit_log, tombstone_asset
 from .assets_api import MediaRuntime, get_clock, media_route
 from .audit_log import AuditLog
@@ -28,6 +28,7 @@ from .workbench_api import (
     body_reader,
     not_found,
     reads_by_post,
+    spend_write,
     workbench_router,
 )
 from .workbench_contracts import (
@@ -35,6 +36,8 @@ from .workbench_contracts import (
     ArchivedDeleteRequest,
     AssetState,
     AttachedCueEntry,
+    AudioSettingsAnswer,
+    AudioSettingsRequest,
     Cue,
     CueAttachRequest,
     CueCreateRequest,
@@ -46,6 +49,7 @@ from .workbench_contracts import (
     CueStopRequest,
     GmAudioEvent,
     LibrarySort,
+    PresenceEvent,
 )
 
 PREFIX = "/campaigns/{campaign_id}/cues"
@@ -381,6 +385,39 @@ def build_router(
             not_found()
         with _playback_refusals(), _transaction(db) as transaction:
             return cue_playback.read_state(transaction, campaign_id, session_id, user.user_id, clock())
+
+    @router.get(f"{PLAYBACK}/presence", include_in_schema=False)
+    def presence(
+        campaign_id: str, session_id: str, user: User, db: DB, clock: Clock, response: Response,
+    ) -> PresenceEvent:
+        if not ident.is_id(ident.CAMPAIGN, campaign_id) or not ident.is_id(ident.TABLE_SESSION, session_id):
+            not_found()
+        try:
+            with _playback_refusals(), _transaction(db) as transaction:
+                frame, enabled_now, epoch = gm_audio_presence.read(
+                    transaction, campaign_id, session_id, user.user_id, clock(),
+                )
+        except ValidationError:
+            raise unavailable("Table presence is unavailable.") from None
+        response.headers["X-Table-Audio-Enabled"] = "1" if enabled_now else "0"
+        response.headers["X-Table-Audio-Epoch"] = str(epoch)
+        return frame
+
+    @narrowing.post(f"{PLAYBACK}/settings", include_in_schema=False)
+    def settings(
+        campaign_id: str, session_id: str, raw: Body, user: User, db: DB, clock: Clock,
+    ) -> AudioSettingsAnswer:
+        if not ident.is_id(ident.CAMPAIGN, campaign_id) or not ident.is_id(ident.TABLE_SESSION, session_id):
+            not_found()
+        command = _parse(AudioSettingsRequest, raw)
+        if command.enabled:
+            spend_write(user.user_id)
+        with _playback_refusals(), _transaction(db) as transaction:
+            if command.enabled:
+                _check_owner(transaction, campaign_id, user.user_id)
+                transaction.lock_campaign(campaign_id, shared=True)
+                _check_owner(transaction, campaign_id, user.user_id)
+            return cue_playback.settings(transaction, campaign_id, session_id, user.user_id, command, clock())
 
     @router.post(f"{PLAYBACK}/play", include_in_schema=False)
     def play(

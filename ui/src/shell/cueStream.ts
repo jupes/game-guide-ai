@@ -2,6 +2,7 @@ import { CONTRACT_VERSION, GmEventSchema, GmSnapshotSchema, type GmEvent } from 
 import { readEventStream } from '../gm/readEventStream'
 
 export type AudioFrame = Extract<GmEvent, { event: 'audio' }>
+export type PresenceFrame = Extract<GmEvent, { event: 'presence' }>
 type SessionFrame = Extract<GmEvent, { event: 'session' }>['session']
 type End = 'retry' | 'reconnect' | 'gone' | 'signed-out' | { retryAfterMs: number }
 const SILENCE_MS = 10_000
@@ -22,7 +23,9 @@ export function audioPair(raw: unknown, session: string): AudioFrame[] {
 
 /** One atomic opening snapshot followed by complete, independently sequenced audio pairs. */
 export async function streamCueState(campaign: string, session: string, request: typeof fetch, signal: AbortSignal,
-  apply: (pair: AudioFrame[], initial: boolean) => void): Promise<End> {
+  apply: (pair: AudioFrame[], initial: boolean) => void,
+  observe?: { session(value: SessionFrame): void; presence(value: PresenceFrame | null): void; clock(offsetMs: number): void },
+): Promise<End> {
   const deadline = new AbortController()
   const timed = AbortSignal.any([signal, deadline.signal])
   let opening: GmEvent[] | null = []
@@ -34,8 +37,9 @@ export async function streamCueState(campaign: string, session: string, request:
   let frameDeadline = setTimeout(expired, SILENCE_MS)
   let idle: ReturnType<typeof setTimeout> | undefined
   try {
+    const sentAt = Date.now()
     const reply = await request(`/campaigns/${encodeURIComponent(campaign)}/stream`, {
-      headers: { Accept: 'text/event-stream' }, credentials: 'include', cache: 'no-store', signal: timed,
+      headers: { Accept: 'text/event-stream', 'X-Table-Audio-Presence': '1' }, credentials: 'include', cache: 'no-store', signal: timed,
     })
     timed.throwIfAborted()
     if (reply.status === 401) return 'signed-out'
@@ -45,6 +49,8 @@ export async function streamCueState(campaign: string, session: string, request:
       if (Number.isFinite(seconds) && seconds > 0) return { retryAfterMs: seconds * 1000 }
     }
     if (!reply.ok || !reply.body || !reply.headers.get('Content-Type')?.startsWith('text/event-stream')) return 'retry'
+    const server = Date.parse(reply.headers.get('Date') ?? '')
+    if (Number.isFinite(server)) observe?.clock(server + 500 - (sentAt + Date.now()) / 2)
     await readEventStream(reply.body, timed, () => {
       clearTimeout(idle)
       idle = setTimeout(expired, SILENCE_MS)
@@ -67,9 +73,13 @@ export async function streamCueState(campaign: string, session: string, request:
         }
         current = audioPair(snapshot.frames.filter((f) => f.event === 'audio'), session)
         if (current[0].gen !== identity.gen || current[0].audio_epoch !== identity.audio_epoch) return false
+        const presence = snapshot.frames.filter((item) => item.event === 'presence')
+        if (presence.length > 1 || presence.some((item) => item.session_id !== session || item.gen !== identity?.gen)) return false
         clearTimeout(frameDeadline)
         opening = null
         apply(current, true)
+        observe?.session(identity)
+        observe?.presence(presence[0] ?? null)
         return true
       }
       if (frame.event === 'session') {
@@ -78,6 +88,12 @@ export async function streamCueState(campaign: string, session: string, request:
         if (frame.session.audio_epoch < identity.audio_epoch || frame.session.audio_epoch > current[0].audio_epoch + 1) return false
         if (frame.session.audio_epoch > identity.audio_epoch) frameDeadline = setTimeout(expired, SILENCE_MS)
         identity = frame.session
+        observe?.session(identity)
+        return true
+      }
+      if (frame.event === 'presence') {
+        if (pending || frame.session_id !== session || frame.gen !== identity?.gen) return false
+        observe?.presence(frame)
         return true
       }
       if (frame.event !== 'audio') return pending === null && frame.event !== 'ready'

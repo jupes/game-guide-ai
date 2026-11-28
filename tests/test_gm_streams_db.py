@@ -61,7 +61,7 @@ def test_private_snapshot_matches_the_gm_reveal_resource_and_checks_role_on_ever
             now = datetime.now(UTC)
             shown, denied = await reads.snapshots([owner, GmWatch(campaign, world.players[0])], now=now)
             assert denied is None
-            assert [row.event for row in shown.frames] == ["session", "snapshot", "audio", "audio", "ready"]
+            assert [row.event for row in shown.frames] == ["session", "snapshot", "presence", "audio", "audio", "ready"]
             wire_session = shown.frames[0].session
             assert wire_session.screens[0].screen_id == grant.id and wire_session.session_id == session.id
             picture = served.reveals.picture(campaign, owner_id=world.owner, now=now)
@@ -74,7 +74,7 @@ def test_private_snapshot_matches_the_gm_reveal_resource_and_checks_role_on_ever
             }
             assert _updates(empty, shown) is None
             changed = shown.model_copy(deep=True)
-            changed.frames[2].seq += 2
+            changed.frames[3].seq += 2
             assert _updates(shown, changed) is None
             with connect(dsn) as conn:
                 conn.execute("UPDATE auth.users SET role = 'player' WHERE id = %s", (world.owner,))

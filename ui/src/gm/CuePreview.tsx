@@ -10,10 +10,12 @@ import { useCuePlayback } from '../shell/cuePlayback'
 import { useTableSession } from '../shell/tableSession'
 
 let activePreview: HTMLAudioElement | null = null
+const LOCAL_SOUND_EVENT = 'aetheril:local-cue-sound'
 
 export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fetch }): React.JSX.Element {
-  const { playback, frames, connected, pendingPlay, pendingStops, failedPlay } = useCuePlayback()
-  const audioEnabled = useTableSession().liveSession?.audioEnabled === true
+  const { playback, frames, connected, pendingPlay, pendingStops, failedPlay, audioEnabled: observed } = useCuePlayback()
+  const liveSession = useTableSession().liveSession
+  const audioEnabled = observed ?? (liveSession?.audioEnabled === true)
   const [media, setMedia] = React.useState<HTMLAudioElement | null>(null)
   const audioRef = React.useRef<HTMLAudioElement | null>(null)
   const linkMedia = React.useCallback((node: HTMLAudioElement | null) => {
@@ -21,7 +23,7 @@ export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fet
     setMedia(node)
   }, [])
   const [volume, setVolume] = React.useState(readPreviewVolume)
-  const [muted, setMuted] = React.useState(false)
+  const [muted, setMuted] = React.useState(playback?.monitor.isMuted ?? false)
   const [loop, setLoop] = React.useState(cue.kind === 'ambience')
   const [playing, setPlaying] = React.useState(false)
   const [positionMs, setPosition] = React.useState(0)
@@ -34,6 +36,16 @@ export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fet
   const controls = !cue.archived && playback !== null
 
   React.useEffect(() => {
+    const onChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ volume?: number; muted?: boolean }>).detail
+      if (typeof detail?.volume === 'number') setVolume(detail.volume)
+      if (typeof detail?.muted === 'boolean') setMuted(detail.muted)
+    }
+    window.addEventListener(LOCAL_SOUND_EVENT, onChange)
+    return () => window.removeEventListener(LOCAL_SOUND_EVENT, onChange)
+  }, [])
+
+  React.useEffect(() => {
     const abort = new AbortController()
     void previewPeaks(cue, abort.signal, fetchImpl).then((values) => {
       if (!abort.signal.aborted) setPeaks(values)
@@ -43,11 +55,12 @@ export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fet
 
   React.useEffect(() => () => {
     if (activePreview === media) activePreview = null
+    if (media) playback?.monitor.previewEnded(media)
     if (!media?.getAttribute('src')) return
     media.pause()
     media.removeAttribute('src')
     media.load()
-  }, [media])
+  }, [media, playback])
 
   function seek(ms: number): void {
     const position = clampPositionMs(ms, cue.duration_ms)
@@ -86,19 +99,21 @@ export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fet
         preload="none"
         muted={muted}
         loop={loop && cue.kind === 'ambience'}
-        onPlay={() => setPlaying(true)}
+        onPlay={(event) => { playback?.monitor.previewStarted(event.currentTarget); setPlaying(true) }}
         onPause={(event) => {
           if (activePreview === event.currentTarget) activePreview = null
+          playback?.monitor.previewEnded(event.currentTarget)
           setPlaying(false)
         }}
         onEnded={(event) => {
           if (activePreview === event.currentTarget) activePreview = null
+          playback?.monitor.previewEnded(event.currentTarget)
           setPlaying(false)
           seek(0)
         }}
         onLoadedMetadata={(event) => { event.currentTarget.currentTime = seekOnLoad.current / 1000 }}
         onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime * 1000)}
-        onError={() => { setPlaying(false); setFailed(true) }}
+        onError={(event) => { playback?.monitor.previewEnded(event.currentTarget); setPlaying(false); setFailed(true) }}
       />
       <AudioCue
         cue={cue}
@@ -116,8 +131,15 @@ export function CuePreview({ cue, fetchImpl }: { cue: Cue; fetchImpl: typeof fet
         peaks={peaks}
         onPreviewToggle={toggle}
         onPreviewSeek={seek}
-        onPreviewVolume={(next) => { setVolume(next); writePreviewVolume(next) }}
-        onPreviewMute={setMuted}
+        onPreviewVolume={(next) => {
+          writePreviewVolume(next)
+          playback?.monitor.setVolume(next)
+          window.dispatchEvent(new CustomEvent(LOCAL_SOUND_EVENT, { detail: { volume: next } }))
+        }}
+        onPreviewMute={(next) => {
+          playback?.monitor.setMuted(next)
+          window.dispatchEvent(new CustomEvent(LOCAL_SOUND_EVENT, { detail: { muted: next } }))
+        }}
         onLoopChange={setLoop}
       />
       {failed && <p role="alert">Couldn't play this sound. Try preview again.</p>}

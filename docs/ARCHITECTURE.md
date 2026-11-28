@@ -709,8 +709,9 @@ participant id is *not* shape-checked, so a stranger cannot tell a malformed one
 from an unknown one), no service 503, then the service in its own order: 404,
 courtesy 409, busy 503, the 422s, the 409 under the row. A refusal is a fixed
 sentence; a mask refusal names its keys and nothing else. An asset key is refused
-while `reveals.TABLE_ASSETS_SERVED` is False, because no `/table/assets/{handle}`
-route exists to show it.
+while `reveals.TABLE_ASSETS_SERVED` is False. The public `/table/assets/{handle}`
+resolver currently serves live audio slots. Revealing a document portrait
+requires a resolver for its recipient and pinned reveal slot.
 
 **The narrowing budget.** A Stop spends its own limiter, 100 per 600 s per
 account (`REVEAL_STOP_RATE_LIMIT_*`), so autosaves that spent the shared 600

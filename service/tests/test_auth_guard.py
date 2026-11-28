@@ -213,6 +213,12 @@ PROTECTED_ROUTES: list[Route] = [
     # 1kg.7.2 PR-2: the table's snapshot read. It calls `require_session` through
     # the table principal too, so it is listed for the same reason.
     ("GET", "/table/snapshot", "/table/snapshot?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", None),
+    ("GET", "/table/assets/{handle}", "/table/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", None),
+    ("POST", "/table/presence", "/table/presence?campaign_id=cmp_aaaaaaaaaaaaaaaaaaaaaa", {}),
+    ("GET", "/campaigns/{campaign_id}/sessions/{session_id}/audio/presence",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/sessions/ses_aaaaaaaaaaaaaaaaaaaaaa/audio/presence", None),
+    ("POST", "/campaigns/{campaign_id}/sessions/{session_id}/audio/settings",
+     "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/sessions/ses_aaaaaaaaaaaaaaaaaaaaaa/audio/settings", {}),
     # 1kg.4.1 slice B: the GM's tool invocations.
     ("GET", "/campaigns/{campaign_id}/tool-availability",
      "/campaigns/cmp_aaaaaaaaaaaaaaaaaaaaaa/tool-availability", None),

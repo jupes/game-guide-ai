@@ -221,3 +221,47 @@ def test_the_http_stream_releases_its_lease_if_renewal_fails_or_client_leaves(mo
         assert admission.released == 2
 
     asyncio.run(scenario())
+
+
+def test_account_stream_checks_the_signed_cookie_deadline_before_each_frame(monkeypatch):
+    issued = datetime.now(UTC)
+    deadline = issued + timedelta(seconds=1)
+    moment = [issued]
+
+    class Clock:
+        @staticmethod
+        def now(tz):
+            return moment[0]
+
+    class Fanout:
+        opens = 0
+
+        async def stream(self, watch):
+            self.opens += 1
+            yield b"first authorized frame"
+            yield b"private contents of the next frame"
+
+    class Admission:
+        releases = 0
+
+        async def release(self, lease):
+            self.releases += 1
+
+    async def scenario():
+        admission, fan = Admission(), Fanout()
+        hub = TableStreams(admission, fan)
+        account = StreamLease(uuid4(), WATCH)
+        stream = hub.bytes(account, auth_expires_at=deadline)
+        assert await anext(stream) == b"first authorized frame"
+        moment[0] = deadline
+        assert [frame async for frame in stream] == [table_fanout.RECONNECT_FRAME]
+        assert [frame async for frame in hub.bytes(account, auth_expires_at=deadline)] == [table_fanout.RECONNECT_FRAME]
+        assert fan.opens == 1 and admission.releases == 2
+        screen = StreamLease(uuid4(), TableStreamWatch(WATCH.campaign_id, WATCH.session_id, 1, grant_id="screen"))
+        assert [frame async for frame in hub.bytes(screen)] == [
+            b"first authorized frame", b"private contents of the next frame",
+        ]
+        assert admission.releases == 3
+
+    monkeypatch.setattr(table_streams, "datetime", Clock)
+    asyncio.run(scenario())

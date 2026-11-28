@@ -2260,6 +2260,74 @@ class CueStopRequest(_Contract):
     cue_id: OpaqueId | None
 
 
+class AudioSettingsRequest(_Contract):
+    schema_version: SchemaVersion
+    command_id: CommandId
+    enabled: StrictBool
+    audio_epoch: AudioEpoch | None = None
+
+    @model_validator(mode="after")
+    def _epoch_only_on_enable(self) -> Self:
+        if self.enabled != (self.audio_epoch is not None) or (
+            not self.enabled and "audio_epoch" in self.model_fields_set
+        ):
+            raise ValueError("only enabling audio takes the current epoch")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_epoch_for_disable(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        emitted: dict[str, Any] = handler(self)
+        if self.audio_epoch is None:
+            emitted.pop("audio_epoch", None)
+        return emitted
+
+
+class AudioSettingsAnswer(_Contract):
+    schema_version: SchemaVersion
+    enabled: StrictBool
+    audio_epoch: AudioEpoch
+
+
+PresenceHandle = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_-]{32}$")]
+
+
+class TablePresenceOpen(_Contract):
+    schema_version: SchemaVersion
+    action: Literal["open"]
+    page_id: Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")]
+    context: Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9a-f]{64}$")]
+
+
+class TablePresenceRegistration(_Contract):
+    schema_version: SchemaVersion
+    registration: PresenceHandle
+
+
+class TablePresenceReport(TablePresenceRegistration):
+    action: Literal["report"]
+    revision: WriteRevision
+    state: Literal["pending", "idle", "listening", "muted"]
+    playing_handles: Annotated[list[PresenceHandle], Field(max_length=2)]
+
+    @model_validator(mode="after")
+    def _playing_evidence(self) -> Self:
+        if bool(self.playing_handles) != (self.state == "listening") or len(set(self.playing_handles)) != len(
+            self.playing_handles
+        ):
+            raise ValueError("only listening reports carry one or two distinct playing handles")
+        return self
+
+
+class TablePresenceClose(TablePresenceRegistration):
+    action: Literal["close"]
+
+
+TablePresenceRequest = Annotated[
+    TablePresenceOpen | TablePresenceReport | TablePresenceClose, Field(discriminator="action"),
+]
+TABLE_PRESENCE_REQUEST: TypeAdapter[TablePresenceRequest] = TypeAdapter(TablePresenceRequest)
+
+
 # ── Table sessions ───────────────────────────────────────────────────────────
 #
 # Reopened by threat model §15.11 and rebuilt by 1kg.2.3 (L-14): there is no
@@ -3033,6 +3101,7 @@ class PresenceAudio(str, Enum):
     LISTENING = "listening"
     MUTED = "muted"
     PENDING = "pending"
+    IDLE = "idle"
     ABSENT = "absent"
 
 
@@ -3044,7 +3113,7 @@ class ParticipantPresence(_Contract):
 
 
 class GuestPresence(_Contract):
-    """Guests are counted, never named (AUDIO-21)."""
+    """The v1 guests field counts distinct authorized screen grants (threat model §15.7)."""
 
     connected: Annotated[WireInt, Field(ge=0, le=1000)]
     listening: Annotated[WireInt, Field(ge=0, le=1000)]
@@ -4044,6 +4113,10 @@ CONTRACT_SCHEMAS: dict[str, TypeAdapter[Any]] = {
     "CuePage": TypeAdapter(CuePage),
     "CuePlayRequest": TypeAdapter(CuePlayRequest),
     "CueStopRequest": TypeAdapter(CueStopRequest),
+    "AudioSettingsRequest": TypeAdapter(AudioSettingsRequest),
+    "AudioSettingsAnswer": TypeAdapter(AudioSettingsAnswer),
+    "TablePresenceRequest": TABLE_PRESENCE_REQUEST,
+    "TablePresenceRegistration": TypeAdapter(TablePresenceRegistration),
     "TableSession": TypeAdapter(TableSession),
     "TableSessionRequest": TypeAdapter(TableSessionRequest),
     "TableSessionAnswer": TypeAdapter(TableSessionAnswer),

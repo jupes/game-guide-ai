@@ -1,7 +1,10 @@
 import { CONTRACT_VERSION } from '../gm/contracts'
 import { openIdentityBroadcast, type IdentityChannelFactory } from '../shell/identityBroadcast'
 import { renderProjections } from './projection'
-import { streamTable, tablePicture, type TablePicture } from './stream'
+import { mountTableAudio } from './audioControls'
+import type { MixerCue } from './audioMixer'
+import { tablePresence } from './presence'
+import { responseClock, streamTable, tablePicture, type TablePicture } from './stream'
 
 const POLL_MS = 5000
 const BLANK_MS = 10_000
@@ -11,6 +14,7 @@ type ReadResult = TablePicture | { kind: 'inactive' | 'signed-out' | 'retry' } |
 
 async function readTable(id: string, signal: AbortSignal, request: typeof fetch): Promise<ReadResult> {
   try {
+    const sentAt = Date.now()
     const response = await request(`/table/snapshot?campaign_id=${encodeURIComponent(id)}`, { cache: 'no-store', signal })
     if (response.status === 401) return { kind: 'signed-out' }
     if (response.status === 404) return { kind: 'inactive' }
@@ -19,7 +23,8 @@ async function readTable(id: string, signal: AbortSignal, request: typeof fetch)
       return { kind: 'limited', delay: Number.isFinite(seconds) ? Math.max(POLL_MS, Math.min(seconds, 300) * 1000) : POLL_MS }
     }
     if (!response.ok) return { kind: 'retry' }
-    return tablePicture(await response.json())
+    const offset = responseClock(response, sentAt)
+    return tablePicture(await response.json(), offset, response.headers.get('X-Table-Audio-Context'))
   } catch {
     return { kind: 'retry' }
   }
@@ -52,10 +57,16 @@ export function mountTable(
   const signOut = document.querySelector<HTMLButtonElement>('#table-sign-out')!
   const leave = document.querySelector<HTMLButtonElement>('#table-leave')!
   const browser = document.defaultView!
+  let clockOffsetMs = 0
+  const presence = tablePresence(campaignId, request, recheck)
+  const audio = mountTableAudio(document.querySelector<HTMLElement>('#table-sound')!, presence.update,
+    () => Date.now() + clockOffsetMs)
 
   let activeRead: AbortController | null = null
   let pollTimer: number | undefined
   let blankTimer: number | undefined
+  let soundTimer: number | undefined
+  let resync = true
   let pictureKey: string | null = null
   let streamRetryAt = 0
   let streamFailures = 0
@@ -75,11 +86,11 @@ export function mountTable(
   function redact(): void {
     projections.replaceChildren()
     pictureKey = null
-    browser.clearTimeout(blankTimer)
   }
 
   function reset(): void {
     browser.clearTimeout(pollTimer)
+    browser.clearTimeout(blankTimer)
     activeRead?.abort()
     activeRead = null
     streamRetryAt = 0
@@ -93,6 +104,20 @@ export function mountTable(
   }
 
   function showPicture(result: TablePicture): void {
+    clockOffsetMs = result.clockOffsetMs
+    const slots: { ambience: MixerCue | null; one_shot: MixerCue | null } = { ambience: null, one_shot: null }
+    for (const frame of result.audio) {
+      const playing = frame.playing
+      if (playing) slots[frame.slot] = {
+        url: `/table/assets/${encodeURIComponent(playing.asset.handle)}`, seq: frame.seq,
+        started_at: playing.started_at, start_offset_ms: playing.start_offset_ms,
+        duration_ms: playing.duration_ms, loop: playing.loop,
+      }
+    }
+    audio.show(result.audioEnabled && result.audioContext !== null, slots, resync)
+    presence.authorize(result.audioEnabled ? result.audioContext : null)
+    resync = false
+    if (document.visibilityState === 'hidden') return
     signOut.hidden = !result.participant
     leave.hidden = result.participant
     const key = JSON.stringify(result.slots.map(({ slot, content }) => [slot, content]))
@@ -115,8 +140,25 @@ export function mountTable(
     }, BLANK_MS)
   }
 
+  function hearFromTable(): void {
+    browser.clearTimeout(soundTimer)
+    soundTimer = browser.setTimeout(() => {
+      audio.silence()
+      resync = true
+    }, BLANK_MS)
+  }
+
+  function clearSound(): void {
+    browser.clearTimeout(soundTimer)
+    audio.hide()
+    presence.reset()
+    resync = true
+  }
+
   function finish(kind: 'signed-out' | 'inactive'): void {
+    browser.clearTimeout(blankTimer)
     redact()
+    clearSound()
     showDegraded(false)
     signIn.hidden = kind !== 'signed-out'
     if (!signIn.hidden) {
@@ -129,16 +171,24 @@ export function mountTable(
   async function openStream(id: string, controller: AbortController): Promise<void> {
     let opened = false
     const deadline = browser.setTimeout(() => controller.abort(), READ_TIMEOUT_MS)
-    const watchBytes = () => armSilenceTimer(() => controller.abort())
+    let ready = false
+    const watchBytes = () => {
+      armSilenceTimer(() => controller.abort())
+      if (ready) hearFromTable()
+    }
     const end = await streamTable(id, controller.signal, request, {
+      hidden: () => document.visibilityState === 'hidden',
       opened() {
         opened = true
+        resync = true
         redact()
         watchBytes()
       },
       bytes: watchBytes,
       picture(picture) {
+        ready = true
         browser.clearTimeout(deadline)
+        hearFromTable()
         streamFailures = 0
         showDegraded(false)
         showPicture(picture)
@@ -154,6 +204,7 @@ export function mountTable(
       queue(0)
     } else if (end.kind === 'full') {
       redact()
+      clearSound()
       showDegraded(false)
       announce(COPY.full)
       queue(end.delay)
@@ -181,6 +232,7 @@ export function mountTable(
     if (activeRead !== controller) return
     activeRead = null
     if (result.kind === 'live') {
+      hearFromTable()
       showPicture(result)
       armSilenceTimer()
       queue(POLL_MS)
@@ -203,6 +255,7 @@ export function mountTable(
   function recheck(): void {
     if (departed || actionPending) return
     reset()
+    resync = true
     signIn.hidden = true
     announce(campaignId === null ? COPY.inactive : COPY.joining)
     void read()
@@ -213,6 +266,7 @@ export function mountTable(
   function suspend(): void {
     paused = true
     reset()
+    clearSound()
   }
 
   function resume(): void {
@@ -221,8 +275,13 @@ export function mountTable(
   }
 
   function onVisibility(): void {
-    if (document.visibilityState === 'hidden') suspend()
-    else resume()
+    if (document.visibilityState !== 'hidden') resume()
+    else if (audio.accepted) {
+      // Drop the old stream's document picture too. The new background stream
+      // keeps only slot sequences and sound until a fresh foreground snapshot.
+      recheck()
+    }
+    else suspend()
   }
 
   function onPageShow(event: PageTransitionEvent): void {
@@ -230,6 +289,8 @@ export function mountTable(
   }
 
   const identity = openIdentityBroadcast(() => {
+    clearSound()
+    audio.reset()
     signOut.hidden = true
     leave.hidden = true
     recheck()
@@ -239,6 +300,7 @@ export function mountTable(
     if (actionPending || departed) return
     actionPending = true
     reset()
+    clearSound()
     signOut.disabled = true
     leave.disabled = true
     try {
@@ -287,6 +349,8 @@ export function mountTable(
 
   return () => {
     reset()
+    clearSound()
+    audio.dispose()
     identity.close()
     reload.removeEventListener('click', recheck)
     signOut.removeEventListener('click', onSignOut)

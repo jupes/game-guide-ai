@@ -1388,7 +1388,7 @@ export const TABLE_ROLES = ['participant', 'guest'] as const
 export const SESSION_STATES = ['live', 'ended'] as const
 export const SESSION_ACTIONS = ['start', 'end', 'rotate'] as const
 /** AUDIO-21, AUDIO-22: listening means playing and unmuted. */
-export const PRESENCE_AUDIO = ['listening', 'muted', 'pending', 'absent'] as const
+export const PRESENCE_AUDIO = ['listening', 'muted', 'pending', 'idle', 'absent'] as const
 export const GM_EVENT_KINDS = ['tool_lane', 'edit_lane', 'session', 'audio', 'slot', 'snapshot', 'presence', 'asset', 'ready', 'reconnect'] as const
 export const TABLE_EVENT_KINDS = ['session', 'inactive', 'audio', 'slot', 'snapshot', 'ready', 'reconnect'] as const
 
@@ -1592,6 +1592,38 @@ export const CueStopRequestSchema = refusingProtoKeys(
   }),
 )
 export type CueStopRequest = z.infer<typeof CueStopRequestSchema>
+
+const presenceHandle = z.string().length(32).regex(/^[A-Za-z0-9_-]{32}$/)
+const settingsFields = { schema_version: z.literal(CONTRACT_VERSION), command_id: CommandIdSchema }
+export const AudioSettingsRequestSchema = refusingProtoKeys(z.discriminatedUnion('enabled', [
+  z.strictObject({ ...settingsFields, enabled: z.literal(true), audio_epoch: AudioEpochSchema }),
+  z.strictObject({ ...settingsFields, enabled: z.literal(false) }),
+]))
+export type AudioSettingsRequest = z.infer<typeof AudioSettingsRequestSchema>
+export const AudioSettingsAnswerSchema = refusingProtoKeys(z.strictObject({
+  schema_version: z.literal(CONTRACT_VERSION), enabled: z.boolean(), audio_epoch: AudioEpochSchema,
+}))
+export type AudioSettingsAnswer = z.infer<typeof AudioSettingsAnswerSchema>
+const presenceRegistrationFields = { schema_version: z.literal(CONTRACT_VERSION), registration: presenceHandle }
+export const TablePresenceRegistrationSchema = refusingProtoKeys(z.strictObject(presenceRegistrationFields))
+export type TablePresenceRegistration = z.infer<typeof TablePresenceRegistrationSchema>
+export const TablePresenceRequestSchema = refusingProtoKeys(z.discriminatedUnion('action', [
+  z.strictObject({
+    schema_version: z.literal(CONTRACT_VERSION), action: z.literal('open'),
+    page_id: z.string().length(36).regex(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/),
+    context: z.string().length(64).regex(/^[0-9a-f]{64}$/),
+  }),
+  z.strictObject({
+    ...presenceRegistrationFields, action: z.literal('report'),
+    revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    state: z.enum(['pending', 'idle', 'listening', 'muted']), playing_handles: z.array(presenceHandle).max(2),
+  }),
+  z.strictObject({ ...presenceRegistrationFields, action: z.literal('close') }),
+]).refine(body => body.action !== 'report' || (
+  (body.state === 'listening') === (body.playing_handles.length > 0)
+  && new Set(body.playing_handles).size === body.playing_handles.length
+)))
+export type TablePresenceRequest = z.infer<typeof TablePresenceRequestSchema>
 
 // ── Table sessions ───────────────────────────────────────────────────────────
 // Reopened by threat model section 15.11 and rebuilt by 1kg.2.3 (L-14): no table
@@ -2870,6 +2902,10 @@ export const CONTRACT_SCHEMAS: Record<string, ZodType> = {
   CuePage: CuePageSchema,
   CuePlayRequest: CuePlayRequestSchema,
   CueStopRequest: CueStopRequestSchema,
+  AudioSettingsRequest: AudioSettingsRequestSchema,
+  AudioSettingsAnswer: AudioSettingsAnswerSchema,
+  TablePresenceRequest: TablePresenceRequestSchema,
+  TablePresenceRegistration: TablePresenceRegistrationSchema,
   TableSession: TableSessionSchema,
   TableSessionRequest: TableSessionRequestSchema,
   TableSessionAnswer: TableSessionAnswerSchema,
