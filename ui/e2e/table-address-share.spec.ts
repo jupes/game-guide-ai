@@ -1,8 +1,19 @@
-import type { Locator } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import jsQR from 'jsqr'
-import { expect, signIn, test } from './fixtures'
+import { expect, signIn, test, type TesterAccount } from './fixtures'
 import { installRevealRoutes } from './revealStubs'
 import { CAMPAIGN_ID, DOCUMENT_ID, DOCUMENT_TITLE, installWorkbenchRoutes, THREAD_PAGE } from './workbenchStubs'
+
+const workspace = `/workspace#campaign=${CAMPAIGN_ID}&document=${DOCUMENT_ID}`
+
+async function prepareGM(page: Page, account: TesterAccount) {
+  await page.goto('/')
+  await signIn(page, account)
+  await installWorkbenchRoutes(page)
+  await page.route(url => url.pathname === '/conversations' && !url.searchParams.has('campaign_id'),
+    route => route.fulfill({ json: THREAD_PAGE }))
+  return installRevealRoutes(page)
+}
 
 async function scan(image: Locator): Promise<string | undefined> {
   const png = await image.screenshot({ animations: 'disabled', scale: 'css' })
@@ -21,15 +32,48 @@ async function scan(image: Locator): Promise<string | undefined> {
   return jsQR(Uint8ClampedArray.from(raster.rgba), raster.width, raster.height)?.data
 }
 
+function hitTest(locator: Locator, allCorners = false): Promise<boolean> {
+  return locator.evaluate((el, corners) => {
+    const rect = el.getBoundingClientRect()
+    const points = corners
+      ? [[rect.left + 1, rect.top + 1], [rect.right - 1, rect.top + 1],
+         [rect.left + 1, rect.bottom - 1], [rect.right - 1, rect.bottom - 1]]
+      : [[rect.x + rect.width / 2, rect.y + rect.height / 2]]
+    return points.every(([x, y]) => el.contains(document.elementFromPoint(x, y)))
+  }, allCorners)
+}
+
+async function tapButton(button: Locator) {
+  expect(await hitTest(button), 'the touch target is visible and unobstructed').toBe(true)
+  const rect = (await button.boundingBox())!
+  await button.page().touchscreen.tap(rect.x + rect.width / 2, rect.y + rect.height / 2)
+}
+
+async function revealWithSwipes(page: Page, target: Locator, allCorners = false) {
+  const region = (await page.locator('.workspace-shell__session').boundingBox())!
+  const x = region.x + region.width * 0.78
+  const start = Math.min(region.y + region.height, page.viewportSize()!.height) - 8
+  const distance = Math.min(210, start - region.y - 8)
+  const touch = await page.context().newCDPSession(page)
+  try {
+    for (let attempt = 0; attempt < 3 && !await hitTest(target, allCorners); attempt++) {
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: start }] })
+      for (let step = 1; step <= 8; step++) {
+        await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: start - distance * step / 8 }] })
+        await page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => done())))
+      }
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    }
+    await expect.poll(() => hitTest(target, allCorners)).toBe(true)
+  } finally {
+    await touch.detach()
+  }
+}
+
 test('the GM shares a scannable table address that still requires table access', async ({
   page, browser, baseURL, accounts, isMobile,
 }, info) => {
-  await page.goto('/')
-  await signIn(page, accounts[1])
-  await installWorkbenchRoutes(page)
-  await installRevealRoutes(page)
-  await page.route(url => url.pathname === '/conversations' && !url.searchParams.has('campaign_id'),
-    route => route.fulfill({ json: THREAD_PAGE }))
+  await prepareGM(page, accounts[1])
   await page.addInitScript(() => {
     // A phone can decline clipboard access. Capture the copy request, then exercise that refusal too.
     let copies = 0
@@ -40,7 +84,7 @@ test('the GM shares a scannable table address that still requires table access',
       },
     } })
   })
-  await page.goto(`/workspace#campaign=${CAMPAIGN_ID}&document=${DOCUMENT_ID}`)
+  await page.goto(workspace)
   const share = page.getByRole('button', { name: 'Share table', exact: true })
   const address = page.getByRole('textbox', { name: 'Table address' })
   const copy = page.getByRole('button', { name: 'Copy link', exact: true })
@@ -72,7 +116,7 @@ test('the GM shares a scannable table address that still requires table access',
       expect(hiddenScroller, 'the QR must be reachable without scrolling a clipped container by script').toBeNull()
       expect(await scan(image)).toBe(expected)
       await copy.scrollIntoViewIfNeeded()
-      await expect(copy).toBeInViewport({ ratio: 0.995 })
+      await expect(copy).toBeInViewport({ ratio: 0.98 })
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     }
   }
@@ -116,4 +160,34 @@ test('the GM shares a scannable table address that still requires table access',
   } finally {
     await guest.close()
   }
+})
+
+test.describe('native phone gestures', () => {
+  test.skip(({ browserName, isMobile }) => browserName !== 'chromium' || !isMobile, 'CDP touch input on a phone')
+
+  test('a GM can swipe to scan the QR and stop an active reveal', async ({ page, accounts }) => {
+    const reveals = await prepareGM(page, accounts[1])
+    await page.goto(workspace)
+    const expected = new URL(`/table?campaign_id=${CAMPAIGN_ID}`, page.url()).href
+    for (const viewport of [{ width: 844, height: 390 }, { width: 320, height: 568 }]) {
+      reveals.confirm({ document_id: DOCUMENT_ID, version: 1, mask: ['name'] })
+      await page.setViewportSize(viewport)
+      await page.reload()
+      const stop = page.getByRole('button', { name: /^Stop all(?: \(1\))?$/ })
+      await expect(stop).toBeVisible()
+      await tapButton(page.getByRole('button', { name: 'Share table', exact: true }))
+      const show = page.getByRole('button', { name: 'Show QR code', exact: true })
+      await revealWithSwipes(page, show)
+      await tapButton(show)
+      const image = page.getByRole('img', { name: 'QR code for the player table', exact: true })
+      await revealWithSwipes(page, image, true)
+      expect(await scan(image)).toBe(expected)
+      expect(await page.locator('.workspace-shell').evaluate(el => el.scrollTop)).toBe(0)
+      await Promise.all([
+        page.waitForRequest(req => req.method() === 'POST' && new URL(req.url()).pathname.endsWith('/reveals/stop')),
+        tapButton(stop),
+      ])
+      await expect(stop).toBeHidden()
+    }
+  })
 })

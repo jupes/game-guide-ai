@@ -38,14 +38,18 @@ function AddressActions({ address, announce }: ShareProps) {
     const input = field.current
     if (!input) return
     const sequence = ++attempt.current
+    const focusedAtPress = input.ownerDocument.activeElement
     let copied = false
     try {
       await navigator.clipboard.writeText(address)
       copied = true
     } catch { /* Clipboard access can be unavailable or denied in this browser. */ }
     // Ignore completions from an earlier press or from a disclosure that closed.
-    if (field.current !== input || attempt.current !== sequence) return
-    if (!copied && input.ownerDocument.activeElement === trigger) {
+    if (field.current !== input || !input.isConnected || attempt.current !== sequence) return
+    const focused = input.ownerDocument.activeElement
+    // A Safari tap may leave focus on the previous control. An intervening
+    // focus change still belongs to the user while clipboard permission settles.
+    if (!copied && !input.ownerDocument.hidden && (focused === trigger || focused === focusedAtPress)) {
       input.focus()
       input.select()
     }

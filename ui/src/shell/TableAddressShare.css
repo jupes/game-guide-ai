@@ -6,7 +6,59 @@
 }
 
 @media (width >= 600px) {
-  .session-control__group > .table-address-share { flex-basis: 100%; }
+  .session-control__group > .table-address-share:has(.table-address-share__contents) { flex-basis: 100%; }
+}
+
+@media (width < 600px) {
+  .workspace-shell__session .table-address-share { display: flex; flex-direction: column; }
+}
+
+/* The workspace chrome sits above a separately scrolling document. Give an
+   open session its own touch-scroll region, leaving the header Stop in view. */
+.workspace-shell__session:has(.table-address-share__contents) {
+  --table-share-height: 62dvh;
+  max-block-size: var(--table-share-height);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+
+.workspace-shell__session .table-address-share:has(.table-address-share__contents) > .aether-btn {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 1;
+  background: var(--md-sys-color-surface);
+}
+
+.workspace-shell__session .table-address-share__qr svg {
+  inline-size: min(256px, 100%, calc(var(--table-share-height) - var(--aether-touch-min) - 2rem));
+}
+
+/* A live Stop occupies another header row on a short portrait phone. */
+@media (width < 600px) and (height <= 700px) {
+  .workspace-shell__chrome:has(.reveal-indicator) .workspace-shell__session:has(.table-address-share__contents) {
+    --table-share-height: 42dvh;
+  }
+}
+
+/* The short landscape layout already gives the session its own column. Keep
+   End and Share on one line and let the other chrome use the adjacent column. */
+@media (height <= 460px) and (width >= 600px) {
+  .workspace-shell__session .session-control__group:has(.table-address-share) {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    justify-items: start;
+  }
+
+  .workspace-shell__session .session-control__summary,
+  .workspace-shell__session .session-control__audio,
+  .workspace-shell__session .table-address-share:has(.table-address-share__contents) {
+    grid-column: 1 / -1;
+  }
+
+  .workspace-shell:is([data-layout='medium'], [data-layout='wide']) .workspace-shell__chrome:has(.workspace-shell__session .table-address-share__contents) {
+    > .workspace-shell__session { --table-share-height: 68dvh; grid-row: 1 / span 3; align-self: start; }
+    > .app-header, .workbench-switch { grid-column: 1; }
+  }
 }
 
 .table-address-share__contents {

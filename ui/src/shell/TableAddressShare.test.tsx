@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { TableAddressShare } from './TableAddressShare'
@@ -48,6 +48,24 @@ it('selects the address for manual copying and uses the host announcer when clip
   expect(announce).toHaveBeenCalledWith('Select the table address and copy it.')
   expect(screen.getByText('Select the table address and copy it.')).toBeVisible()
   expect(screen.queryByRole('status')).toBeNull()
+})
+
+it.each([false, true])('handles a pointer tap which does not focus Copy (focus moved while pending: %s)', async (moveFocus) => {
+  const user = userEvent.setup()
+  let deny!: (reason: Error) => void
+  vi.spyOn(navigator.clipboard, 'writeText').mockReturnValue(new Promise<void>((_, reject) => { deny = reject }))
+  render(<TableAddressShare campaignId="cmp_A" />)
+  const share = screen.getByRole('button', { name: 'Share table' })
+  await user.click(share)
+  // A tap in Safari can activate the button without giving it keyboard focus.
+  fireEvent.click(screen.getByRole('button', { name: 'Copy link' }))
+  expect(share).toHaveFocus()
+  const qr = screen.getByRole('button', { name: 'Show QR code' })
+  if (moveFocus) qr.focus()
+  await act(async () => { deny(new Error('Clipboard unavailable')) })
+  const field = screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Table address' })
+  expect(moveFocus ? qr : field).toHaveFocus()
+  if (!moveFocus) expect([field.selectionStart, field.selectionEnd]).toEqual([0, field.value.length])
 })
 
 it('consumes Escape inside the open share panel and then returns Escape to the enclosing dialog', async () => {
