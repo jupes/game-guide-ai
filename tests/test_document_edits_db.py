@@ -48,7 +48,8 @@ class World:
 
     def submit(self, request: EditRequest | None = None) -> document_edits.EditAdmission | EditInvocation:
         return document_edits.submit(
-            self.db, self.stores, self.user, request or self.request, enabled=True, now=NOW, chat_turns_today=0,
+            self.db, self.stores, self.user, request or self.request, enabled=True,
+            clock=lambda: NOW, chat_turns_today=0,
         )
 
     def submit_tool(self, invocation_id: str) -> tool_invocations.Admission | tool_invocations.Replay:
@@ -263,5 +264,39 @@ def test_proposal_waiting_for_the_account_storage_lock_cannot_write_past_its_dea
         assert world.stores.documents.get(unit, request.campaign_id, request.document_id) == before
         [attempt] = world.stores.edits.attempts(unit, world.user.user_id, request.campaign_id, request.invocation_id)
         assert attempt.outcome == "expired"
+        [entry] = world.stores.timeline.entry_window(unit, request.conversation_id, before=None, limit=10)
+        assert EditInvocation.model_validate(entry.payload["invocation"]) == result
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["status", "cancel"])
+def test_status_and_cancel_judge_expiry_after_acquiring_the_invocation_row(world: World, cancel: bool) -> None:
+    admitted = world.submit()
+    assert isinstance(admitted, document_edits.EditAdmission)
+    request = world.request
+    identity = (world.user.user_id, request.campaign_id, request.invocation_id)
+    elapsed = Event()
+
+    def clock() -> datetime:
+        return admitted.row.attempt_deadline if elapsed.is_set() else NOW + timedelta(seconds=1)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with world.db.transaction() as holder:
+            held = world.stores.edits.get_for_update(holder, *identity)
+            assert held is not None and held.status == "working" and not held.cancel_requested
+            pending = pool.submit(
+                document_edits.read, world.db, world.stores, world.user.user_id, request.campaign_id,
+                request.document_id, request.invocation_id, clock=clock, cancel=cancel,
+            )
+            assert _someone_waits_on_a_lock(world.dsn)
+            elapsed.set()
+        result = pending.result(timeout=15)
+
+    assert result.status.value == "failed" and result.error is not None and not result.cancel_requested
+    assert result.error.code is ErrorCode.ATTEMPT_EXPIRED
+    with world.db.transaction() as unit:
+        stored = world.stores.edits.get_for_update(unit, *identity)
+        assert stored is not None and document_edits.to_wire(stored) == result
+        [attempt] = world.stores.edits.attempts(unit, *identity)
+        assert (attempt.outcome, attempt.ended_at) == ("expired", admitted.row.attempt_deadline)
         [entry] = world.stores.timeline.entry_window(unit, request.conversation_id, before=None, limit=10)
         assert EditInvocation.model_validate(entry.payload["invocation"]) == result

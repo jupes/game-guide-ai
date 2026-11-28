@@ -126,10 +126,9 @@ def build_router(
         if db is None:
             raise _unavailable()
         _shape(campaign_id, document_id)
-        now = clock()
         admitted = _answered(lambda: document_edits.submit(
-            db, stores, user, body, enabled=enabled, now=now,
-            chat_turns_today=lambda unit: _chat_turns(ledger, unit, now),
+            db, stores, user, body, enabled=enabled, clock=clock,
+            chat_turns_today=lambda unit, now: _chat_turns(ledger, unit, now),
         ))
         if not isinstance(admitted, EditAdmission):
             return admitted
@@ -152,7 +151,7 @@ def build_router(
             raise _unavailable()
         _shape(campaign_id, document_id, invocation_id)
         return _answered(lambda: document_edits.read(
-            db, stores, user.user_id, campaign_id, document_id, invocation_id, now=clock(), cancel=cancel,
+            db, stores, user.user_id, campaign_id, document_id, invocation_id, clock=clock, cancel=cancel,
         ))
 
     @router.get(base + "/{invocation_id}", response_model=EditInvocation)

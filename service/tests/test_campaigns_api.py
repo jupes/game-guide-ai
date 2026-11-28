@@ -788,6 +788,16 @@ def test_a_driver_error_is_a_503_that_logs_its_type_only(
 def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) -> None:
     document = app.openapi()
     family = {path: spec for path, spec in document["paths"].items() if path.startswith(("/campaigns", "/seats"))}
+    base = "/campaigns/{campaign_id}/documents/{document_id}/edits"
+    edits = {path: spec for path, spec in family.items() if path.startswith(base)}
+    assert {path: set(spec) for path, spec in edits.items()} == {
+        base: {"post"}, base + "/{invocation_id}": {"get"}, base + "/{invocation_id}/cancel": {"post"},
+    }
+    for spec in edits.values():
+        [operation] = spec.values()
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/EditInvocation",
+        }
     # 1kg.2.2's ten, bead cfx's conclude and reopen, 1kg.5.2's ten
     # document paths nested under a campaign, 1kg.2.3's two table-session
     # paths (agent-forge-harness-1kg.2.10), whose answers carry no secret either,
@@ -795,14 +805,18 @@ def test_the_openapi_models_of_this_family_expose_no_secret(client: TestClient) 
     # five group paths (their answers name seats by id, never an account), and
     # q156's three character-sheet link paths (also nested under a campaign), and
     # 1kg.7.2's two reveal paths (a picture, Confirm and Stop carry no field text).
-    assert len(family) == 40
+    assert len(family.keys() - edits.keys()) == 40
     schemas = document["components"]["schemas"]
+    edit_models = {"EditInvocation", "EditChanged", "EditNoChange"}
     answered = {"Campaign", "CampaignPage", "Seat", "SeatPage", "SeatOffer", "SeatOfferPage", "PlayerSeat",
-                "PlayerSeatPage"}
+                "PlayerSeatPage"} | edit_models
     assert answered <= set(schemas), "every answer of the family is a documented model"
     fields = {name: set(schemas[name].get("properties", {})) for name in answered}
     every = set().union(*fields.values())
     assert not every & {"password", "user_id", "owner_id", "gm_email", "offered_by"}
+    edit_fields = set().union(*(fields[name] for name in edit_models))
+    assert not edit_fields & {"data", "document", "document_title", "instruction", "scope", "selection_text",
+                              "operation_id", "conversation_id"}
     for account_side in ("SeatOffer", "SeatOfferPage", "PlayerSeat", "PlayerSeatPage"):
         assert not fields[account_side] & {"address", "email", "participant_id"}, account_side
     # bead cfx: a seated card says nothing about other players and nothing of

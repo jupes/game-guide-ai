@@ -283,7 +283,7 @@ def _target(record: DocumentRecord, scope: EditScope, instruction: EditInstructi
 
 def _submit(
     db: TransactionalDatabase, stores: EditStores, session: SessionData, request: EditRequest, *,
-    enabled: bool, now: datetime, chat_turns_today: int | Callable[[UnitOfWork], int],
+    enabled: bool, clock: Clock, chat_turns_today: int | Callable[[UnitOfWork, datetime], int],
 ) -> EditAdmission | EditInvocation:
     owner, campaign, document, key = session.user_id, request.campaign_id, request.document_id, request.invocation_id
     with db.transaction() as unit:
@@ -299,7 +299,7 @@ def _submit(
             if existing.document_id != document or existing.conversation_id != request.conversation_id:
                 raise NotFound()
             to_wire(existing)
-            existing = _expire(unit, stores, existing, now)
+            existing = _expire(unit, stores, existing, clock())
             stored_invocation = to_wire(existing)
             error = stored_invocation.error
             if error is None or not error.retryable or existing.attempt >= ATTEMPT_MAX:
@@ -321,6 +321,7 @@ def _submit(
             raise Unreadable() from None
         base = request.base_write_revision
         target = _target(record, scope, instruction, base)
+        now = clock()
         running = stores.edits.in_flight_for_document(unit, owner, campaign, document, now=now)
         if running:
             raise Refused(409, ErrorCode.CAP_REACHED, "The assistant is already editing this document.",
@@ -358,10 +359,10 @@ def _submit(
 
 def submit(
     db: TransactionalDatabase, stores: EditStores, session: SessionData, request: EditRequest, *,
-    enabled: bool, now: datetime, chat_turns_today: int | Callable[[UnitOfWork], int],
+    enabled: bool, clock: Clock, chat_turns_today: int | Callable[[UnitOfWork, datetime], int],
 ) -> EditAdmission | EditInvocation:
     try:
-        return _submit(db, stores, session, request, enabled=enabled, now=now, chat_turns_today=chat_turns_today)
+        return _submit(db, stores, session, request, enabled=enabled, clock=clock, chat_turns_today=chat_turns_today)
     except _AdmissionLost:
         # The guarded insert/retry refused. Its timeline write has rolled back.
         with db.transaction() as unit:
@@ -373,7 +374,7 @@ def submit(
             row = _row(unit, stores, session.user_id, request.campaign_id, request.document_id, request.invocation_id)
             if row.conversation_id != request.conversation_id:
                 raise NotFound() from None
-            return to_wire(_expire(unit, stores, row, now))
+            return to_wire(_expire(unit, stores, row, clock()))
 
 
 type EditOutcome = EditProposal | NoChange | ErrorInfo | None
@@ -512,18 +513,20 @@ def complete(
             return result
     except _CompletionExpired:
         return read(
-            db, stores, target.owner_id, target.campaign_id, target.document_id, target.invocation_id, now=clock(),
+            db, stores, target.owner_id, target.campaign_id, target.document_id, target.invocation_id, clock=clock,
         )
 
 
 def read(
     db: TransactionalDatabase, stores: EditStores, owner: int, campaign: str, document: str, key: str, *,
-    now: datetime, cancel: bool = False,
+    clock: Clock, cancel: bool = False,
 ) -> EditInvocation:
     with db.transaction() as unit:
         if stores.campaigns.get(unit, campaign, owner_id=owner) is None:
             raise NotFound()
-        row = _expire(unit, stores, _row(unit, stores, owner, campaign, document, key), now)
+        row = _row(unit, stores, owner, campaign, document, key)
+        now = clock()
+        row = _expire(unit, stores, row, now)
         if cancel:
             changed = stores.edits.set_cancel_requested(unit, owner, campaign, key, now=now)
             if changed is not None:

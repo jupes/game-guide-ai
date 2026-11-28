@@ -15,7 +15,7 @@ from service.app import app, get_timeline_database, require_session
 from service.campaign_store import InMemoryCampaignStore
 from service.conversation_store import InMemoryConversationStore
 from service.db import InMemoryDatabase, UnitOfWork
-from service.document_edit_store import EditNotStored, InMemoryDocumentEditStore
+from service.document_edit_store import EditNotStored, EditRow, InMemoryDocumentEditStore
 from service.document_editing import EditProposal
 from service.document_store import DocumentRecord, InMemoryDocumentStore
 from service.history import InMemoryMessageStore
@@ -292,6 +292,58 @@ def test_expiry_during_timeline_write_rolls_back_the_document_and_publishes_the_
     assert isinstance(entry, EditEntry) and entry.invocation.model_dump(mode="json") == expired
 
 
+def _delay_locked_read(world: World, patch: pytest.MonkeyPatch) -> None:
+    get_row = world.stores.edits.get_for_update
+
+    def after_deadline(unit: UnitOfWork, owner: int, campaign: str, invocation: str) -> EditRow | None:
+        row = get_row(unit, owner, campaign, invocation)
+        world.now = NOW + timedelta(minutes=5)
+        return row
+
+    patch.setattr(world.stores.edits, "get_for_update", after_deadline)
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["status", "cancel"])
+def test_status_and_cancel_observe_expiry_after_acquiring_the_attempt_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch, cancel: bool,
+) -> None:
+    observed: list[dict[str, Any]] = []
+
+    def read_late() -> None:
+        with monkeypatch.context() as patch:
+            _delay_locked_read(world, patch)
+            path = f"{world.path}/{KEY}"
+            seen = world.web.post(path + "/cancel") if cancel else world.web.get(path)
+            assert seen.status_code == 200
+            observed.append(seen.json())
+
+    world.provider.inside_call = read_late
+    answer = world.web.post(world.path, json=world.body())
+    assert answer.status_code == 200 and observed == [answer.json()]
+    expired = answer.json()
+    assert (expired["status"], expired["error"]["code"]) == ("failed", "attempt_expired")
+    assert expired["cancel_requested"] is False
+    assert world.record().write_revision == 1
+
+
+def test_same_key_waiting_on_an_expired_attempt_starts_one_fresh_retry(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retried: list[dict[str, Any]] = []
+
+    def retry() -> None:
+        world.provider.inside_call = lambda: None
+        with monkeypatch.context() as patch:
+            _delay_locked_read(world, patch)
+            retried.append(world.web.post(world.path, json=world.body()).json())
+
+    world.provider.inside_call = retry
+    original = world.web.post(world.path, json=world.body()).json()
+    assert retried == [original]
+    assert (original["status"], original["attempt"]) == ("done", 2)
+    assert world.record().write_revision == 2 and len(world.provider.calls) == 2
+
+
 @pytest.mark.parametrize(("fields", "changed"), [
     ({"voice": "Outside scope"}, ("voice",)), ({"wants": "A"}, ("wants",)),
 ])
@@ -376,6 +428,22 @@ def test_admission_consults_usage_in_its_transaction_and_a_replay_survives_a_led
     assert "private ledger failure message" not in new.text + caplog.text
     assert world.web.get(f"{world.path}/{fresh}").status_code == 404
     assert world.spent == [1] and len(world.provider.calls) == 1
+
+
+def test_waiting_on_the_admission_lock_charges_the_new_utc_day(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    tomorrow = NOW + timedelta(days=1)
+    world.now = tomorrow - timedelta(seconds=1)
+    hold = world.stores.load.hold_in_flight_lock
+
+    def after_midnight(unit: UnitOfWork, owner: int) -> None:
+        hold(unit, owner)
+        world.now = tomorrow
+
+    monkeypatch.setattr(world.stores.load, "hold_in_flight_lock", after_midnight)
+    answer = world.web.post(world.path, json=world.body())
+    assert answer.status_code == 200 and answer.json()["status"] == "done"
+    assert datetime.fromisoformat(answer.json()["created_at"]) == tomorrow
+    assert world.ledger.count_reads == [tomorrow]
 
 
 def test_edit_throttle_carries_the_retry_delay_and_creates_no_attempt(
