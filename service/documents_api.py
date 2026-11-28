@@ -107,6 +107,7 @@ from .document_wire import (
     to_snapshot,
     writable,
 )
+from .image_attachments import handout_name, hold_image_thread, ready_image
 from .session import SessionData
 from .timeline_store import PostgresTimelineStore, TimelineStore, entry_id_check_regex
 from .workbench_api import SessionDependency, not_found, reads_by_post, workbench_router
@@ -115,7 +116,9 @@ from .workbench_contracts import (
     HISTORY_PAGE_MAX_ITEMS,
     VERSION_NUMBER_MAX,
     AssetKind,
+    AssetRef,
     AssetState,
+    AttachedImageEntry,
     Author,
     CardResult,
     ConflictInfo,
@@ -128,9 +131,9 @@ from .workbench_contracts import (
     ErrorCode,
     ErrorInfo,
     FieldPatchRequest,
-    InvocationStatus,
     LibraryPage,
     LibraryQuery,
+    MediaResult,
     RestoreRequest,
     StatBlockCard,
     ToolEntry,
@@ -173,6 +176,8 @@ class DocumentStores:
     campaigns: CampaignStore
     documents: DocumentStore
     read_asset: Callable[[UnitOfWork, str, str, int], AssetRecord | None] = read_campaign_asset
+    hold_image_thread: Callable[[UnitOfWork, str, str, int], None] = hold_image_thread
+    ready_image: Callable[[UnitOfWork, str, str], AssetRef] = ready_image
 
 
 def get_document_stores() -> DocumentStores:
@@ -420,7 +425,7 @@ def create_document(
     return _guarded(work)
 
 
-def promote_stat_block(
+def promote_entry(
     db: TransactionalDatabase,
     stores: DocumentStores,
     readers: tuple[ConversationStore, TimelineStore],
@@ -430,13 +435,16 @@ def promote_stat_block(
     entry_id: str,
     owner_id: int,
     now: datetime,
+    media_enabled: bool = False,
 ) -> Document:
-    """Save the completed, durable monster card once using its timeline id."""
+    """Save an owned monster or image card once using its durable timeline id."""
     conversations, timeline = readers
 
     def work() -> Document:
         with db.transaction() as unit:
-            _owned(stores, unit, campaign_id, owner_id)
+            campaign = stores.campaigns.get(unit, campaign_id, owner_id=owner_id)
+            if campaign is None:
+                not_found()
             conversation = conversations.get_for_owner(unit, conversation_id, owner_id=owner_id)
             if conversation is None or conversation.campaign_id != campaign_id or conversation.archived_at is not None:
                 not_found()
@@ -444,24 +452,41 @@ def promote_stat_block(
             if row is None:
                 not_found()
             entry = entry_or_opaque(row.payload, entry_id=entry_id, created_at=row.created_at)
-            if not isinstance(entry, ToolEntry) or entry.invocation.status is not InvocationStatus.DONE:
-                not_found()
-            result = entry.invocation.result
-            if not isinstance(result, CardResult) or not isinstance(result.card, StatBlockCard):
-                not_found()
-            fields: dict[str, Any] = result.card.stat_block.model_dump(mode="json", by_alias=True, exclude_none=True)
-            if "type" in fields:
-                fields["creature_type"] = fields.pop("type")
-            if "cr" in fields:
-                fields["challenge_rating"] = str(fields.pop("cr"))
-
+            result = entry.invocation.result if isinstance(entry, ToolEntry) else None
             unit.lock(AdvisoryLock.ACCOUNT_STORAGE, str(owner_id))
-            doc_type = DocumentTypeId.STATBLOCK
+            # The public create contract cannot send a colon in its command id.
+            command = f"promote:{entry_id}"
+            author = Author.ASSISTANT
+            if isinstance(result, CardResult) and isinstance(result.card, StatBlockCard):
+                doc_type = DocumentTypeId.STATBLOCK
+                fields = result.card.stat_block.model_dump(mode="json", by_alias=True, exclude_none=True)
+                if "type" in fields:
+                    fields["creature_type"] = fields.pop("type")
+                if "cr" in fields:
+                    fields["challenge_rating"] = str(fields.pop("cr"))
+            elif isinstance(entry, AttachedImageEntry) or isinstance(result, MediaResult):
+                if not media_enabled:
+                    not_found()
+                stores.hold_image_thread(unit, campaign_id, conversation_id, owner_id)
+                existing = stores.documents.created_by_command(unit, campaign_id, command)
+                if existing is not None:
+                    return to_document(existing)
+                if isinstance(entry, AttachedImageEntry):
+                    asset_id, label = entry.asset_id, str(entry.use)
+                    author = Author.GM
+                else:
+                    assert isinstance(result, MediaResult)
+                    asset_id, label = result.asset.asset_id, result.tool_id.value
+                ref = stores.ready_image(unit, campaign_id, asset_id)
+                doc_type = DocumentTypeId.HANDOUT
+                fields = {
+                    "name": handout_name(ref.alt, label), "portrait": ref.model_dump(mode="json", exclude_none=True),
+                }
+            else:
+                not_found()
             promoted = stores.documents.create(
                 unit, campaign_id, doc_type=doc_type, type_version=DOC_TYPE_VERSION[doc_type], data=fields,
-                author=Author.ASSISTANT, now=now,
-                # The public create contract cannot send a colon in its command id.
-                command_id=f"promote:{entry_id}",
+                author=author, now=now, command_id=command,
                 quota=ByteQuota(owner_id, config.WORKBENCH_DOCUMENT_BYTES_PER_ACCOUNT_MAX),
             )
             return to_document(promoted)
@@ -638,7 +663,10 @@ def seal_document(
 # ── The router ───────────────────────────────────────────────────────────────
 
 
-def build_router(gm: SessionDependency, database: Callable[[], TransactionalDatabase | None]) -> APIRouter:
+def build_router(
+    gm: SessionDependency, database: Callable[[], TransactionalDatabase | None],
+    *, media_enabled: Callable[[], bool] = lambda: False,
+) -> APIRouter:
     """The document routes on a `workbench_router`, given the app's GM gate and
     its database getter."""
     router = workbench_router(gm)
@@ -719,9 +747,9 @@ def build_router(gm: SessionDependency, database: Callable[[], TransactionalData
             not_found()
         if re.fullmatch(entry_id_check_regex(), entry_id) is None:
             not_found()
-        return promote_stat_block(
+        return promote_entry(
             _database(db), stores, readers, campaign_id=campaign_id, conversation_id=conversation_id,
-            entry_id=entry_id, owner_id=user.user_id, now=now,
+            entry_id=entry_id, owner_id=user.user_id, now=now, media_enabled=media_enabled(),
         )
 
     @router.get("/campaigns/{campaign_id}/documents/{document_id}", response_model=Document)

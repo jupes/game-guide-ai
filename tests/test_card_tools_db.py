@@ -37,7 +37,7 @@ from service.campaign_store import PostgresCampaignStore
 from service.conversation_store import PostgresConversationStore
 from service.db import Database, PoolSettings
 from service.document_store import PostgresDocumentStore
-from service.documents_api import DocumentStores, promote_stat_block
+from service.documents_api import DocumentStores, promote_entry
 from service.history import PostgresMessageStore
 from service.model_catalog import DEFAULT_ALIAS
 from service.providers import ProviderClientFactory
@@ -188,7 +188,7 @@ def test_promoting_the_same_completed_monster_card_concurrently_creates_one_docu
     stores = DocumentStores(world.stores.campaigns, PostgresDocumentStore())
 
     def save():
-        return promote_stat_block(
+        return promote_entry(
             world.db, stores, (PostgresConversationStore(), PostgresTimelineStore()),
             campaign_id=world.campaign, conversation_id=world.conversation, entry_id=done.entry_id,
             owner_id=world.owner, now=T0,

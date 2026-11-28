@@ -20,7 +20,7 @@ import threading
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
@@ -160,6 +160,140 @@ def test_no_connection_is_held_while_an_upload_moves_bytes(
         db.close()
     assert objects.probes >= 3, "the stream in, the copy out and the processed write were each probed"
     assert objects.failures == []
+
+
+def test_an_owned_image_can_be_attached_and_saved_once_and_reused_after_reload(
+    dsn: str, owner: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from service import campaign_identity as ident
+    from service.conversation_store import new_conversation_id
+    from service.timeline_store import EntryInvalid, new_entry_id
+
+    db = Database(dsn, PoolSettings(sync_max=4, async_max=0))
+    runtime = assets_api.MediaRuntime(InMemoryObjectStore(), PostgresAssetStore(PostgresJobQueue(db)))
+    monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+    monkeypatch.setitem(app.dependency_overrides, get_timeline_database, lambda: db)
+    monkeypatch.setitem(app.dependency_overrides, get_timeline_store, PostgresTimelineStore)
+    monkeypatch.setitem(app.dependency_overrides, appmod._media, lambda: runtime)
+    principal = SessionData(user_id=owner, role="dm")
+    monkeypatch.setitem(app.dependency_overrides, require_session, lambda: principal)
+    other = ident.new_id(ident.CAMPAIGN)
+    audio = ident.new_id(ident.ASSET)
+    thread, sage, outsider, archived = (new_conversation_id() for _ in range(4))
+    with connect(dsn) as conn:
+        foreign_owner = conn.execute(
+            "INSERT INTO auth.users (email, password_hash) VALUES ('reader@example.org','x') RETURNING id"
+        ).fetchone()[0]
+        conn.execute("INSERT INTO campaign.campaigns (id,owner_id,name) VALUES (%s,%s,'Other')", (other, owner))
+        for cid, campaign, mode in [(thread, CAMPAIGN, "gm"), (sage, CAMPAIGN, "sage"),
+                                    (outsider, other, "gm"), (archived, CAMPAIGN, "gm")]:
+            conn.execute("INSERT INTO chat.conversations (conversation_id,user_id,campaign_id,started_mode) "
+                         "VALUES (%s,%s,%s,%s)", (cid, owner, campaign, mode))
+        conn.execute("UPDATE chat.conversations SET archived_at=now() WHERE conversation_id=%s", (archived,))
+        conn.execute(
+            "INSERT INTO campaign.assets (id,campaign_id,kind,state,declared_media_type,declared_size_bytes,"
+            "media_type,size_bytes,duration_ms,object_key,tmp_key) "
+            "VALUES (%s,%s,'audio','ready','audio/mpeg',10,'audio/mpeg',10,90,%s,%s)",
+            (audio, CAMPAIGN, new_object_key(), new_tmp_key()),
+        )
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 20)).save(buffer, "PNG")
+    now = datetime.now(UTC)
+    try:
+        with closing(TestClient(app)) as client:
+            collection = f"/campaigns/{CAMPAIGN}/assets"
+            made = client.post(collection, json={
+                "schema_version": 1, "campaign_id": CAMPAIGN, "command_id": "cmd_image_attach_pg_01", "kind": "image",
+                "media_type": "image/png", "size_bytes": len(buffer.getvalue()), "alt": "North gate",
+            })
+            assert made.status_code == 201, made.text
+            aid = made.json()["asset_id"]
+            path = f"{collection}/{aid}"
+
+            def attach(use="map", conversation=thread, asset=path):
+                return client.post(asset + "/attach", json={
+                    "schema_version": 1, "conversation_id": conversation, "use": use,
+                })
+
+            def promote(entry_id, conversation=thread):
+                return client.post(f"/campaigns/{CAMPAIGN}/conversations/{conversation}/timeline/{entry_id}/promote")
+
+            assert attach().status_code == 404
+            assert attach(asset=f"{collection}/{audio}").status_code == 404
+            uploaded = client.put(path + "/bytes", content=buffer.getvalue(), headers={"content-type": "image/png"})
+            assert uploaded.is_success
+            for wrong in (sage, outsider, archived):
+                assert attach(conversation=wrong).status_code == 404
+            assert attach(asset=f"/campaigns/{other}/assets/{aid}").status_code == 404
+            principal = SessionData(user_id=foreign_owner, role="dm")
+            assert attach().status_code == 404
+            principal = SessionData(user_id=owner, role="dm")
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first, second = list(executor.map(lambda _: attach(), range(2)))
+            assert first.status_code == second.status_code == 200, first.text
+            card = first.json()
+            assert card == second.json()
+            assert set(card) == {"schema_version", "entry_kind", "entry_id", "created_at", "use", "asset_id"}
+            assert (card["entry_kind"], card["asset_id"], card["use"]) == ("attached_image", aid, "map")
+            with db.transaction() as unit, pytest.raises(EntryInvalid):
+                PostgresTimelineStore().append(
+                    unit, sage, card, datetime.fromisoformat(card["created_at"]), owner_id=owner,
+                )
+            assert client.get(f"/conversations/{thread}/timeline").json()["items"] == [card]
+            portrait = attach(use="portrait").json()
+            assert portrait["entry_id"] != card["entry_id"]
+            assert promote(card["entry_id"], sage).status_code == 404
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first, second = list(executor.map(promote, [card["entry_id"]] * 2))
+            assert first.status_code == second.status_code == 200, first.text
+            handout = first.json()
+            assert second.json() == handout
+            reference = {"asset_id": aid, "media_type": "image", "alt": "North gate", "width": 16, "height": 20}
+            assert handout["data"] == {"name": "North gate", "portrait": reference} and handout["type"] == "handout"
+            assert handout["version"]["author"] == "gm"
+            renamed = client.patch(f"/campaigns/{CAMPAIGN}/documents/{handout['document_id']}", json={
+                "schema_version": 1, "type": "handout", "type_version": 1,
+                "base_write_revision": handout["write_revision"], "fields": {"name": "The gatehouse"},
+            })
+            assert renamed.is_success, renamed.text
+            handout = renamed.json()
+            assert promote(card["entry_id"]).json() == handout
+            # A retained generation result also saves the current, authorized metadata.
+            generated = new_entry_id()
+            with db.transaction() as unit:
+                PostgresTimelineStore().append(unit, thread, {
+                    "schema_version": 1, "entry_kind": "tool", "entry_id": generated, "created_at": now,
+                    "brief": "A picture", "invocation": {
+                        "schema_version": 1, "invocation_id": "inv_image_tool_01", "tool_id": "portrait",
+                        "status": "done", "created_at": now, "updated_at": now, "attempt": 1,
+                        "cancel_requested": False, "error": None, "result": {
+                            "tool_id": "portrait", "result_kind": "media", "prose": "", "suggestions": [],
+                            "asset": {**reference, "alt": "Old"},
+                        },
+                    },
+                }, now, owner_id=owner)
+            recovered = promote(generated)
+            assert recovered.status_code == 200, recovered.text
+            assert recovered.json()["data"] == {"name": "North gate", "portrait": reference}
+            monkeypatch.setitem(appmod._state, "media_settings", MediaSettings())
+            assert attach().status_code == 404
+            assert promote(card["entry_id"]).status_code == 404
+            monkeypatch.setitem(appmod._state, "media_settings", MediaSettings(enabled=True, store="memory"))
+            with connect(dsn) as conn:
+                conn.execute("UPDATE campaign.campaigns SET archived_at=now() WHERE id=%s", (CAMPAIGN,))
+            assert attach().status_code == 404
+            assert promote(portrait["entry_id"]).status_code == 404
+            with connect(dsn) as conn:
+                conn.execute("UPDATE campaign.campaigns SET archived_at=NULL WHERE id=%s", (CAMPAIGN,))
+            assert client.delete(path).status_code == 204
+            assert attach().status_code == 404
+            assert promote(portrait["entry_id"]).status_code == 404
+            assert promote(card["entry_id"]).json() == handout
+            assert client.get(path).status_code == 404
+            with connect(dsn) as conn:
+                assert conn.execute("SELECT count(*) FROM campaign.assets WHERE kind='image'").fetchone()[0] == 1
+    finally:
+        db.close()
 
 
 def test_cues_are_private_idempotent_paginated_and_follow_the_asset(

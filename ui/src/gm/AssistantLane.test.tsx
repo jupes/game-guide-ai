@@ -258,7 +258,24 @@ describe('AssistantLane — done (RAIL-17, CANVAS-3)', () => {
   })
 })
 
-describe('AssistantLane — a result kind this bead does not own (RAIL-24, X-8)', () => {
+describe('AssistantLane — a stored media result', () => {
+  it('shows the campaign thumbnail and full viewer without opening the canvas', async () => {
+    const actor = userEvent.setup()
+    const { onOpenDocument } = renderLane({
+      campaignId: 'cmp_harbour',
+      invocation: toolInvocation({ tool_id: 'portrait', status: 'done', result: mediaResult() }),
+    })
+    const src = '/campaigns/cmp_harbour/assets/ast_7c2b'
+    const expand = screen.getByRole('button', { name: 'Expand image' })
+    expect(expand).toHaveAccessibleDescription('Portrait A ferryman at his oar')
+    expect(within(expand).getByRole('img')).toHaveAttribute('src', src + '?rendition=thumb')
+    await actor.click(expand)
+    const dialog = screen.getByRole('dialog', { name: 'Portrait' })
+    expect(within(dialog).getByRole('img')).toHaveAttribute('src', src)
+    await actor.keyboard('{Escape}')
+    expect(expand).toHaveFocus()
+    expect(onOpenDocument).not.toHaveBeenCalled()
+  })
   it('stands in with a neutral placeholder, never a borrowed card', () => {
     renderLane({
       invocation: toolInvocation({ tool_id: 'portrait', status: 'done', result: mediaResult() }),

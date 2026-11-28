@@ -32,6 +32,7 @@ export interface LibraryDialogProps {
   cancelLabel: string
   /** The request is in flight. */
   busy: boolean
+  allowDismissWhileBusy?: boolean
   destructive?: boolean
   /** Which control takes focus when the dialog opens: the field `fieldRef` names, or Cancel. */
   initialFocus: 'field' | 'cancel'
@@ -45,7 +46,7 @@ export interface LibraryDialogProps {
 
 export function LibraryDialog({
   heading, body, children, confirmLabel, cancelLabel, busy, destructive = false, initialFocus, fieldRef,
-  error = null, returnFocus, onConfirm, onCancel,
+  error = null, returnFocus, onConfirm, onCancel, allowDismissWhileBusy = false,
 }: LibraryDialogProps): React.JSX.Element {
   const id = React.useId()
   const headingId = `${id}-heading`
@@ -69,7 +70,7 @@ export function LibraryDialog({
     if (event.key === 'Escape') {
       // Consumed here, so the panel's document-level Escape does not also close the panel.
       event.preventDefault()
-      if (!busy) onCancel()
+      if (!busy || allowDismissWhileBusy) onCancel()
       return
     }
     if (dialogRef.current !== null) wrapTab(event, dialogRef.current)
@@ -115,9 +116,9 @@ export function LibraryDialog({
               ref={cancelRef}
               type="button"
               className="library-dialog__button"
-              aria-disabled={busy || undefined}
+              aria-disabled={(busy && !allowDismissWhileBusy) || undefined}
               onClick={() => {
-                if (!busy) onCancel()
+                if (!busy || allowDismissWhileBusy) onCancel()
               }}
             >
               {cancelLabel}

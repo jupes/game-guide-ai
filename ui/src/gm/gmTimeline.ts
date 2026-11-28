@@ -31,7 +31,7 @@ import { getTimelinePage } from '../api'
 import type { ChatMode, ChatResponse, TimelinePageResult } from '../api'
 import type { Exchange } from '../useChat'
 import { TIMELINE_PAGE_MAX_ITEMS } from './contracts'
-import type { AttachedCueEntry, ChatAnswer, TimelineItem, ToolInvocation } from './contracts'
+import type { AttachedCueEntry, AttachedImageEntry, ChatAnswer, ImageUse, TimelineItem, ToolInvocation } from './contracts'
 
 export type LoadTimelinePageFn = (conversationId: string, cursor: string | null) => Promise<TimelinePageResult>
 
@@ -85,6 +85,7 @@ export type GmTurn =
   /** An AI edit. Known, but its lane is 1kg.6.5's, so it says so rather than guessing. */
   | { kind: 'unsupported'; key: string }
   | { kind: 'attached_cue'; key: string; cueId: string }
+  | { kind: 'attached_image'; key: string; entryId: string; assetId: string; use: ImageUse }
   /** A session boundary (1kg.3.5): not an exchange, drawn between them. */
   | DividerTurn
 
@@ -103,7 +104,11 @@ export type DividerTurn =
 /** Every turn that is an exchange: the GM's turn, then its outcome. */
 export type ExchangeTurn = Exclude<GmTurn, DividerTurn>
 
-export function attachedCueTurn(entry: AttachedCueEntry): Extract<GmTurn, { kind: 'attached_cue' }> {
+type ThreadAttachment = AttachedCueEntry | AttachedImageEntry
+export function attachmentTurn(entry: ThreadAttachment): Extract<GmTurn, { kind: 'attached_cue' | 'attached_image' }> {
+  if (entry.entry_kind === 'attached_image') {
+    return { kind: 'attached_image', key: `entry:${entry.entry_id}`, entryId: entry.entry_id, assetId: entry.asset_id, use: entry.use }
+  }
   return { kind: 'attached_cue', key: `entry:${entry.entry_id}`, cueId: entry.cue_id }
 }
 
@@ -178,7 +183,8 @@ export function turnsFromTimeline(items: readonly TimelineItem[]): GmTurn[] {
         turns.push({ kind: 'unsupported', key })
         return
       case 'attached_cue':
-        turns.push(attachedCueTurn(entry))
+      case 'attached_image':
+        turns.push(attachmentTurn(entry))
         return
       case 'opaque':
         turns.push({ kind: 'unreadable', key })
@@ -364,19 +370,19 @@ export interface GmTimeline {
    * what is already drawn. Retries in place on a previous failure (§12.2's
    * GM-thread row) — a no-op while one is already in flight or none remain. */
   loadEarlier: () => void
-  addAttachedCue: (entry: AttachedCueEntry) => void
+  addAttachment: (entry: ThreadAttachment, targetThread?: string) => void
   /** Acknowledged attachments that the server page has yet to include. */
-  recentCueEntries: readonly CueReceipt[]
+  recentAttachments: readonly AttachmentReceipt[]
 }
 
-interface CueReceipt {
-  readonly entry: AttachedCueEntry
+interface AttachmentReceipt {
+  readonly entry: ThreadAttachment
   readonly receivedAt: number
 }
 
 /** The part of `GmTimeline` that is plain state; `loadEarlier` is bound fresh
  * on every call so it always closes over the current scope. */
-type TimelineSnapshot = Omit<GmTimeline, 'loadEarlier' | 'addAttachedCue' | 'recentCueEntries'>
+type TimelineSnapshot = Omit<GmTimeline, 'loadEarlier' | 'addAttachment' | 'recentAttachments'>
 
 interface TimelineState extends TimelineSnapshot {
   scopeId: string | null
@@ -399,7 +405,7 @@ const LOADING: TimelineSnapshot = {
   earlierError: null,
 }
 const NOOP = (): void => {}
-const NO_RECENT_CUES: readonly CueReceipt[] = []
+const NO_RECENT_ATTACHMENTS: readonly AttachmentReceipt[] = []
 
 /**
  * The stored thread of the open conversation, read when it opens. `enabled` is
@@ -413,20 +419,20 @@ export function useGmTimeline(
 ): GmTimeline {
   const scope = enabled ? conversationId : null
   const [state, setState] = useState<TimelineState>({ scopeId: null, ...NO_TIMELINE })
-  const [newCues, setNewCues] = useState<{ id: string; items: readonly CueReceipt[] } | null>(null)
-  if (newCues !== null && newCues.id !== scope) setNewCues(null)
-  const recentCueEntries = useMemo(() => {
-    if (newCues?.id !== scope) return NO_RECENT_CUES
-    const present = new Set(state.items.map(entryKeyOf))
-    return newCues.items.filter(({ entry }) => !present.has(entry.entry_id))
-  }, [newCues, scope, state.items])
-  const addAttachedCue = useCallback((entry: AttachedCueEntry) => {
-    if (scope === null) return
+  const [newAttachments, setNewAttachments] = useState<{ id: string; items: readonly AttachmentReceipt[] } | null>(null)
+  if (newAttachments !== null && newAttachments.id !== scope) setNewAttachments(null)
+  const recentAttachments = useMemo(() => {
+    if (newAttachments?.id !== scope) return NO_RECENT_ATTACHMENTS
+    const present = new Set(state.scopeId === scope ? state.items.map(entryKeyOf) : [])
+    return newAttachments.items.filter(({ entry }) => !present.has(entry.entry_id))
+  }, [newAttachments, scope, state.scopeId, state.items])
+  const addAttachment = useCallback((entry: ThreadAttachment, targetThread = scope) => {
+    if (targetThread === null) return
     const receivedAt = Date.now()
-    setNewCues((current) => {
-      const before = current?.id === scope ? current.items : []
+    setNewAttachments((current) => {
+      const before = current?.id === targetThread ? current.items : []
       if (before.some((item) => item.entry.entry_id === entry.entry_id)) return current
-      return { id: scope, items: [...before, { entry, receivedAt }] }
+      return { id: targetThread, items: [...before, { entry, receivedAt }] }
     })
   }, [scope])
   // Load earlier's cursor and in-flight guard live only in memory (X-7),
@@ -536,6 +542,6 @@ export function useGmTimeline(
     )
   }, [scope, loadPage])
 
-  if (scope === null) return { ...NO_TIMELINE, loadEarlier: NOOP, addAttachedCue, recentCueEntries }
-  return { ...(state.scopeId === scope ? state : LOADING), loadEarlier, addAttachedCue, recentCueEntries }
+  if (scope === null) return { ...NO_TIMELINE, loadEarlier: NOOP, addAttachment, recentAttachments }
+  return { ...(state.scopeId === scope ? state : LOADING), loadEarlier, addAttachment, recentAttachments }
 }

@@ -284,7 +284,7 @@ on both sides.
 | Tool invocation | **done** | `ToolInvocationRequest`, `ToolInvocation`, `ToolResult` (card, document, media), `ToolSuggestion`, `DocumentLink`, `AssetRef` |
 | Card payloads | **done**: `stat_block` (reusing the `/chat` stat-block contract), `loot`, `names`, `rules` and `hooks` (`1kg.4.3`) | One kind per card tool; see *Card payloads* below. The four were added before v1 was declared complete and while no card tool is enabled in any deployment, so no producer and consumer had met: not a version bump |
 | Legacy guards | **done** | today's `/chat` and message-history responses, validated by the existing models |
-| Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider` and `opaque` | `TimelineEntry`, `TimelinePage`. The attached-cue entry arrives with the cue family; until v1 is declared complete, adding it is not a version bump |
+| Timeline entries and their page | **done** for `chat`, `tool`, `edit`, `session_divider`, `attached_cue`, `attached_image` and `opaque` | `TimelineEntry`, `TimelinePage`. Each stored entry is validated separately. |
 | Documents | **done** | `Document`, `DocumentVersion`, `DocumentVersionSnapshot`, `DocumentHistoryPage`, `FieldPatchRequest`, `DocumentCreateRequest`, `RestoreRequest`, `DocumentDeleteRequest`, `EditRequest`, `EditInvocation`, `LibraryQuery`, `LibraryPage`, `CharacterSheetLink` (`q156`), and `conflict`, `document_unsupported`, `document_not_archived` and `link_taken` on the error envelope. **Who may see a field is not this family's to define**: `agent-forge-harness-1ir.1.2` decides it, and it blocks `1kg.5.1`. Promoting a card to a document (LIB-11) is `1kg.5.6`'s request to add |
 | Per-type document fields | **done** | All eight types declare their fields, rules, reveal groups and default reveals (`1kg.5.3`). A key a type does not name fails closed — the same posture as card kinds |
 | Reveal | **done** — reopened by threat model §15.11's TA-5 row (`everyone_seated`) and marked done by `1kg.7.2` PR-2, which serves and parses every reveal shape; no build had served or parsed one, so no bump was owed (DV-3's precedent) | `RevealAudience`, `RevealRequest`, `RevealStopRequest`, `RevealAnswer`, `RevealLive`, `RevealState`, `TableProjection`, `TableSnapshotQuery`, the `slot` and `snapshot` kinds on both channels, and `keys` on the error envelope. See *The reveal family* below |
@@ -1220,8 +1220,19 @@ with an empty JSON object. The server uses the completed monster card in that
 GM-owned conversation to create an editable stat block. A repeat returns the
 same document with its current edits.
 
+**Save as handout** uses the same promotion route for an attached image or a
+completed media result in a GM thread. The service resolves the campaign's
+ready image and creates one handout for that entry. Its initial name comes
+from the image description, within the handout title limit. A repeated save
+returns the same handout with its current name and edits. Linking to an
+existing document uses its current version and its editable `portrait`
+field. A version conflict requires a fresh read
+before the GM decides whether to replace the image.
+
 | `entry_kind` | Carries | Notes |
 | --- | --- | --- |
+| `attached_image` | `asset_id`, `use` (`portrait` or `map`) | The GM selected an existing image or uploaded a local file. A reader resolves the current image in the campaign when opening the card. |
+| `attached_cue` | `cue_id` | A private GM thread reference to the campaign audio cue. |
 | `chat` | `mode`, `prompt`, `answer` | A plain message and its answer, in any mode (RAIL-14). `answer` is `null` while no answer is stored: the turn failed, or is still running elsewhere. `prompt` is `null` only for an old answer whose prompt was never recorded; one of the two is always present |
 | `tool` | `brief`, `invocation`, optional `source_entry_id` | RAIL-9: a tool and a brief, never the slash string. The tool is `invocation.tool_id`, kept in one place so the turn and its lane cannot disagree. The embedded `ToolInvocation` keeps all of its own rules. The brief *bound* holds on the way back out; the brief *policy* is not re-judged, so a registry change can never make an old turn unreadable |
 | `edit` | `document` (a link), `scope`, `instruction`, `invocation` | An AI edit and its outcome. The GM's words are the turn, as a brief is for a tool. The thread keeps the scope's kind and field and **never the selected text**, which is document text (EXPORT-12) |
@@ -1297,6 +1308,18 @@ then `ready` — measured, re-encoded, every tag and picture dropped (SEC-27) �
 `failed` with a reason from a closed set and never a message. Nothing about an
 asset resolves until it is `ready`; a deleted asset is a 404 like anything else
 missing.
+
+With Workbench media enabled, the GM can add a ready campaign image to a
+GM thread. `POST /campaigns/{campaign_id}/assets/{asset_id}/attach` accepts
+`ImageAttachRequest` with `schema_version`, `conversation_id` and `use`. The
+service checks campaign ownership, the conversation and the ready image. A
+successful request returns `200` and the `attached_image` timeline entry.
+Repeating the same image and use in that conversation returns the original
+entry. The client reads the authorized image status, thumbnail and original
+bytes on this origin. The attachment stays private to the GM.
+
+Generation through `/portrait` and `/map` has its own entitlement and
+provider gates. Upload and reuse work with the campaign asset store.
 
 | Kind | Accepted on upload (by magic bytes) | Served as | Caps |
 | --- | --- | --- | --- |

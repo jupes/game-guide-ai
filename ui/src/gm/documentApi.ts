@@ -446,6 +446,16 @@ export async function promoteMonsterCard(
   entryId: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CreateResult> {
+  return promoteTimelineEntry(campaignId, conversationId, entryId, 'statblock', fetchImpl)
+}
+
+export async function promoteTimelineEntry(
+  campaignId: string,
+  conversationId: string,
+  entryId: string,
+  type: 'handout' | 'statblock',
+  fetchImpl: typeof fetch = fetch,
+): Promise<CreateResult> {
   if (!isOpaqueId(campaignId) || !isOpaqueId(conversationId) || !isOpaqueId(entryId)) return { kind: 'unavailable' }
   const base = `/campaigns/${encodeURIComponent(campaignId)}/conversations/${encodeURIComponent(conversationId)}`
   const res = await send(fetchImpl, `${base}/timeline/${encodeURIComponent(entryId)}/promote`, {
@@ -453,7 +463,7 @@ export async function promoteMonsterCard(
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
   })
-  return readCreatedDocument(res, campaignId, 'statblock')
+  return readCreatedDocument(res, campaignId, type)
 }
 
 async function readCreatedDocument(

@@ -1,0 +1,30 @@
+.thread-image, .thread-image__picker { display: grid; gap: var(--aether-space-2); min-inline-size: 0; }
+.thread-image p, .thread-image__viewer p { margin: 0; overflow-wrap: anywhere; }
+.thread-image__use { color: var(--md-sys-color-on-surface); font-family: var(--aether-font-ui); }
+.thread-image__preview {
+  display: grid; gap: var(--aether-space-1); justify-items: start; max-inline-size: 100%; width: fit-content;
+  padding: var(--aether-space-2); border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-card); background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-primary); font: inherit; cursor: pointer;
+}
+.thread-image__preview img { display: block; max-inline-size: 100%; max-block-size: 12rem; object-fit: contain; }
+.thread-image__preview:focus-visible, .thread-image__picker select:focus-visible {
+  outline: 3px solid var(--md-sys-color-secondary); outline-offset: 2px;
+}
+.thread-image__actions { display: flex; flex-wrap: wrap; gap: var(--aether-space-2); }
+.thread-image__backdrop {
+  position: fixed; inset: 0; z-index: var(--aether-z-overlay); display: grid; place-items: center;
+  padding: var(--aether-space-3); background: color-mix(in srgb, var(--md-sys-color-scrim) 65%, transparent);
+}
+.thread-image__viewer {
+  display: grid; gap: var(--aether-space-3); box-sizing: border-box; inline-size: min(48rem, 100%);
+  min-inline-size: 0; max-block-size: calc(100dvh - 2 * var(--aether-space-3)); overflow: auto; overscroll-behavior: contain;
+  padding: var(--aether-space-4); border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--aether-radius-sheet); color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-low); font-family: var(--aether-font-ui);
+}
+.thread-image__viewer header { display: flex; align-items: center; justify-content: space-between; gap: var(--aether-space-2); }
+.thread-image__viewer h2 { font-family: var(--aether-font-display); margin: 0; }
+.thread-image__full { display: block; justify-self: center; max-inline-size: 100%; max-block-size: 54dvh; object-fit: contain; }
+.thread-image__picker label { display: grid; gap: var(--aether-space-1); }
+.thread-image__picker select { min-block-size: var(--aether-touch-min); min-inline-size: 0; max-inline-size: 100%; font: inherit; }

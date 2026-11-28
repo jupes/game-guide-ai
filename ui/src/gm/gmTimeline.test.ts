@@ -22,7 +22,7 @@ import {
   useGmTimeline,
 } from './gmTimeline'
 import type { GmTurn, LoadTimelinePageFn } from './gmTimeline'
-import type { TimelineItem } from './contracts'
+import { parseTimelineEntry, type TimelineItem } from './contracts'
 import {
   CREATIVE_ANSWER,
   DIVIDER_ENTRY,
@@ -430,8 +430,8 @@ describe('useGmTimeline', () => {
       loadingEarlier: false,
       earlierError: null,
       loadEarlier: expect.any(Function),
-      addAttachedCue: expect.any(Function),
-      recentCueEntries: [],
+      addAttachment: expect.any(Function),
+      recentAttachments: [],
     })
     expect(load).not.toHaveBeenCalled()
   })
@@ -462,13 +462,34 @@ describe('useGmTimeline', () => {
       cue_id: 'cue_first', created_at: '2026-01-01T00:00:00Z',
     } as const
     act(() => {
-      result.current.addAttachedCue(attached)
-      result.current.addAttachedCue(attached)
+      result.current.addAttachment(attached)
+      result.current.addAttachment(attached)
     })
-    expect(result.current.recentCueEntries).toEqual([{ entry: attached, receivedAt: expect.any(Number) }])
+    expect(result.current.recentAttachments).toEqual([{ entry: attached, receivedAt: expect.any(Number) }])
     rerender({ id: 'cnv_2' })
     await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.recentCueEntries).toEqual([])
+    expect(result.current.recentAttachments).toEqual([])
+  })
+
+  it('replaces an acknowledged map with its stored turn, leaving an unreadable future entry in place', async () => {
+    const entry = {
+      schema_version: 1, entry_kind: 'attached_image', entry_id: 'ent_map', asset_id: 'ast_map',
+      created_at: '2026-01-01T00:00:00Z', use: 'map',
+    } as const
+    let resolve!: (value: TimelinePageResult) => void
+    const load: LoadTimelinePageFn = () => new Promise(done => { resolve = done })
+    const { result } = renderHook(() => useGmTimeline('cnv_1', true, load))
+    act(() => result.current.addAttachment(entry))
+    expect(result.current.recentAttachments.map(item => item.entry)).toEqual([entry])
+    const future = parseTimelineEntry({ ...entry, entry_id: 'ent_future', use: 'future', private_label: 'Unrecognized content' })
+    await act(async () => resolve({
+      kind: 'ok', page: { conversation_id: 'cnv_1', items: [future, parseTimelineEntry(entry)], next_cursor: null },
+    }))
+    expect(result.current.recentAttachments).toEqual([])
+    expect(turnsFromTimeline(result.current.items)).toEqual([
+      { kind: 'attached_image', key: 'entry:ent_map', entryId: 'ent_map', assetId: 'ast_map', use: 'map' },
+      { kind: 'unreadable', key: 'entry:ent_future' },
+    ])
   })
 
   it('reports a failed read and holds no stale entries', async () => {
@@ -504,8 +525,8 @@ describe('useGmTimeline', () => {
       loadingEarlier: false,
       earlierError: null,
       loadEarlier: expect.any(Function),
-      addAttachedCue: expect.any(Function),
-      recentCueEntries: [],
+      addAttachment: expect.any(Function),
+      recentAttachments: [],
     })
     await waitFor(() => expect(ids(result.current.items)).toEqual(['ent_cnv_b']))
   })

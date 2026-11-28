@@ -57,6 +57,7 @@ import type { ChatMode } from '../api'
 import type { DocumentLink } from './contracts'
 import { DIVIDER_COPY, formatDividerTime } from './gmTimeline'
 import { CuePreview } from './CuePreview'
+import { ThreadImageCard } from './ThreadImageCard'
 import { CUE_REMOVED_EVENT, readCue } from './cueApi'
 import type { Cue } from './contracts'
 import type { AnswerState, DividerTurn, ExchangeTurn, GmTurn, LaneAnswer } from './gmTimeline'
@@ -80,6 +81,7 @@ const noCanvas = (): void => {}
 export interface GmThreadProps {
   turns: readonly GmTurn[]
   campaignId?: string
+  mediaScope?: AssistantLaneProps['mediaScope']
   /** CANVAS-3: Open in canvas. */
   onOpenDocument?: (link: DocumentLink) => void
   toolLaneProps?: (turn: Extract<GmTurn, { kind: 'tool' }>) => Partial<Pick<AssistantLaneProps,
@@ -101,6 +103,7 @@ export interface GmThreadProps {
 export function GmThread({
   turns,
   campaignId,
+  mediaScope,
   onOpenDocument = noCanvas,
   toolLaneProps,
   hasEarlier = false,
@@ -170,7 +173,7 @@ export function GmThread({
             ref={index === 0 ? firstExchangeRef : undefined}
           >
             <Narration turn={turn} />
-            <Outcome turn={turn} onOpenDocument={onOpenDocument} toolLaneProps={toolLaneProps} campaignId={campaignId} />
+            <Outcome turn={turn} onOpenDocument={onOpenDocument} toolLaneProps={toolLaneProps} campaignId={campaignId} mediaScope={mediaScope} />
           </div>
         ),
       )}
@@ -272,11 +275,13 @@ function Outcome({
   onOpenDocument,
   toolLaneProps,
   campaignId,
+  mediaScope,
 }: {
   turn: ExchangeTurn
   onOpenDocument: (link: DocumentLink) => void
   toolLaneProps?: GmThreadProps['toolLaneProps']
   campaignId?: string
+  mediaScope?: AssistantLaneProps['mediaScope']
 }): React.JSX.Element | null {
   switch (turn.kind) {
     case 'chat':
@@ -291,11 +296,20 @@ function Outcome({
           lost={turn.live?.lost === true}
           sourceEntryId={turn.entryId}
           onOpenDocument={onOpenDocument}
+          campaignId={campaignId}
+          mediaScope={mediaScope}
           {...toolLaneProps?.(turn)}
         />
       )
     case 'unreadable':
       return <AssistantLane invocation={null} onOpenDocument={onOpenDocument} />
+    case 'attached_image':
+      return <ChatMessage role="dm" author="You · attached">
+        {campaignId
+          ? <ThreadImageCard key={turn.key} campaignId={campaignId} assetId={turn.assetId} use={turn.use}
+              scope={mediaScope} entryId={turn.entryId} onOpen={onOpenDocument} />
+          : <p>This image is unavailable.</p>}
+      </ChatMessage>
     case 'attached_cue':
       return (
         <div className="gm-thread__attached-cue">

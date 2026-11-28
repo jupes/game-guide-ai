@@ -232,6 +232,10 @@ player automatically rejoins the cleared table and receives a new reveal.
 The old shared screen loses access. The private media check runs in desktop
 Chromium and both mobile profiles. It uploads an image to one service, verifies that only the
 owning GM can read the image and its thumbnail from the other service, and
-checks that deletion revokes access on both. The runner stops both services
-and removes its temporary data. Playwright writes failure traces to
+checks that deletion revokes access on both. A second test uses **Attach image**
+in the GM workspace to upload a sample map. It expands the card with the
+keyboard, saves it as a handout, and reads it from a second service. The GM
+links the image to an NPC, then uses the NPC’s image as a portrait in the
+same conversation. The runner stops both services and removes its temporary
+data. Playwright writes failure traces to
 `ui/e2e-results/table-stream-chromium` or `ui/e2e-results/table-stream-webkit`.

@@ -152,9 +152,9 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
   const settingsInDrawer = SETTINGS_HOME[layout] === 'drawer'
   // The reveal sheet is modal too (1kg.7.3): the chrome and the body go `inert` while it is open for the open document.
   const sheetOpen = useRevealSheetOpen()
-  const [railCustomising, setRailCustomising] = React.useState(false)
+  const [composerDialogOpen, setComposerDialogOpen] = React.useState(false)
   const [participantsDialogOpen, setParticipantsDialogOpen] = React.useState(false)
-  const modal = guardDialog !== null || sheetOpen || railCustomising || participantsDialogOpen
+  const modal = guardDialog !== null || sheetOpen || composerDialogOpen || participantsDialogOpen
   const chatVisible = !(single && shown && view === 'canvas')
   const canvasVisible = shown && (!single || view === 'canvas')
 
@@ -296,7 +296,7 @@ function WorkspaceShellBody({ mainRef, railLibraryRef, railParticipantsRef }: Wo
 
   // One element at one tree position in every state, so ChatPane never re-renders
   // for the canvas and never remounts across a layout change (LAYOUT-6, C-13).
-  const chat = React.useMemo(() => <ChatPane onCustomiseRailOpenChange={setRailCustomising} />, [])
+  const chat = React.useMemo(() => <ChatPane onComposerDialogChange={setComposerDialogOpen} />, [])
 
   return (
     <div className="workspace-shell" data-layout={layout} data-nav={presentation} onFocus={recordFocus}>
