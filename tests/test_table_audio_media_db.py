@@ -316,7 +316,7 @@ def test_live_byte_response_stops_after_a_chunk_recheck(dsn, change):
 
         with pytest.raises(media_serving.ReadRevoked):
             await reply({"type": "http", "asgi": {"spec_version": "2.4"}}, no_receive, send)
-        assert media_serving.RECHECK_BYTES <= sent < media_serving.RECHECK_BYTES + CHUNK_BYTES < length
+        assert sent == media_serving.RECHECK_BYTES < length
         assert await read() is None
 
     asyncio.run(run())

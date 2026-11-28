@@ -336,6 +336,36 @@ def test_the_re_check_is_asked_every_megabyte_and_a_no_ends_the_stream(limiter: 
     assert asked == [0, 1], "a response shorter than a megabyte completes without asking"
 
 
+@pytest.mark.parametrize("length, checks", [(7, 0), (8, 1), (16, 2)])
+def test_recheck_splits_store_chunks_and_preserves_bytes(limiter: StoreLimiter, monkeypatch, length, checks) -> None:
+    monkeypatch.setattr(ms, "RECHECK_BYTES", 7)
+    data = bytes(range(length))
+    stream = Stream([data[i:i + 4] for i in range(0, length, 4)])
+    sent_before_recheck = []
+
+    async def read():
+        observed = bytearray()
+
+        async def recheck():
+            sent_before_recheck.append(len(observed))
+            return True
+
+        async def send(message):
+            observed.extend(message.get("body", b""))
+
+        async def receive():
+            await anyio.sleep_forever()
+
+        await _response(limiter, stream, length, recheck=recheck)(
+            {"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send,
+        )
+        return bytes(observed)
+
+    assert anyio.run(read) == data
+    assert sent_before_recheck == [7 * n for n in range(1, checks + 1)]
+    assert stream.closed and limiter.borrowed == 0
+
+
 def test_serve_refuses_when_every_token_is_held_and_holds_nothing(limiter: StoreLimiter) -> None:
     store = InMemoryObjectStore()
     store.put_stream(KEY, iter([b"abc"]), max_bytes=10)
